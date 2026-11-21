@@ -231,6 +231,8 @@ internal sealed partial class GuildRemotePort(GuildQuestStore quests, GuildLocal
 
     private async Task PulseAsync(Run run, CancellationToken ct)
     {
+        Task? portal = null;
+
         try
         {
             while (true)
@@ -265,12 +267,29 @@ internal sealed partial class GuildRemotePort(GuildQuestStore quests, GuildLocal
                 {
                     run.Serial.Release();
                 }
+
+                if (portal is null || portal.IsCompleted)
+                {
+                    if (portal is not null)
+                    {
+                        await portal.ConfigureAwait(false);
+                    }
+
+                    portal = DrainConnectedPortalAsync(run, ct);
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception)
         {
             await run.Lifetime.CancelAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (portal is not null)
+            {
+                await portal.ConfigureAwait(false);
+            }
         }
     }
 
@@ -350,11 +369,26 @@ internal sealed partial class GuildRemotePort(GuildQuestStore quests, GuildLocal
 
         internal SemaphoreSlim Serial { get; } = new(1, 1);
 
-        public void Dispose() => Serial.Dispose();
+        // This owns only one auxiliary delivery per remote run. It is never held by the Quest
+        // heartbeat or during a primary provider handoff.
+        internal SemaphoreSlim PortalSerial { get; } = new(1, 1);
+
+        internal A2AClientService.GuildPortalPeer? PortalPeer;
+
+        public void Dispose()
+        {
+            PortalSerial.Dispose();
+
+            Serial.Dispose();
+        }
     }
 
     private sealed class Lifecycle(GuildRemotePort owner, Run run, string? expectedTask, bool observationOnly, string? expectedContext = null) : IA2AGuildSendingLifecycle
     {
+        public void SetPortalPeer(A2AClientService.GuildPortalPeer? peer) => Volatile.Write(ref run.PortalPeer, peer);
+
+        public Task DrainConnectedPortalAsync(CancellationToken ct) => owner.DrainConnectedPortalAsync(run, ct);
+
         public async Task<Result> PreflightAsync(CancellationToken ct)
         {
             await run.Serial.WaitAsync(ct).ConfigureAwait(false);

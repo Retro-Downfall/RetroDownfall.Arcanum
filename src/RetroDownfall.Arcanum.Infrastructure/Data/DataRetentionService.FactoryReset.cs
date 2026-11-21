@@ -68,6 +68,8 @@ internal sealed partial class DataRetentionService
         new("guild_cohort_settlement_clock", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
 
+        new("guild_remote_portal_deliveries", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_inbound_portal_messages", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_inbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -241,6 +243,8 @@ internal sealed partial class DataRetentionService
         new("guild_cohort_settlement_clock", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
 
+        new("guild_remote_portal_deliveries", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_inbound_portal_messages", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_inbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),

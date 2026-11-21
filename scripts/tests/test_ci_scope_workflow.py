@@ -477,6 +477,15 @@ class CiScopeWorkflowTests(unittest.TestCase):
                     self.assertIn(selector, harness)
                 self.assertIn("RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceReadToolsTests", harness)
 
+    def test_guild_execution_requires_authenticated_portal_delivery_and_recovery(self):
+        harness = (ROOT / "scripts/qualify-guild-execution.sh").read_text()
+        for method in (
+            "Provider_informational_tool_reaches_the_authenticated_waiting_peer_once",
+            "Lost_remote_portal_acknowledgement_survives_driver_replacement_without_resending_the_body",
+            "Mixed_cohort_information_preserves_local_application_and_remote_withholding",
+        ):
+            self.assertIn(f"--required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.{method}", harness)
+
     def test_scope_uses_event_shas_and_full_history_without_shell_interpolation(self):
         body = job("scope")
         self.assertIn("fetch-depth: 0", body)

@@ -76,6 +76,8 @@ public static class ErrorCodes
 
         public const string BudgetCapabilityUnavailable = "Guild.BudgetCapabilityUnavailable";
 
+        public const string RemoteMessagingUnavailable = "Guild.RemoteMessagingUnavailable";
+
         public const string DelegationCycle = "Guild.DelegationCycle";
 
         public const string LegacyRunUnavailable = "Guild.LegacyRunUnavailable";

@@ -15,7 +15,24 @@ public sealed record GuildTreeSnapshotDto(GuildQuestDto Summary, GuildQuestPageD
 public sealed record GuildCohortSnapshotDto(CohortDto Summary, CohortMemberPageDto Members, long Watermark, string ResumeCursor);
 
 public sealed record GuildChangeEventDto(long EventSequence, GuildEventKind EventKind, Guid ObjectId, long Revision,
-    ImmutableArray<GuildDataRef> ContentRefs, Guid? QuestId = null, GuildSpendSourceDto? SpendSource = null);
+    ImmutableArray<GuildDataRef> ContentRefs, Guid? QuestId = null, GuildSpendSourceDto? SpendSource = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuildPortalDeliveryEvidence? PortalDelivery = null);
+
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildPortalTransportEvidence>))]
+public enum GuildPortalTransportEvidence
+{
+    [JsonStringEnumMemberName("ready")]
+    Ready = 0,
+
+    [JsonStringEnumMemberName("possiblySent")]
+    PossiblySent = 1,
+
+    [JsonStringEnumMemberName("peerAccepted")]
+    PeerAccepted = 2,
+}
+
+public sealed record GuildPortalDeliveryEvidence(Guid InboxId, Guid MessageId, Guid RecipientQuestId,
+    GuildDeliveryState DeliveryState, GuildPortalTransportEvidence? TransportEvidence, Guid? PeerReceiptId);
 
 public sealed record GuildResyncEventDto(string ReasonCode, string SnapshotRoute, string ResumeCursor);
 

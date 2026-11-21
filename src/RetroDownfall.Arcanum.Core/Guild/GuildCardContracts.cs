@@ -40,7 +40,8 @@ public sealed record GuildAgentSourceDto(GuildAgentSourceKind Kind, Guid? Worksp
 
 /// <summary>Untrusted transport metadata, kept separate from Cards and executable authority. CredentialReference is a name, never a secret.</summary>
 public sealed record GuildRemoteTransportDescriptor(string PeerId, string Endpoint, string ProtocolVersion, ImmutableArray<string> Interfaces, ImmutableArray<string> AuthenticationSchemes, string? CredentialReference, string? ProviderLink, string? DocumentationLink,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<GuildRemoteInterfaceDescriptor> InterfaceObservations = default);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<GuildRemoteInterfaceDescriptor> InterfaceObservations = default,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool PortalMessagesV1 = false);
 
 public sealed record GuildRemoteInterfaceDescriptor(string Endpoint, string ProtocolBinding, string ProtocolVersion);
 

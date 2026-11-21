@@ -14,7 +14,7 @@ internal sealed record GuildInboundTaskPage(IReadOnlyList<GuildInboundTask> Item
 internal sealed record GuildInboundTask(GuildInboundBinding Binding, GuildQuestDto Quest, string? Result, string? Question);
 
 /// <summary>Inbound A2A is a projection over the sole local Quest lifecycle and its durable receipts.</summary>
-internal sealed class GuildInboundHost(GuildLocalHostPolicy policy, GuildQuestStore quests,
+internal sealed partial class GuildInboundHost(GuildLocalHostPolicy policy, GuildQuestStore quests,
     ConclaveArchmage coordinator)
 {
     internal async Task<Result<T>> AdmitDisclosureAsync<T>(GuildInboundPeer peer, string taskId,

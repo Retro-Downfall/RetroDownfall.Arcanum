@@ -140,13 +140,15 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), continuation))
         {
-            var messageReceipt = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(answer,
+            object? unsupported = await context.InvokeBoundAsync(answer,
                 new() { ["questId"] = child.Id.ToString("D"), ["kind"] = "message", ["contentType"] = "text/plain",
-                    ["body"] = "Informational progress, not a continuation" }, default));
+                    ["body"] = "Informational progress for a peer without the Portal capability" }, default);
 
-            Assert.True(messageReceipt.Projection!.Value.TryGetProperty("messageId", out _));
+            Assert.Contains(Core.Primitives.ErrorCodes.Guild.RemoteMessagingUnavailable, Assert.IsType<string>(unsupported));
 
             Assert.Equal(QuestState.InputRequired, (await f.Store.GetAsync(owner, child.Id, default)).Value.Quest.State);
+
+            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_inbox"));
 
             Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations"));
 

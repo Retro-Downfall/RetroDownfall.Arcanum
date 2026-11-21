@@ -15,9 +15,10 @@ public sealed record GuildProducerIdentity(
     string? OperatorPrincipalId,
     Guid? DomainOwnerId,
     GuildReceiptSourceKind? SourceKind,
-    Guid? ReceiptId)
+    Guid? ReceiptId,
+    GuildPortalPeerProducer? Peer = null)
 {
-    public GuildProducerKind Kind { get; } = Validate(Kind, AgentId, RunId, QuestId, OperatorPrincipalId, DomainOwnerId, SourceKind, ReceiptId);
+    public GuildProducerKind Kind { get; } = Validate(Kind, AgentId, RunId, QuestId, OperatorPrincipalId, DomainOwnerId, SourceKind, ReceiptId, Peer);
 
     public Guid? AgentId { get; } = AgentId;
 
@@ -33,12 +34,15 @@ public sealed record GuildProducerIdentity(
 
     public Guid? ReceiptId { get; } = ReceiptId;
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GuildPortalPeerProducer? Peer { get; } = Peer;
+
     public GuildProducerStreamKey StreamKey(Guid questId)
     {
         if (questId == Guid.Empty || (Kind == GuildProducerKind.Run && QuestId != questId))
             throw new ArgumentException("The producer stream requires its exact Quest.", nameof(questId));
 
-        return new(Kind, AgentId, RunId, OperatorPrincipalId, DomainOwnerId, SourceKind, questId);
+        return new(Kind, AgentId, RunId, OperatorPrincipalId, DomainOwnerId, SourceKind, questId, Peer);
     }
 
     public GuildPublishDedupeKey DedupeKey(Guid questId, Guid producerRequestId)
@@ -49,7 +53,8 @@ public sealed record GuildProducerIdentity(
         return new(StreamKey(questId), producerRequestId);
     }
 
-    private static GuildProducerKind Validate(GuildProducerKind kind, Guid? agentId, Guid? runId, Guid? questId, string? operatorPrincipalId, Guid? domainOwnerId, GuildReceiptSourceKind? sourceKind, Guid? receiptId)
+    private static GuildProducerKind Validate(GuildProducerKind kind, Guid? agentId, Guid? runId, Guid? questId,
+        string? operatorPrincipalId, Guid? domainOwnerId, GuildReceiptSourceKind? sourceKind, Guid? receiptId, GuildPortalPeerProducer? peer)
     {
         bool runFields = agentId is { } agent && agent != Guid.Empty && runId is { } run && run != Guid.Empty && questId is { } quest && quest != Guid.Empty;
 
@@ -59,9 +64,13 @@ public sealed record GuildProducerIdentity(
 
         bool valid = kind switch
         {
-            GuildProducerKind.Run => runFields && operatorPrincipalId is null && noReceiptFields,
-            GuildProducerKind.Operator => noRunFields && !string.IsNullOrWhiteSpace(operatorPrincipalId) && noReceiptFields,
-            GuildProducerKind.HostReceipt => noRunFields && operatorPrincipalId is null && domainOwnerId is { } owner && owner != Guid.Empty && sourceKind is { } source && Enum.IsDefined(source) && receiptId is { } receipt && receipt != Guid.Empty,
+            GuildProducerKind.Run => runFields && operatorPrincipalId is null && noReceiptFields && peer is null,
+            GuildProducerKind.Operator => noRunFields && !string.IsNullOrWhiteSpace(operatorPrincipalId) && noReceiptFields && peer is null,
+            GuildProducerKind.HostReceipt => noRunFields && operatorPrincipalId is null && domainOwnerId is { } owner && owner != Guid.Empty
+                && sourceKind is { } source && Enum.IsDefined(source) && receiptId is { } receipt && receipt != Guid.Empty && peer is null,
+            GuildProducerKind.A2APeer => noRunFields && operatorPrincipalId is null && noReceiptFields
+                && peer is { PeerId.Length: > 0 and <= 256 } && !string.IsNullOrWhiteSpace(peer.PeerId)
+                && GuildPortalMessageProtocol.ValidDigest(peer.GrantRevision) && peer.AuthorityEpoch != Guid.Empty && peer.StreamId != Guid.Empty,
             _ => false
         };
 
@@ -73,7 +82,12 @@ public sealed record GuildProducerIdentity(
 }
 
 /// <summary>HostReceipt stream ordering is shared by owner/source across individual receipts.</summary>
-public sealed record GuildProducerStreamKey(GuildProducerKind Kind, Guid? AgentId, Guid? RunId, string? OperatorPrincipalId, Guid? DomainOwnerId, GuildReceiptSourceKind? SourceKind, Guid QuestId);
+public sealed record GuildProducerStreamKey(GuildProducerKind Kind, Guid? AgentId, Guid? RunId, string? OperatorPrincipalId,
+    Guid? DomainOwnerId, GuildReceiptSourceKind? SourceKind, Guid QuestId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuildPortalPeerProducer? Peer = null);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record GuildPortalPeerProducer(string PeerId, string GrantRevision, Guid AuthorityEpoch, Guid StreamId);
 
 /// <summary>The immutable domain receipt remains part of HostReceipt deduplication.</summary>
 public sealed record GuildPublishDedupeKey(GuildProducerStreamKey Stream, Guid ProducerRequestId);

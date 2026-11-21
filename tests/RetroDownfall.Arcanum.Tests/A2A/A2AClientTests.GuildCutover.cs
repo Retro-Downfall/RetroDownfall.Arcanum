@@ -151,6 +151,10 @@ public sealed partial class A2AClientTests
 
     private sealed class GuildSendingLifecycle : IA2AGuildSendingLifecycle
     {
+        internal Action<A2AClientService.GuildPortalPeer?>? PortalPeerObserver { get; init; }
+
+        public void SetPortalPeer(A2AClientService.GuildPortalPeer? peer) => PortalPeerObserver?.Invoke(peer);
+
         internal bool RefusePreflight { get; init; }
 
         internal bool RefuseSend { get; init; }

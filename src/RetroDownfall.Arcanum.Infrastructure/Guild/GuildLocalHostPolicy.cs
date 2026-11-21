@@ -38,6 +38,17 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         && RetroDownfall.Arcanum.Infrastructure.A2A.A2AClientService.IsConfiguredGuildDestination(destination,
             settings.CurrentValue.ResolveA2A().AllowedRemoteAgents);
 
+    internal bool IsConfiguredPortalDestination(string destination)
+    {
+        ArcanumSettings current = settings.CurrentValue;
+
+        ConclaveA2ASettings a2a = current.ResolveA2A();
+
+        return current.Features.Guild && a2a.ClientEnabled
+            && RetroDownfall.Arcanum.Infrastructure.A2A.A2AClientService.IsConfiguredGuildDestination(destination, a2a.AllowedRemoteAgents)
+            && RetroDownfall.Arcanum.Infrastructure.A2A.A2AClientService.HasPortalCredential(current);
+    }
+
     public Guid InstallationGeneration => Volatile.Read(ref _identity)?.Generation ?? Guid.Empty;
 
     public Guid OperatorPrincipalId => Volatile.Read(ref _identity)?.Principal ?? Guid.Empty;

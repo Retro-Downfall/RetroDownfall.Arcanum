@@ -164,6 +164,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.GuildCanonical, 16),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 17),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 18),
+                        (GrimoireSchemaTransactionTier.GuildCanonical, 19),
                     ]);
             });
 
@@ -987,6 +988,18 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "guild_cohort_members_cohort_settlement_delete",
                 "idx_guild_spend_refreshes_effect",
                 "idx_guild_spend_refreshes_effect_norm",
+                "defer_foreign_keys",
+                "stage_guild_portal_streams",
+                "drop_guild_portal_streams",
+                "guild_portal_streams",
+                "restore_guild_portal_streams",
+                "drop_guild_portal_streams_v19",
+                "guild_portal_streams_guard_update",
+                "guild_inbound_portal_messages",
+                "TR_guild_inbound_portal_messages_Immutable",
+                "guild_remote_portal_deliveries",
+                "idx_guild_remote_portal_deliveries_recipient",
+                "TR_guild_remote_portal_deliveries_Transition",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }

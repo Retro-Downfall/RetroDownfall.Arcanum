@@ -34,11 +34,11 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
             if (live.IsFailure) return live.Error;
         }
 
-        Result<AgentCard> discovery;
+        Result<A2AGuildCardObservation> discovery;
 
         try
         {
-            discovery = await client.DiscoverGuildCardAsync(destination, ct, caller.Kind == GuildCallerKind.Run
+            discovery = await client.DiscoverGuildTransportAsync(destination, ct, caller.Kind == GuildCallerKind.Run
                 ? new RunDiscoveryAdmission(this, caller, destination, toolAdmission)
                 : new OperatorDiscoveryAdmission(this, caller, destination)).ConfigureAwait(false);
         }
@@ -59,14 +59,15 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
         // Installation-controlled discovery identity remains stable when a peer edits its Card prose.
         string peerId = "outbound:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(endpoint)));
 
-        AgentCard card = discovery.Value;
+        AgentCard card = discovery.Value.Card;
 
         AgentInterface first = card.SupportedInterfaces![0];
 
         GuildRemoteTransportDescriptor transport = new(peerId, first.Url, first.ProtocolVersion,
             [.. card.SupportedInterfaces.Select(item => item.ProtocolBinding)], [],
             string.IsNullOrWhiteSpace(configured.OutboundCredentialEnvironmentVariable) ? null : configured.OutboundCredentialEnvironmentVariable.Trim(),
-            null, null, [.. card.SupportedInterfaces.Select(item => new GuildRemoteInterfaceDescriptor(item.Url, item.ProtocolBinding, item.ProtocolVersion))]);
+            null, null, [.. card.SupportedInterfaces.Select(item => new GuildRemoteInterfaceDescriptor(item.Url, item.ProtocolBinding, item.ProtocolVersion))],
+            discovery.Value.PortalMessagesV1);
 
         GuildConfiguredRemoteSource source = new(endpoint, transport);
 

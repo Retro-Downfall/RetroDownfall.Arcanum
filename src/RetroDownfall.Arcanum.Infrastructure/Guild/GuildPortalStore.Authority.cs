@@ -120,6 +120,21 @@ internal sealed partial class GuildPortalStore
             || envelope.Producer.Kind == GuildProducerKind.Run && (envelope.Producer.AgentId != source.Value.Quest.AgentId
                 || envelope.Producer.RunId != source.Value.Quest.RunId || envelope.Producer.QuestId != source.Value.Quest.Id)) return Unavailable;
 
+        bool inbound = envelope.Producer.Kind == GuildProducerKind.A2APeer;
+
+        if (inbound)
+        {
+            if (policy is not GuildLocalHostPolicy host || envelope.Producer.Peer is not { } peer
+                || envelope.QuestId != envelope.RootQuestId || envelope.Authority != GuildAuthorityKind.Parent
+                || envelope.Kind != GuildEnvelopeKind.Progress
+                || envelope.Address != new GuildCircleAddress(GuildCircleAddressKind.Child, envelope.QuestId, null, null)) return Forbidden;
+
+            Result livePeer = await host.RequireInboundPortalPeerWithinAsync(connection, transaction, envelope.QuestId, peer, ct)
+                .ConfigureAwait(false);
+
+            if (livePeer.IsFailure) return livePeer.Error;
+        }
+
         if (caller.Kind == GuildCallerKind.Operator)
             return await quests.RequireVisibleAsync(connection, transaction, caller, source.Value, ct).ConfigureAwait(false);
 
@@ -140,7 +155,9 @@ internal sealed partial class GuildPortalStore
 
         if (recipientVisible.IsFailure) return recipientVisible;
 
-        bool relation = envelope.Producer.Kind == GuildProducerKind.Operator
+        bool relation = inbound
+            ? envelope.QuestId == recipient.Value.Quest.Id
+            : envelope.Producer.Kind == GuildProducerKind.Operator
             ? envelope.Address.Kind == GuildCircleAddressKind.Cohort
                 ? await HasCurrentCohortAudienceWithinAsync(connection, transaction, envelope, recipient.Value.Quest.Id, ct).ConfigureAwait(false)
                 : envelope.QuestId == recipient.Value.Quest.Id && envelope.Address.Kind == GuildCircleAddressKind.Child

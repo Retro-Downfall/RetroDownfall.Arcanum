@@ -221,6 +221,30 @@ internal sealed partial class GuildLocalHostPolicy
             ? Result.Success() : Forbidden;
     }
 
+    internal async Task<Result> RequireInboundPortalPeerWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid questId, GuildPortalPeerProducer peer, CancellationToken ct)
+    {
+        Result live = await RequireInboundRootWithinAsync(connection, transaction, questId, peer.PeerId, peer.GrantRevision, ct)
+            .ConfigureAwait(false);
+
+        if (live.IsFailure) return live.Error;
+
+        await using SqliteCommand binding = Command(connection, transaction, """
+            SELECT 1 FROM guild_inbound_tasks
+            WHERE QuestId=$quest AND PeerId=$peer AND GrantRevision=$revision AND AuthorityEpoch=$epoch
+            """);
+
+        Add(binding, "$quest", Id(questId));
+
+        Add(binding, "$peer", peer.PeerId);
+
+        Add(binding, "$revision", peer.GrantRevision);
+
+        Add(binding, "$epoch", Id(peer.AuthorityEpoch));
+
+        return await binding.ExecuteScalarAsync(ct).ConfigureAwait(false) is not null ? Result.Success() : Forbidden;
+    }
+
     private async Task<Result<bool>> ExecuteInboundRootAsync(Guid root,
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result<bool>>> action, CancellationToken ct)
     {

@@ -161,6 +161,9 @@ public enum GuildProducerKind
 
     [JsonStringEnumMemberName("hostReceipt")]
     HostReceipt = 2,
+
+    [JsonStringEnumMemberName("a2aPeer")]
+    A2APeer = 3,
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildReceiptSourceKind>))]

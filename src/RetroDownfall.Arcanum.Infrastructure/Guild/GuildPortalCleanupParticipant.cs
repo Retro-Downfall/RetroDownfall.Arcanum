@@ -224,7 +224,8 @@ internal static class GuildPortalWithholding
 
     internal static async Task<Result> WithholdWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         string prefix, string predicate, Guid identity, string reason, DateTimeOffset now, CancellationToken cancellationToken,
-        int maximumBatches = int.MaxValue, int batchSize = 100, string? recipientKey = null, bool updateResultOutbox = true)
+        int maximumBatches = int.MaxValue, int batchSize = 100, string? recipientKey = null, bool updateResultOutbox = true,
+        bool authorizedRemoteDisposition = false)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumBatches, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
@@ -241,11 +242,15 @@ internal static class GuildPortalWithholding
                 read.Transaction = transaction;
 
                 read.CommandText = prefix + "SELECT i.Id,i.Revision,e.IntentDigest,e.Id,e.RootQuestId,e.QuestId,i.RecipientQuestId,e.KindCode FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId"
-                    + $" WHERE i.DeliveryStateCode=1 AND ({predicate}) ORDER BY i.Id LIMIT $batchSize";
+                    + $" WHERE i.DeliveryStateCode=1 AND ({predicate})"
+                    + " AND ($remoteDisposition=1 OR NOT EXISTS(SELECT 1 FROM guild_remote_portal_deliveries d WHERE d.InboxId=i.Id AND d.TransportStateCode IN(1,2)))"
+                    + " ORDER BY i.Id LIMIT $batchSize";
 
                 read.Parameters.AddWithValue("$identity", Id(identity));
                 read.Parameters.AddWithValue("$batchSize", batchSize);
                 read.Parameters.AddWithValue("$recipientKey", (object?)recipientKey ?? DBNull.Value);
+
+                read.Parameters.AddWithValue("$remoteDisposition", authorizedRemoteDisposition ? 1 : 0);
 
                 await using SqliteDataReader reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 

@@ -30,6 +30,10 @@ internal interface IA2AGuildSendingLifecycle
     Task<Result> CallbackAsync(string configId, string tokenHash, CancellationToken ct);
 
     Task<Result> ObservedAsync(A2AGuildTaskObservation observation, CancellationToken ct);
+
+    void SetPortalPeer(A2AClientService.GuildPortalPeer? peer) { }
+
+    Task DrainConnectedPortalAsync(CancellationToken ct) => Task.CompletedTask;
 }
 
 public sealed partial class A2AClientService
@@ -53,18 +57,20 @@ public sealed partial class A2AClientService
 
         if (admitted.IsFailure) return admitted.Error;
 
-        return await RunGuardedAsync(request.AgentUrl, request.DelegationChain, ct,
-            (client, card, url, chain, slot, token) =>
+        bool portalMessages = false;
+
+        return await RunGuardedAsync<A2ADispatchResult>(request.AgentUrl, request.DelegationChain, ct,
+            async (client, card, url, chain, slot, token) =>
             {
                 guarded.Card = card;
 
                 Result target = ValidateGuildTarget(card, request.Transport);
 
-                if (target.IsFailure) return Task.FromResult(Result<A2ADispatchResult>.Failure(target.Error));
+                if (target.IsFailure) return target.Error;
 
                 Result<A2AOutboundModality> modality = NegotiateAsync(card, request.Options);
 
-                if (modality.IsFailure) return Task.FromResult(Result<A2ADispatchResult>.Failure(modality.Error));
+                if (modality.IsFailure) return modality.Error;
 
                 Message message = new()
                 {
@@ -77,9 +83,27 @@ public sealed partial class A2AClientService
 
                 ConclaveDelegationChain.Write(message, ConclaveDelegationChain.Extend(chain));
 
-                return ExchangeAsync(client, card, message, url, null, request.Mode, modality.Value,
-                    null, slot, token, guarded, guildExecution: true);
-            }, new GuildDiscoveryAdmission(guarded, false), guildDiscovery: true).ConfigureAwait(false);
+                using GuildPortalPeer? portalPeer = CreateGuildPortalPeer(request.AgentUrl, request.Transport, card, portalMessages, receiptOnly: false);
+
+                lifecycle.SetPortalPeer(portalPeer);
+
+                try
+                {
+                    if (portalPeer is not null)
+                    {
+                        await lifecycle.DrainConnectedPortalAsync(token).ConfigureAwait(false);
+                    }
+
+                    return await ExchangeAsync(client, card, message, url, null, request.Mode, modality.Value,
+                        null, slot, token, guarded, guildExecution: true).ConfigureAwait(false);
+                }
+                finally
+                {
+                    lifecycle.SetPortalPeer(null);
+                }
+            }, new GuildDiscoveryAdmission(guarded, false), guildDiscovery: true,
+                observePortalCapability: qualified => portalMessages = qualified,
+                freshCard: request.Transport?.PortalMessagesV1 == true).ConfigureAwait(false);
     }
 
     internal async Task<Result<A2ADispatchResult>> ObserveGuildTaskAsync(string agentUrl, string taskId,
@@ -95,7 +119,9 @@ public sealed partial class A2AClientService
 
         if (admitted.IsFailure) return admitted.Error;
 
-        return await RunGuardedAsync(agentUrl, null, ct, async (client, card, _, _, _, token) =>
+        bool portalMessages = false;
+
+        return await RunGuardedAsync<A2ADispatchResult>(agentUrl, null, ct, async (client, card, _, _, _, token) =>
         {
             guarded.Card = card;
 
@@ -103,8 +129,17 @@ public sealed partial class A2AClientService
 
             if (target.IsFailure) return target.Error;
 
+            using GuildPortalPeer? portalPeer = CreateGuildPortalPeer(agentUrl, transport, card, portalMessages, receiptOnly: cancellationRequested);
+
+            lifecycle.SetPortalPeer(portalPeer);
+
             try
             {
+                if (portalPeer is not null)
+                {
+                    await lifecycle.DrainConnectedPortalAsync(token).ConfigureAwait(false);
+                }
+
                 if (cancellationRequested)
                 {
                     try
@@ -142,7 +177,13 @@ public sealed partial class A2AClientService
             {
                 return new Error(ErrorCodes.Sending.AgentUnreachable, "The bound remote task could not be observed.");
             }
-        }, new GuildDiscoveryAdmission(guarded, true), guildDiscovery: true, existingGuildTask: true).ConfigureAwait(false);
+            finally
+            {
+                lifecycle.SetPortalPeer(null);
+            }
+        }, new GuildDiscoveryAdmission(guarded, true), guildDiscovery: true, existingGuildTask: true,
+            observePortalCapability: qualified => portalMessages = qualified,
+            freshCard: transport.PortalMessagesV1).ConfigureAwait(false);
     }
 
     private Result ValidateCurrentGuildDestination(string discovery, AgentCard? card, bool required, bool existingTask)

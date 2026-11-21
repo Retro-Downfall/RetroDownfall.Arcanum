@@ -44,6 +44,7 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.GrantExceeded
                 or ErrorCodes.Guild.PriceUnavailable
                 or ErrorCodes.Guild.BudgetCapabilityUnavailable
+                or ErrorCodes.Guild.RemoteMessagingUnavailable
                 or ErrorCodes.Guild.DelegationCycle
                 or ErrorCodes.Guild.LegacyRunUnavailable
                 or ErrorCodes.Guild.UnsupportedTransportState

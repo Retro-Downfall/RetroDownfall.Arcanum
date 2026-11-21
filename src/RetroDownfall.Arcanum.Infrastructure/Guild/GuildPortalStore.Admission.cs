@@ -306,6 +306,14 @@ internal sealed partial class GuildPortalStore
         Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, source.Quest.RootQuestId,
             questId, GuildEventKind.MessageCommitted, id, 1, id, now, ct, GuildPortalEventSource.Envelope).ConfigureAwait(false);
 
+        if (projected.IsSuccess && (caller.Kind, request.Kind) is (GuildCallerKind.Run, GuildEnvelopeKind.Progress)
+            or (GuildCallerKind.Operator, GuildEnvelopeKind.Intervention))
+        {
+            Result remote = await PrepareRemoteRecipientsWithinAsync(connection, transaction, envelope, now, ct).ConfigureAwait(false);
+
+            if (remote.IsFailure) return remote.Error;
+        }
+
         return projected.IsFailure ? projected.Error : new GuildMessageReceipt(questId, id, 1, GuildDeliveryState.Pending,
             projected.Value, new(id, request.IdempotencyKey, false, now, 1));
     }

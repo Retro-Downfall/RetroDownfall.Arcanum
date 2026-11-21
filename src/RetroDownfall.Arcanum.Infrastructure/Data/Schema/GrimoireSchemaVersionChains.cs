@@ -159,7 +159,7 @@ internal static class GrimoireSchemaVersionChains
     /// </remarks>
     internal const int CoreSchemaVersion = 40;
 
-    internal const int GuildCanonicalSchemaVersion = 18;
+    internal const int GuildCanonicalSchemaVersion = 19;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -203,6 +203,7 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.GuildCanonical, 15)] = "2BAEFEDC2AB7E091CAAE2A4C0C6279B476A4272AC7C4D69E700E7A2109D73C75",
             [(GrimoireSchemaTransactionTier.GuildCanonical, 17)] = "CCD0B587F7913F2F0652E88EFDAC17128F556C6CB6ADA704E24CE0BEE9E10944",
             [(GrimoireSchemaTransactionTier.GuildCanonical, 18)] = "A94F9C12CDF3F72EAD2FC41AF203450F80CB7D291CDCB9B27E2ACDEA5E498A79",
+            [(GrimoireSchemaTransactionTier.GuildCanonical, 19)] = "7486A11B079D6EED6AFA60FA991DA831CD356EBACC015692260AA519FE91AE4D",
             [(GrimoireSchemaTransactionTier.GuildCanonical, 16)] = "5C1884F4BC7445F8F389C6AC71809AF87F13855442F35B683A37099687D3519C",
 
             // Published V12 source identity, frozen before distribution and ledger objects.

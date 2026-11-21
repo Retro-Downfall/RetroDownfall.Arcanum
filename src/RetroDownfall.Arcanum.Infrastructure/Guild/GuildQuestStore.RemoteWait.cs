@@ -24,7 +24,7 @@ internal sealed partial class GuildQuestStore
                 return await ReadRemoteTaskIdentityWithinAsync(connection, transaction, driver.Execution.QuestId, token).ConfigureAwait(false);
             }, ct);
 
-    private static async Task<Result<GuildRemoteTaskIdentity>> ReadRemoteTaskIdentityWithinAsync(SqliteConnection connection,
+    internal static async Task<Result<GuildRemoteTaskIdentity>> ReadRemoteTaskIdentityWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, Guid questId, CancellationToken token)
     {
         await using SqliteCommand query = Command(connection, transaction, """

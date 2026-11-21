@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Serialization;
 
@@ -322,6 +323,23 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(GuildMessageKind[]))]
 [JsonSerializable(typeof(ImmutableArray<GuildMessageKind>))]
 [JsonSerializable(typeof(GuildMessageReceipt))]
+[JsonSerializable(typeof(GuildPortalMessageRequest))]
+[JsonSerializable(typeof(GuildPortalTransportEvidence))]
+[JsonSerializable(typeof(GuildPortalDeliveryEvidence))]
+[JsonSerializable(typeof(GuildPortalDeliveryEvidence[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildPortalDeliveryEvidence>))]
+[JsonSerializable(typeof(GuildPortalMessageRequest[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildPortalMessageRequest>))]
+[JsonSerializable(typeof(GuildPortalMessageReceiptQuery))]
+[JsonSerializable(typeof(GuildPortalMessageReceiptQuery[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildPortalMessageReceiptQuery>))]
+[JsonSerializable(typeof(GuildPortalMessageDeliveryReceipt))]
+[JsonSerializable(typeof(GuildPortalMessageDeliveryReceipt[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildPortalMessageDeliveryReceipt>))]
+[JsonSerializable(typeof(GuildPortalPeerProducer))]
+[JsonSerializable(typeof(GuildPortalPeerProducer[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildPortalPeerProducer>))]
+[JsonSerializable(typeof(ApiResponse<GuildPortalMessageDeliveryReceipt>))]
 [JsonSerializable(typeof(GuildMessageReceipt[]))]
 [JsonSerializable(typeof(ImmutableArray<GuildMessageReceipt>))]
 [JsonSerializable(typeof(GuildMutationIdentity))]

@@ -1052,6 +1052,13 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         Guid questId = pending.Quest.Quest.Id;
 
+        if (pending.Quest.Quest.ResultReceiptId is not null)
+        {
+            _ = await services.GetRequiredService<GuildRemotePort>().ReconcileTerminalPortalAsync(caller, questId, ct).ConfigureAwait(false);
+
+            return;
+        }
+
         if (pending.IsRemote && !pending.Quest.Quest.CancellationRequested)
         {
             var denied = await store.RequiresRemoteCancellationAsync(caller, questId, ct).ConfigureAwait(false);
@@ -1226,7 +1233,11 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
                 LEFT JOIN guild_local_executions binding ON binding.QuestId=quest.Id
             LEFT JOIN guild_remote_executions remote ON remote.QuestId=quest.Id
             WHERE (binding.QuestId IS NOT NULL OR remote.QuestId IS NOT NULL)
-                AND NOT EXISTS(SELECT 1 FROM guild_result_receipts receipt WHERE receipt.QuestId=quest.Id)
+                AND (NOT EXISTS(SELECT 1 FROM guild_result_receipts receipt WHERE receipt.QuestId=quest.Id)
+                    OR remote.QuestId IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM guild_remote_portal_deliveries delivery JOIN guild_inbox item ON item.Id=delivery.InboxId
+                        WHERE delivery.RecipientQuestId=quest.Id AND delivery.TransportStateCode IN (1,2)
+                            AND item.DeliveryStateCode=1))
                 AND quest.Retired=0 AND quest.Id>$after
             ORDER BY quest.Id LIMIT 100
             """;

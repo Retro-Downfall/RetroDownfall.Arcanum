@@ -18,7 +18,9 @@ public sealed class GuildRefreshNormalizedIndexTests
 
         await using var fresh = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", default);
 
-        Assert.True((await GrimoireSchemaTestInstaller.InstallAsync(fresh, 768, default)).GuildCanonical.IsHealthy);
+        GrimoireSchemaInstallResult freshInstalled = await GrimoireSchemaTestInstaller.InstallAsync(fresh, 768, default);
+
+        Assert.True(freshInstalled.GuildCanonical.IsHealthy);
 
         await using var first = upgraded.CreateCommand();
 
@@ -28,7 +30,7 @@ public sealed class GuildRefreshNormalizedIndexTests
 
         Assert.Equal(await first.ExecuteScalarAsync(), await second.ExecuteScalarAsync());
 
-        Assert.Equal(18, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion, freshInstalled.GuildCanonical.SchemaVersion);
     }
 
     [Fact]
@@ -76,7 +78,7 @@ public sealed class GuildRefreshNormalizedIndexTests
     {
         const string previous = "A94F9C12CDF3F72EAD2FC41AF203450F80CB7D291CDCB9B27E2ACDEA5E498A79";
 
-        IReadOnlyList<GrimoireSchemaObject> objects = [.. GrimoireSchemaCatalog.GuildCanonicalObjects
+        IReadOnlyList<GrimoireSchemaObject> objects = [.. GuildPortalSchemaTests.VersionEighteenObjects()
             .Where(item => item.Name != "idx_guild_spend_refreshes_effect_norm")];
 
         Assert.Equal(previous, GrimoireSchemaCatalog.ComputeSourceFingerprint(objects));

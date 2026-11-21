@@ -127,6 +127,9 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_informational_tool_reaches_the_authenticated_waiting_peer_once \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Lost_remote_portal_acknowledgement_survives_driver_replacement_without_resending_the_body \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_cohort_information_preserves_local_application_and_remote_withholding \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_mutates_only_its_Quest_workspace_and_commits_the_patch_receipt \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Quest_lease_tools_manage_the_same_Quest_owned_epoch_and_refuse_a_sibling_path \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_reads_lists_and_searches_only_its_physical_workspace_with_financial_controls_off \

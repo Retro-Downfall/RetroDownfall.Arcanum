@@ -170,6 +170,27 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildMessageReceipt(), GuildJsonContext.Default.GuildMessageReceipt);
 
+        GuildPortalMessageRequest peerMessage = new("task", "context", Id, Id, 1, "text/plain", "bounded peer message", "");
+
+        peerMessage = peerMessage with { IntentDigest = GuildPortalMessageProtocol.ComputeIntentDigest(peerMessage).Value };
+
+        Exercise(peerMessage, GuildJsonContext.Default.GuildPortalMessageRequest);
+
+        Exercise(peerMessage.ReceiptQuery(), GuildJsonContext.Default.GuildPortalMessageReceiptQuery);
+
+        Exercise(new GuildPortalMessageDeliveryReceipt(peerMessage.TaskId, peerMessage.ContextId, peerMessage.MessageId,
+            peerMessage.IntentDigest, Id, GuildDeliveryState.Pending, 1, null), GuildJsonContext.Default.GuildPortalMessageDeliveryReceipt);
+
+        GuildPortalPeerProducer peerProducer = new("peer", peerMessage.IntentDigest, Id, Id);
+
+        Exercise(peerProducer, GuildJsonContext.Default.GuildPortalPeerProducer);
+
+        Exercise(new GuildPortalDeliveryEvidence(Id, Id, Id, GuildDeliveryState.Pending,
+            GuildPortalTransportEvidence.PeerAccepted, Id), GuildJsonContext.Default.GuildPortalDeliveryEvidence);
+
+        RoundTrip(new GuildProducerIdentity(GuildProducerKind.A2APeer, null, null, null, null, null, null, null, peerProducer),
+            GuildJsonContext.Default.GuildProducerIdentity);
+
         Exercise(SampleGuildMutationIdentity(), GuildJsonContext.Default.GuildMutationIdentity);
 
         Exercise(SampleGuildMutationPlan(), GuildJsonContext.Default.GuildMutationPlan);

@@ -272,14 +272,16 @@ public sealed partial class A2AClientService : IA2AClientService
     /// Shared preflight for every outbound call: feature gate, allowlist, SSRF guard, Agent Card
     /// resolution and interface validation, credential scoping, and the concurrency admission gate.
     /// </summary>
-    private async Task<Result<A2ADispatchResult>> RunGuardedAsync(
+    private async Task<Result<T>> RunGuardedAsync<T>(
         string agentUrl,
         IReadOnlyList<string>? delegationChain,
         CancellationToken cancellationToken,
-        Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, ConcurrencySlot, CancellationToken, Task<Result<A2ADispatchResult>>> operation,
+        Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, ConcurrencySlot, CancellationToken, Task<Result<T>>> operation,
         IA2AGuildDiscoveryAdmission? discoveryAdmission = null,
         bool guildDiscovery = false,
-        bool existingGuildTask = false)
+        bool existingGuildTask = false,
+        Action<bool>? observePortalCapability = null,
+        bool freshCard = false)
     {
         ArcanumSettings settings = _options.CurrentValue;
 
@@ -287,13 +289,13 @@ public sealed partial class A2AClientService : IA2AClientService
 
         if (!existingGuildTask && (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ClientEnabled))
         {
-            return Result<A2ADispatchResult>.Failure(
+            return Result<T>.Failure(
                 new Error(ErrorCodes.Sending.Disabled, "A2A is disabled; outbound Sending dispatch is not available."));
         }
 
         if (string.IsNullOrWhiteSpace(agentUrl) || !Uri.TryCreate(agentUrl.Trim(), UriKind.Absolute, out _))
         {
-            return Result<A2ADispatchResult>.Failure(
+            return Result<T>.Failure(
                 new Error(ErrorCodes.Sending.AgentCardInvalid, "A non-empty absolute agent_url is required to dispatch a Sending."));
         }
 
@@ -303,7 +305,7 @@ public sealed partial class A2AClientService : IA2AClientService
 
         if (allowlist.Length > 0 && !IsAllowedAgent(trimmedUrl, allowlist))
         {
-            return Result<A2ADispatchResult>.Failure(
+            return Result<T>.Failure(
                 new Error(ErrorCodes.Sending.AgentNotAllowed, $"Remote agent '{trimmedUrl}' is not in the configured AllowedRemoteAgents allowlist."));
         }
 
@@ -324,7 +326,7 @@ public sealed partial class A2AClientService : IA2AClientService
             if (guildDiscovery && discoveryUrlCheck.Error.Code == ErrorCodes.Sending.AgentNotAllowed)
                 return discoveryUrlCheck.Error;
 
-            return Result<A2ADispatchResult>.Failure(
+            return Result<T>.Failure(
                 new Error(ErrorCodes.Sending.AgentUnreachable, $"Remote agent URL rejected by outbound URL policy: {discoveryUrlCheck.Error.Message}"));
         }
 
@@ -347,7 +349,7 @@ public sealed partial class A2AClientService : IA2AClientService
 
                 try
                 {
-                    peer = await ConnectAsync(trimmedUrl, allowlist, discovery.Token, guildDiscovery, discoveryAdmission).ConfigureAwait(false);
+                    peer = await ConnectAsync(trimmedUrl, allowlist, discovery.Token, guildDiscovery, discoveryAdmission, freshCard).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -356,7 +358,7 @@ public sealed partial class A2AClientService : IA2AClientService
                         trimmedUrl,
                         DiscoveryTimeout.TotalSeconds);
 
-                    return Result<A2ADispatchResult>.Failure(new Error(
+                    return Result<T>.Failure(new Error(
                         ErrorCodes.Sending.AgentUnreachable,
                         $"The remote agent did not finish discovery within {DiscoveryTimeout.TotalSeconds:0.###} s."));
                 }
@@ -364,8 +366,10 @@ public sealed partial class A2AClientService : IA2AClientService
 
             if (peer.IsFailure)
             {
-                return Result<A2ADispatchResult>.Failure(peer.Error);
+                return Result<T>.Failure(peer.Error);
             }
+
+            observePortalCapability?.Invoke(peer.Value.PortalMessagesV1);
 
             return await operation(
                     peer.Value.Client,
@@ -410,20 +414,25 @@ public sealed partial class A2AClientService : IA2AClientService
         }
     }
 
-    private sealed record ConnectedPeer(IA2AClient Client, AgentCard Card);
+    private sealed record ConnectedPeer(IA2AClient Client, AgentCard Card, bool PortalMessagesV1);
 
     private async Task<Result<ConnectedPeer>> ConnectAsync(
         string discoveryUrl,
         string[] allowlist,
         CancellationToken cancellationToken,
         bool guildDiscovery,
-        IA2AGuildDiscoveryAdmission? discoveryAdmission)
+        IA2AGuildDiscoveryAdmission? discoveryAdmission,
+        bool freshCard)
     {
+        ObservedCard observed;
+
         AgentCard card;
 
         try
         {
-            card = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken, guildDiscovery, discoveryAdmission).ConfigureAwait(false);
+            observed = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken, guildDiscovery, discoveryAdmission, freshCard).ConfigureAwait(false);
+
+            card = observed.Card;
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException or JsonException or FormatException)
         {
@@ -522,7 +531,7 @@ public sealed partial class A2AClientService : IA2AClientService
                 new Error(ErrorCodes.Sending.AgentCardInvalid, "The remote Agent Card advertises no protocol binding this client supports."));
         }
 
-        return Result<ConnectedPeer>.Success(new ConnectedPeer(client, card));
+        return Result<ConnectedPeer>.Success(new ConnectedPeer(client, card, observed.PortalMessagesV1));
     }
 
     private Task<Result<A2ADispatchResult>> DispatchInternalAsync(
@@ -1702,18 +1711,18 @@ public sealed partial class A2AClientService : IA2AClientService
     /// because Arcanum deliberately serves no unauthenticated <c>/.well-known/agent-card.json</c> — probing
     /// only the well-known path made one Arcanum unable to discover another at all (issue #12).
     /// </remarks>
-    private async Task<AgentCard> ResolveCardAsync(
+    private async Task<ObservedCard> ResolveCardAsync(
         string discoveryUrl,
         string[] allowlist,
         CancellationToken cancellationToken,
         bool guildDiscovery,
-        IA2AGuildDiscoveryAdmission? discoveryAdmission)
+        IA2AGuildDiscoveryAdmission? discoveryAdmission, bool freshCard)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        if (_cardCache.TryGetValue(discoveryUrl, out CachedCard? cached) && cached.ExpiresAt > now)
+        if (!freshCard && _cardCache.TryGetValue(discoveryUrl, out CachedCard? cached) && cached.ExpiresAt > now)
         {
-            return cached.Card;
+            return cached.Observation;
         }
 
         Uri uri = new(discoveryUrl);
@@ -1728,7 +1737,7 @@ public sealed partial class A2AClientService : IA2AClientService
 
         // Discovery URLs can come from multiple dispatch callers. Attach a credential only when the
         // allowlist vouches for the target. CreateOutboundClient owns that decision for every caller.
-        HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist, MaxAgentCardBytes);
+        using HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist, MaxAgentCardBytes, out bool credentialAttached);
 
         Exception? lastFailure = null;
 
@@ -1741,9 +1750,11 @@ public sealed partial class A2AClientService : IA2AClientService
                 AgentCard card = await FetchAgentCardAsync(httpClient, new Uri(origin + candidate), cancellationToken, guildDiscovery, discoveryAdmission)
                     .ConfigureAwait(false);
 
-                CacheCard(discoveryUrl, card, now);
+                ObservedCard observation = new(card, credentialAttached && HasPortalCapability(card, discoveryUrl));
 
-                return card;
+                CacheCard(discoveryUrl, observation, now);
+
+                return observation;
             }
             catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException or FormatException)
             {
@@ -1840,7 +1851,7 @@ public sealed partial class A2AClientService : IA2AClientService
     /// Stores a resolved card and sweeps expired entries. The cache is keyed on a model-supplied URL, so it
     /// is bounded rather than left to grow with every distinct string an Apprentice dispatches to.
     /// </summary>
-    private void CacheCard(string discoveryUrl, AgentCard card, DateTimeOffset now)
+    private void CacheCard(string discoveryUrl, ObservedCard observation, DateTimeOffset now)
     {
         if (_cardCache.Count >= MaxCachedCards)
         {
@@ -1866,7 +1877,7 @@ public sealed partial class A2AClientService : IA2AClientService
             }
         }
 
-        _cardCache[discoveryUrl] = new CachedCard(card, now.Add(CardCacheTtl));
+        _cardCache[discoveryUrl] = new CachedCard(observation, now.Add(CardCacheTtl));
     }
 
     /// <summary>
@@ -1891,8 +1902,14 @@ public sealed partial class A2AClientService : IA2AClientService
     /// production registration.
     /// </para>
     /// </remarks>
-    private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist, long maxResponseBytes)
+    private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist, long maxResponseBytes) =>
+        CreateOutboundClient(credentialTarget, allowlist, maxResponseBytes, out _);
+
+    private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist, long maxResponseBytes,
+        out bool credentialAttached)
     {
+        credentialAttached = false;
+
         HttpClient httpClient = _httpClientFactory.CreateClient(OutboundHttpClientName);
 
         httpClient.MaxResponseContentBufferSize = maxResponseBytes;
@@ -1934,7 +1951,7 @@ public sealed partial class A2AClientService : IA2AClientService
 
         httpClient.DefaultRequestHeaders.Remove(header);
 
-        httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header, credential);
+        credentialAttached = httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header, credential);
 
         return httpClient;
     }
@@ -2014,5 +2031,7 @@ public sealed partial class A2AClientService : IA2AClientService
         return "(The remote agent completed the Sending without a textual response.)";
     }
 
-    private sealed record CachedCard(AgentCard Card, DateTimeOffset ExpiresAt);
+    private sealed record ObservedCard(AgentCard Card, bool PortalMessagesV1);
+
+    private sealed record CachedCard(ObservedCard Observation, DateTimeOffset ExpiresAt);
 }

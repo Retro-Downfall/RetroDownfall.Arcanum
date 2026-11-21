@@ -13,6 +13,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Api.Streaming;
 
@@ -84,6 +85,8 @@ internal static class A2AServerEndpoints
 
         apiGroup.MapA2A(server, relative).WithMetadata(GrimoireStreamRouteMetadata.BillableDrain, new A2APeerRouteMetadata(false));
 
+        apiGroup.MapGuildPortalPeerEndpoints(relative.TrimEnd('/'));
+
         // The A2A SDK's own JsonSerializerOptions already carries a source-generated resolver for AgentCard
         // (A2AJsonUtilities); extracting a concrete JsonTypeInfo<AgentCard> from it keeps this endpoint fully
         // AOT/trim-safe instead of using the reflection-fallback-capable Results.Json(T, JsonSerializerOptions) overload.
@@ -134,6 +137,14 @@ internal static class A2AServerEndpoints
                 // Advertised only when the surface is genuinely enabled: a card that promises push
                 // notifications an operator never turned on is a peer waiting forever (issue #67).
                 PushNotifications = a2a.PushNotificationsEnabled,
+
+                Extensions = settings.Features.Guild && a2a.ServerEnabled && A2APeerAuthenticator.GetPeer(context) is not null
+                    ? [new AgentExtension
+                    {
+                        Uri = GuildPortalMessageProtocol.Capability,
+                        Description = "Informational messages and durable delivery receipts for an existing Guild task.",
+                    }]
+                    : null,
             },
             // Operator-declared when configured, otherwise the single historical skill and text/plain in
             // and out — so a default card stays byte-identical to the pre-#63 one and existing peers are

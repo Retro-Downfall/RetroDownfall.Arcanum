@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS idx_guild_remote_portal_deliveries_recipient
+ON guild_remote_portal_deliveries(RecipientQuestId,TransportStateCode,ObservationCount,InboxId);

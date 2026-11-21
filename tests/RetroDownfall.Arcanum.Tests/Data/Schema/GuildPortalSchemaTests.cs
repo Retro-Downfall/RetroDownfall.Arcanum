@@ -22,6 +22,94 @@ public sealed class GuildPortalSchemaTests
     private const string Timestamp = "2026-11-06T00:00:00.0000000Z";
 
     [Fact]
+    public async Task Version_eighteen_upgrade_preserves_live_Portal_stream_envelope_and_inbox_links()
+    {
+        const string published = "7486A11B079D6EED6AFA60FA991DA831CD356EBACC015692260AA519FE91AE4D";
+
+        IReadOnlyList<GrimoireSchemaObject> objects = VersionEighteenObjects();
+
+        Assert.Equal(published, GrimoireSchemaCatalog.ComputeSourceFingerprint(objects));
+
+        GrimoireSchemaVersionChainSet current = GrimoireSchemaVersionChains.Default;
+
+        GrimoireSchemaVersionChain guild = current.ForTier(GrimoireSchemaTransactionTier.GuildCanonical);
+
+        GrimoireSchemaVersionChainSet previous = new([
+            current.ForTier(GrimoireSchemaTransactionTier.Core),
+            current.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            current.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            new GrimoireSchemaVersionChain(GrimoireSchemaManifestBuilder.Build(GrimoireSchemaFamily.Guild,
+                GrimoireSchemaTransactionTier.GuildCanonical, 18, published, objects), objects,
+                [.. guild.Steps.Where(step => step.ToVersion <= 18)]),
+        ]);
+
+        await using SqliteConnection upgraded = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", default);
+
+        Assert.True((await GrimoireSchemaTestInstaller.InstallAsync(upgraded, previous, 768, default)).GuildCanonical.IsHealthy);
+
+        await SeedAsync(upgraded);
+
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(upgraded, 768, default);
+
+        Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
+
+        Assert.Equal(19, installed.GuildCanonical.SchemaVersion);
+
+        Assert.Equal(1L, await ScalarAsync(upgraded, $"""
+            SELECT count(*) FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId
+                JOIN guild_portal_streams s ON s.StreamId=e.StreamId
+            WHERE i.Id='{Inbox}' AND e.Id='{Envelope}' AND s.StreamId='{Stream}'
+              AND i.StreamId=s.StreamId AND i.SenderSequence=e.SenderSequence AND s.LastSequence=e.SenderSequence
+            """));
+
+        Assert.Equal(0L, await ScalarAsync(upgraded, "SELECT count(*) FROM pragma_foreign_key_check"));
+
+        await using SqliteConnection fresh = await OpenAsync();
+
+        const string fingerprint = "SELECT InstalledCatalogFingerprint FROM grimoire_feature_schemas WHERE FamilyCode=2";
+
+        Assert.Equal(await ScalarAsync(fresh, fingerprint), await ScalarAsync(upgraded, fingerprint));
+    }
+
+    internal static IReadOnlyList<GrimoireSchemaObject> VersionEighteenObjects() => [.. GrimoireSchemaCatalog.GuildCanonicalObjects
+        .Where(item => item.Name is not ("guild_inbound_portal_messages" or "TR_guild_inbound_portal_messages_Immutable"
+            or "guild_remote_portal_deliveries" or "idx_guild_remote_portal_deliveries_recipient" or "TR_guild_remote_portal_deliveries_Transition"))
+        .Select(item => item.Name == "guild_portal_streams"
+            ? item with { Sql = item.Sql.Replace("ProducerKindCode BETWEEN 0 AND 3", "ProducerKindCode BETWEEN 0 AND 2", StringComparison.Ordinal) }
+            : item)];
+
+    [Fact]
+    public async Task Remote_Portal_delivery_cannot_rewrite_a_possible_send_or_forge_an_application()
+    {
+        await using SqliteConnection connection = await OpenAsync();
+
+        await SeedAsync(connection);
+
+        await ExecuteAsync(connection, $"""
+            INSERT INTO guild_remote_portal_deliveries(InboxId,RecipientQuestId,EnvelopeId,TaskId,ContextId,TargetDigest,TransportStateCode)
+            VALUES('{Inbox}','{Quest}','{Envelope}','task','context',zeroblob(32),0);
+            UPDATE guild_remote_portal_deliveries SET TransportStateCode=1,WireIntentDigest=zeroblob(32);
+            """);
+
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection, """
+            UPDATE guild_remote_portal_deliveries SET TargetDigest=randomblob(32);
+            """));
+
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection, """
+            UPDATE guild_remote_portal_deliveries SET TransportStateCode=0,WireIntentDigest=NULL;
+            """));
+
+        await ExecuteAsync(connection, """
+            UPDATE guild_remote_portal_deliveries SET TransportStateCode=2,
+              PeerReceiptId='55555555-5555-5555-5555-555555555555',PeerRevision=1,PeerDeliveryStateCode=1;
+            """);
+
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection, """
+            UPDATE guild_remote_portal_deliveries SET PeerRevision=2,PeerDeliveryStateCode=2;
+            """));
+    }
+
+    [Fact]
     public async Task Published_v3_upgrades_to_v4_without_altering_Quest_evidence_Core_or_authority_epoch()
     {
         Assert.Equal(GuildCanonicalSchemaVersionThreeFixture.PublishedFingerprint, GuildCanonicalSchemaVersionThreeFixture.Fingerprint);
@@ -58,7 +146,7 @@ public sealed class GuildPortalSchemaTests
 
         Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
 
-        Assert.Equal(18, installed.GuildCanonical.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion, installed.GuildCanonical.SchemaVersion);
 
         await using SqliteConnection fresh = await OpenAsync();
 
@@ -144,7 +232,7 @@ public sealed class GuildPortalSchemaTests
     }
 
     [Theory]
-    [InlineData("guild_portal_streams", "ProducerKindCode", "3")]
+    [InlineData("guild_portal_streams", "ProducerKindCode", "4")]
     [InlineData("guild_portal_streams", "LastSequence", "-1")]
     [InlineData("guild_envelopes", "KindCode", "6")]
     [InlineData("guild_envelopes", "SenderSequence", "0")]

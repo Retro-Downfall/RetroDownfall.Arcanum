@@ -84,7 +84,7 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
                         AND typeof(e.ContentId)='text' AND length(CAST(e.ContentId AS BLOB))=36
                         AND typeof(e.SenderSequence)='integer' AND e.SenderSequence>=1
                         AND typeof(e.CreatedAtUtc)='text' AND length(CAST(e.CreatedAtUtc AS BLOB)) BETWEEN 1 AND 64
-                        AND typeof(s.ProducerKindCode)='integer' AND s.ProducerKindCode BETWEEN 0 AND 2
+                        AND typeof(s.ProducerKindCode)='integer' AND s.ProducerKindCode BETWEEN 0 AND 3
                         AND typeof(s.ProducerKey)='text' AND length(CAST(s.ProducerKey AS BLOB)) BETWEEN 1 AND 4096
                         AND typeof(e.ProducerRequestId)='text' AND length(CAST(e.ProducerRequestId AS BLOB)) BETWEEN 1 AND 4096
                         THEN 1 ELSE 0 END
@@ -129,6 +129,7 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
         GuildProducerKind.Run => Id(producer.AgentId!.Value) + ":" + Id(producer.RunId!.Value),
         GuildProducerKind.Operator => producer.OperatorPrincipalId!,
         GuildProducerKind.HostReceipt => Id(producer.DomainOwnerId!.Value) + ":" + ((int)producer.SourceKind!.Value).ToString(System.Globalization.CultureInfo.InvariantCulture),
+        GuildProducerKind.A2APeer => producer.Peer!.PeerId + ":" + Id(producer.Peer.AuthorityEpoch) + ":" + Id(producer.Peer.StreamId),
         _ => throw new ArgumentOutOfRangeException(nameof(producer)),
     };
 
