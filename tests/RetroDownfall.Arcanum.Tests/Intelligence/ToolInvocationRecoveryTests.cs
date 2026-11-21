@@ -26,7 +26,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 [Collection("Grimoire")]
-public sealed class ToolInvocationRecoveryTests(GrimoireFixture database)
+public sealed partial class ToolInvocationRecoveryTests(GrimoireFixture database)
 {
     [SkippableFact]
     public Task Exact_replay_reuses_a_completed_failed_workspace_check_with_its_original_recovery_action() => WithActiveTurnAsync(async turn =>
@@ -407,7 +407,8 @@ public sealed class ToolInvocationRecoveryTests(GrimoireFixture database)
         Assert.Equal(ToolInvocationState.Dispatched, (await turn.Store.ReadAsync(session, key.Receipt.Id, default)).Value!.State);
     });
 
-    private async Task WithActiveTurnAsync(Func<RecoveryTurn, Task> test)
+    private async Task WithActiveTurnAsync(Func<RecoveryTurn, Task> test,
+        Func<Guid, ISessionAttachmentStore>? attachmentFactory = null, IReadOnlySet<Guid>? visibleAttachmentIds = null)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -458,14 +459,17 @@ public sealed class ToolInvocationRecoveryTests(GrimoireFixture database)
             SqliteToolInvocationStore store = new(FixtureOrdinaryConnectionFactory.For(db), TimeProvider.System);
 
             ToolExecutionPipeline.TurnContext active = new() { PersistedSessionId = session, AssistantEntryId = assistant,
-                InvocationId = assistant.ToString("D"), ClaimLease = owner, ModelUsed = "fixture-model", WorkspaceRoot = workspace.Root };
+                InvocationId = assistant.ToString("D"), ClaimLease = owner, ModelUsed = "fixture-model", WorkspaceRoot = workspace.Root,
+                VisibleAttachmentIds = visibleAttachmentIds };
 
             SanctumPipelineHarness sanctum = SanctumPipelineHarness.Create(workspace.Root);
 
-            ToolExecutionPipeline NewPipeline() => new(settings, new RecordOnlyWard(), sanctum.Guard, new NoOpSessionAttachmentStore(),
+            ISessionAttachmentStore attachments = attachmentFactory?.Invoke(session) ?? new NoOpSessionAttachmentStore();
+
+            ToolExecutionPipeline NewPipeline() => new(settings, new RecordOnlyWard(), sanctum.Guard, attachments,
                 NullLogger<ToolExecutionPipeline>.Instance, grimoireTurnWriter: writer, toolInvocationStore: store);
 
-            await test(new(workspace.Root, request, active, NewPipeline, store, owner, repository,
+            await test(new(workspace.Root, request, active, NewPipeline, store, owner, repository, attachments, writer, begun.Value,
                 () => writer.TryResolveInterruptedOnStreamExitAsync(begun.Value, "The provider stopped.")));
         }
         finally
@@ -488,7 +492,8 @@ public sealed class ToolInvocationRecoveryTests(GrimoireFixture database)
 
     private sealed record RecoveryTurn(string Workspace, PingRequest Request, ToolExecutionPipeline.TurnContext Context,
         Func<ToolExecutionPipeline> CreatePipeline, SqliteToolInvocationStore Store, SessionTurnClaimLease Owner,
-        GrimoireRepository Transcript, Func<Task> InterruptAsync)
+        GrimoireRepository Transcript, ISessionAttachmentStore Attachments, GrimoireTurnWriter Writer,
+        GrimoireTurnWriter.TurnHandle Handle, Func<Task> InterruptAsync)
     {
         internal Task<ToolExecutionPipeline.ProcessedToolCall> InvokeAsync(FunctionCallContent call, ChatOptions options,
             Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null, int round = 1) =>

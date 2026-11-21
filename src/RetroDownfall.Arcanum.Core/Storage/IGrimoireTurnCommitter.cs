@@ -228,7 +228,10 @@ public sealed record TurnCommitReceipt(
 
 /// <summary>The exact active claim, pair content, and immutable label committed together.</summary>
 public sealed record ProtectedToolInteraction(SessionTurnClaimLease ClaimLease, string ToolName, string Arguments,
-    string Result, string Model, ProviderCallSensitivity Sensitivity);
+    string Result, string Model, ProviderCallSensitivity Sensitivity)
+{
+    internal ToolInvocationCompletion? InvocationCompletion { get; init; }
+}
 
 public sealed record ProtectedToolInteractionReceipt(Guid CallEntryId, Guid ResultEntryId, long ThroughEntrySequence);
 

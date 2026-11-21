@@ -129,6 +129,37 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
         return confirmed.IsFailure ? Result.Failure(confirmed.Error) : Result.Success();
     }
 
+    internal static async Task<bool> CompleteProtectedWithinAsync(SqliteConnection connection, SqliteTransaction tx,
+        SessionTurnClaimLease claim, ToolInvocationCompletion completion, string toolName, string arguments,
+        Guid resultEntryId, CancellationToken ct)
+    {
+        ToolInvocationKey key = completion.Key;
+
+        if (!Valid(key) || resultEntryId == Guid.Empty || resultEntryId == key.Receipt.ResultEntryId
+            || completion.DispatchId == Guid.Empty || claim.Claim.SessionId != key.SessionId
+            || claim.FutureAssistantEntryId != key.AssistantEntryId || completion.Identity.ToolName != toolName)
+        {
+            return false;
+        }
+
+        ToolInvocationKey observed = ToolInvocationKey.Capture(key.SessionId, key.AssistantEntryId, completion.Identity, arguments);
+
+        if (observed != key) return false;
+
+        await using SqliteCommand update = KeyCommand(connection, tx, key, """
+            UPDATE session_tool_invocations SET StateCode=3,ResultEntryId=$result
+            WHERE SessionId=$session AND AssistantEntryId=$assistant AND ClaimId=$claim
+              AND ReceiptId=$receipt AND RoundOrdinal=$round AND CallOrdinal=$call AND ArgumentsDigest=$digest
+              AND StateCode=2 AND DispatchId=$dispatch
+            """);
+
+        Add(update, "$claim", Id(claim.Claim.ClaimId));
+        Add(update, "$dispatch", Id(completion.DispatchId));
+        Add(update, "$result", Id(resultEntryId));
+
+        return await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
     public async Task<Result<ToolInvocationEvidence?>> ReadAsync(Guid sessionId, Guid receiptId, CancellationToken ct)
     {
         if (sessionId == Guid.Empty || receiptId == Guid.Empty) return Conflict;
@@ -268,6 +299,13 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
 
         Guid result = ToolInteractionReceiptDerivation.DeriveResultEntryId(evidence.ReceiptId);
 
+        if (evidence is { State: ToolInvocationState.Completed, ResultEntryId: { } ownerEntry }
+            && ownerEntry != result)
+        {
+            return await ReadProtectedResultReferenceAsync(connection, tx, session, evidence.ReceiptId, ownerEntry, ct)
+                .ConfigureAwait(false);
+        }
+
         await using SqliteCommand read = connection.CreateCommand();
 
         read.Transaction = tx;
@@ -303,6 +341,29 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
         ToolInvocationKey key = ToolInvocationKey.Capture(session, evidence.AssistantEntryId, identity, row.GetString(2));
 
         return key.Receipt.Id == evidence.ReceiptId && key.ArgumentsDigest.Bytes.SequenceEqual(digest) ? result : null;
+    }
+
+    private static async Task<Guid?> ReadProtectedResultReferenceAsync(SqliteConnection connection, SqliteTransaction tx,
+        Guid session, Guid receiptId, Guid resultEntryId, CancellationToken ct)
+    {
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.Transaction = tx;
+
+        read.CommandText = """
+            SELECT 1 FROM Entries e
+            JOIN artifact_sensitivity l ON l.ArtifactId=e.Id AND l.SessionId=e.SessionId
+            JOIN session_tool_invocations t ON t.ReceiptId=$receipt AND t.SessionId=e.SessionId AND t.ClaimId=l.TurnId
+            WHERE e.Id=$result AND e.SessionId=$session AND e.Role=$system AND l.ArtifactKindCode=$entryKind
+            """;
+
+        Add(read, "$session", Id(session));
+        Add(read, "$receipt", Id(receiptId));
+        Add(read, "$result", Id(resultEntryId));
+        Add(read, "$system", (int)MessageRole.System);
+        Add(read, "$entryKind", (int)SensitiveArtifactKind.AssistantEntry);
+
+        return await read.ExecuteScalarAsync(ct).ConfigureAwait(false) is not null ? resultEntryId : null;
     }
 
     private async Task<Result<T>> WriteAsync<T>(Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result<T>>> write, CancellationToken ct)

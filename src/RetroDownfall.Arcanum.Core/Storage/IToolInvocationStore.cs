@@ -61,6 +61,8 @@ public sealed record ToolInvocationDispatch(ToolInvocationEvidence Evidence, Gui
     public bool MayDispatch => DispatchId is not null;
 }
 
+internal sealed record ToolInvocationCompletion(ToolInvocationKey Key, ToolInvocationIdentity Identity, Guid DispatchId);
+
 public sealed record ToolInvocationTurnProgress(Guid? OutstandingInvocationId, Guid? LastVerifiedInvocationId);
 
 public interface IToolInvocationStore

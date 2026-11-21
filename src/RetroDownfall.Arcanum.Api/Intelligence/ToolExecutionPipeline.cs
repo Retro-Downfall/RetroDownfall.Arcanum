@@ -89,6 +89,10 @@ public sealed class ToolExecutionPipeline(
     public static string PublicToolFailureMessage(string toolName) =>
         $"[Tool error: {toolName} failed with an internal error. The operator has been notified.]";
 
+    private const string AttachmentReceiptPrefix = "Materialized Session attachment ";
+
+    private const string AttachmentReplayUnavailable = "Not attached: the original snapshot cannot be read with the current Session authority.";
+
     private const string ApplyPatchSessionRequiredResult =
         "{\"status\":\"invalid_request\",\"code\":\"session_required\",\"message\":\"apply_patch requires a bound persisted session and assistant-turn invocation.\"}";
 
@@ -169,6 +173,8 @@ public sealed class ToolExecutionPipeline(
         bool Denied = false,
         AttachmentRefreshEvent? AttachmentRefresh = null)
     {
+        internal ToolInvocationCompletion? ProtectedInvocationCompletion { get; init; }
+
         public ProviderCallSensitivity? Sensitivity { get; init; }
 
         public ToolOutcome? ToolOutcome { get; init; }
@@ -612,9 +618,23 @@ public sealed class ToolExecutionPipeline(
 
         AttachmentRefreshEvent? attachmentRefresh = null;
 
+        SessionAttachmentRecord? materializedAttachment = null;
+
+        bool ownsAttachment = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool { OwnsSessionAttachmentResult: true };
+
         bool executedSuccessfully = isRegisteredTool && !wardedExecution.Failed && !wardedExecution.Denied;
 
-        if (executedSuccessfully
+        if (executedSuccessfully && recovery?.ReusedReceipt == true
+            && string.Equals(toolName, "attach_session_file", StringComparison.Ordinal))
+        {
+            var restored = ownsAttachment
+                ? await RestoreAttachmentSnapshotAsync(resultText, request, turnContext, cancellationToken).ConfigureAwait(false)
+                : new SessionAttachmentToolInjection.AttachMaterialization(null, AttachmentReplayUnavailable);
+
+            additionalContext = restored.Contents;
+            resultText = restored.NotAttachedMessage ?? "The exact original Session attachment is queued for this turn.";
+        }
+        else if (executedSuccessfully
             && string.Equals(toolName, "attach_session_file", StringComparison.Ordinal)
             && SessionAttachmentToolAmbient.CurrentSessionId is { } ambientSessionId
             && SessionAttachmentToolInjection.TryParseAttachArguments(fcc.Arguments, out string logicalName, out int? version))
@@ -634,6 +654,8 @@ public sealed class ToolExecutionPipeline(
                     .ConfigureAwait(false);
 
                 additionalContext = attached.Contents;
+
+                materializedAttachment = attached.Attachment;
 
                 // The tool accepted the attachment before anything read it. When nothing was materialized,
                 // that acceptance would promise content the next turn never receives, so the model is told
@@ -715,7 +737,8 @@ public sealed class ToolExecutionPipeline(
             }
         }
 
-        bool receiptHandled = applyPatchContext?.ReceiptHandled == true || recovery?.ReusedReceipt == true;
+        bool receiptHandled = applyPatchContext?.ReceiptHandled == true
+            || recovery is { ReusedReceipt: true } or { OwnerResultRecorded: true };
 
         bool observedWorkspaceCheck = toolName == ToolRiskClassifier.WorkspaceCheckToolName
             && wardedExecution.FailureEvidence is { Phase: TurnFailurePhase.ToolExecution, Effect: TurnEffectState.Completed };
@@ -726,6 +749,16 @@ public sealed class ToolExecutionPipeline(
             && toolName is not ("attach_session_file" or "refresh_session_file"))
         {
             receiptHandled |= await recovery.RecordResultAsync(resultText, receiptHandled, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (recovery is { AdmittedForDispatch: true } && ownsAttachment
+            && materializedAttachment is { } attachment && attachment.SessionId == turnContext.PersistedSessionId
+            && !turnContext.ProtectedContent && wardedExecution.Sensitivity is null)
+        {
+            string reference = string.Create(CultureInfo.InvariantCulture,
+                $"{AttachmentReceiptPrefix}{attachment.Id:D} {attachment.Version} {attachment.ContentSha256}");
+
+            receiptHandled |= await recovery.RecordResultAsync(reference, receiptHandled, CancellationToken.None).ConfigureAwait(false);
         }
 
         return new ProcessedToolCall(
@@ -739,7 +772,66 @@ public sealed class ToolExecutionPipeline(
             receiptHandled,
             wardedExecution.Denied,
             attachmentRefresh)
-        { Sensitivity = wardedExecution.Sensitivity, ToolOutcome = wardedExecution.ToolOutcome, FailureEvidence = wardedExecution.FailureEvidence };
+        {
+            Sensitivity = wardedExecution.Sensitivity,
+            ToolOutcome = wardedExecution.ToolOutcome,
+            FailureEvidence = wardedExecution.FailureEvidence,
+            ProtectedInvocationCompletion = !receiptHandled && executedSuccessfully
+                && (turnContext.ProtectedContent || wardedExecution.Sensitivity is not null)
+                && (wardedExecution.FailureEvidence is null or { Effect: TurnEffectState.Completed })
+                ? recovery?.OwnerCompletion
+                : null,
+        };
+    }
+
+    private async Task<SessionAttachmentToolInjection.AttachMaterialization> RestoreAttachmentSnapshotAsync(
+        string receipt, PingRequest request, TurnContext turnContext, CancellationToken ct)
+    {
+        SessionAttachmentToolInjection.AttachMaterialization unavailable = new(null, AttachmentReplayUnavailable);
+
+        if (turnContext.PersistedSessionId is not { } sessionId
+            || SessionAttachmentToolAmbient.CurrentSessionId != sessionId
+            || !receipt.StartsWith(AttachmentReceiptPrefix, StringComparison.Ordinal))
+        {
+            return unavailable;
+        }
+
+        string[] fields = receipt[AttachmentReceiptPrefix.Length..].Split(' ', 3);
+
+        if (fields.Length != 3 || !Guid.TryParseExact(fields[0], "D", out Guid attachmentId)
+            || !int.TryParse(fields[1], NumberStyles.None, CultureInfo.InvariantCulture, out int version) || version <= 0)
+        {
+            return unavailable;
+        }
+
+        try
+        {
+            SessionAttachmentRecord? attachment = await sessionAttachmentStore.GetByIdAsync(attachmentId, ct).ConfigureAwait(false);
+
+            if (attachment is null || !CanRestore(attachment)) return unavailable;
+
+            var restored = await SessionAttachmentToolInjection.MaterializeBoundAttachAsync(
+                sessionAttachmentStore, attachment, settings.Value, request.Model, SessionAttachmentDocumentExtractors.For, ct)
+                .ConfigureAwait(false);
+
+            if (restored.Contents is not { Count: > 0 }) return restored;
+
+            // Recheck the exact bound version after a read that may have raced with deletion.
+            SessionAttachmentRecord? current = await sessionAttachmentStore.GetByIdAsync(attachmentId, ct).ConfigureAwait(false);
+
+            return current is not null && CanRestore(current) ? restored : unavailable;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return unavailable;
+        }
+
+        bool CanRestore(SessionAttachmentRecord attachment) =>
+            attachment.Id == attachmentId && attachment.Version == version && attachment.ContentSha256 == fields[2]
+            && SessionAttachmentToolAmbient.CurrentSessionId == sessionId
+            && SessionAttachmentToolInjection.CanMaterialize(attachment, sessionId)
+            && (turnContext.VisibleAttachmentIds is not { } visible || visible.Contains(attachmentId)
+                || attachment.EntryId == turnContext.AssistantEntryId);
     }
 
     private sealed record RefreshPostProcess(
@@ -1828,7 +1920,8 @@ public sealed class ToolExecutionPipeline(
                 return new(admitted.Error.Message + " Invocation " + recovery.ReceiptId.ToString("D") + ".", wardEvents, Failed: true)
                 {
                     FailureEvidence = new(TurnFailurePhase.ToolPrecondition,
-                        recovery.CompletionRecorded ? TurnEffectState.Completed : TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool)
+                        recovery.CompletionRecorded ? TurnEffectState.Completed : TurnEffectState.Unknown,
+                        recovery.OwnerResultRecorded ? TurnRecoveryAction.InspectSession : TurnRecoveryAction.ReconcileTool)
                     {
                         InvocationId = recovery.ReceiptId,
                     },

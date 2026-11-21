@@ -345,7 +345,7 @@ public sealed class GrimoireTurnWriter(
         }
     }
 
-    public async Task TryAppendToolInteractionAsync(
+    public Task TryAppendToolInteractionAsync(
         Guid? sessionId,
         string toolName,
         string arguments,
@@ -353,7 +353,19 @@ public sealed class GrimoireTurnWriter(
         string modelUsed,
         CancellationToken cancellationToken,
         ProviderCallSensitivity? sensitivity = null,
-        TurnHandle? handle = null)
+        TurnHandle? handle = null) =>
+        TryAppendToolInteractionAsync(sessionId, toolName, arguments, result, modelUsed, cancellationToken, sensitivity, handle, null);
+
+    internal async Task TryAppendToolInteractionAsync(
+        Guid? sessionId,
+        string toolName,
+        string arguments,
+        string result,
+        string modelUsed,
+        CancellationToken cancellationToken,
+        ProviderCallSensitivity? sensitivity,
+        TurnHandle? handle,
+        ToolInvocationCompletion? invocationCompletion)
     {
         if (!sessionId.HasValue)
         {
@@ -366,7 +378,10 @@ public sealed class GrimoireTurnWriter(
                 throw new InvalidOperationException("Protected tool persistence is unavailable.");
 
             var committed = await turnCommitter.AppendProtectedToolInteractionAsync(
-                new(claim, toolName, arguments, result, modelUsed, sensitivity), cancellationToken).ConfigureAwait(false);
+                new(claim, toolName, arguments, result, modelUsed, sensitivity)
+                {
+                    InvocationCompletion = invocationCompletion,
+                }, cancellationToken).ConfigureAwait(false);
 
             if (committed.IsFailure) throw new InvalidOperationException("The protected tool interaction could not be committed.");
 

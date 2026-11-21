@@ -51,6 +51,9 @@ internal sealed class McpBridgeTool : AIFunction
         _trustedStructuredResultKind == TrustedStructuredToolResultKind.WorkspaceCheck
         && IsHostResultTransport(_client);
 
+    internal bool OwnsSessionAttachmentResult =>
+        _name == "attach_session_file" && IsHostResultTransport(_client);
+
     public McpBridgeTool(
         string name,
         string description,

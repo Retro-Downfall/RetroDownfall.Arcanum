@@ -20,6 +20,11 @@ internal sealed class ToolInvocationRecovery(IToolInvocationStore store, Grimoir
 
     internal bool CompletionRecorded { get; private set; }
 
+    internal bool OwnerResultRecorded { get; private set; }
+
+    internal ToolInvocationCompletion? OwnerCompletion =>
+        _dispatchId is { } dispatch ? new(key, identity, dispatch) : null;
+
     internal Guid ReceiptId => key.Receipt.Id;
 
     internal DateTimeOffset? CreatedAt => _prepared?.CreatedAt;
@@ -48,6 +53,15 @@ internal sealed class ToolInvocationRecovery(IToolInvocationStore store, Grimoir
         }
 
         CompletionRecorded = decision.Value.Evidence.State == ToolInvocationState.Completed;
+
+        if (CompletionRecorded && decision.Value.Evidence.ResultEntryId is { } ownerResult
+            && ownerResult != key.Receipt.ResultEntryId)
+        {
+            OwnerResultRecorded = true;
+
+            return new Error(ErrorCodes.Hub.ToolReconciliationRequired,
+                "The tool already completed. Inspect any retained result under the current Session's protected history authority.");
+        }
 
         var probe = await writer.ProbeToolInvocationReceiptAsync(new(key.SessionId, key.Receipt, identity.ProviderToolCallId,
             identity.ToolName, arguments, model, _prepared.CreatedAt), ct).ConfigureAwait(false);

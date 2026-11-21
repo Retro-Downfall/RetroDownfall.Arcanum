@@ -82,6 +82,14 @@ public sealed partial class GrimoireRepository
 
             if (await advance.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1) return ProtectedToolRefused();
 
+            if (request.InvocationCompletion is { } completion
+                && !await SqliteToolInvocationStore.CompleteProtectedWithinAsync(
+                    admission.Connection, transaction, claim, completion, request.ToolName, request.Arguments,
+                    resultId, cancellationToken).ConfigureAwait(false))
+            {
+                return ProtectedToolRefused();
+            }
+
             await attached.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             return new ProtectedToolInteractionReceipt(callId, resultId, through);

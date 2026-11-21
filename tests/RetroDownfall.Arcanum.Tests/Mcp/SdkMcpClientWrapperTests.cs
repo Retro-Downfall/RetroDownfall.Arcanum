@@ -25,6 +25,7 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Workspaces;
 using RetroDownfall.Arcanum.Tests.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -676,7 +677,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         CreateInitializedClientAsync(_workspace.Root);
 
     internal static async Task<SdkMcpClientWrapper> CreateInitializedClientAsync(
-        string workspaceRoot, IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
+        string workspaceRoot, IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
+        ISessionAttachmentStore? attachments = null)
     {
         string normalizedRoot = Path.GetFullPath(workspaceRoot);
 
@@ -699,6 +701,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 
         services.AddSingleton<IProcessResourceLimiter, ProcessResourceLimiter>();
 
+        if (attachments is not null) services.AddSingleton(attachments);
+
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         IHumanPromptRegistry humanPrompts = new HumanPromptRegistry();
@@ -715,7 +719,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             pacer,
             normalizedRoot,
             settings,
-            workspaceCheckRuntime);
+            workspaceCheckRuntime,
+            attachments is not null);
 
         SdkMcpClientWrapper client = new(
             clientTransport,
@@ -740,7 +745,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         IUnseenServantPacer pacer,
         string workspaceRoot,
         IntelligenceSettings intelligenceSettings,
-        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null,
+        bool attachmentsEnabled = false)
     {
         (System.Threading.Channels.ChannelWriter<string> toServer, System.Threading.Channels.ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
@@ -754,7 +760,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             conclaveEnabled: false,
             sagaEnabled: false,
             a2aClientEnabled: false,
-            attachmentsToolEnabled: false,
+            attachmentsToolEnabled: attachmentsEnabled,
             maxJsonRpcLineBytes: 2_097_152,
             logger: NullLogger<ArcanumInternalToolServer>.Instance,
             allowHostProcessTools: true,

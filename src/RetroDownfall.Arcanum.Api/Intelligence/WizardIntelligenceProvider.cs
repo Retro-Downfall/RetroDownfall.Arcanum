@@ -4671,7 +4671,8 @@ public sealed partial class WizardIntelligenceProvider(
                                         processed.ArgsSnapshot,
                                         processed.ResultText,
                                         targetModel,
-                                        CancellationToken.None)
+                                        CancellationToken.None,
+                                        processed.ProtectedInvocationCompletion)
                                         .ConfigureAwait(false);
                                 }
 
@@ -4789,7 +4790,8 @@ public sealed partial class WizardIntelligenceProvider(
                                                 late.ArgsSnapshot,
                                                 late.ResultText,
                                                 targetModel,
-                                                CancellationToken.None)
+                                                CancellationToken.None,
+                                                late.ProtectedInvocationCompletion)
                                                 .ConfigureAwait(false);
                                         }
                                         catch (Exception ex)
@@ -5952,7 +5954,8 @@ public sealed partial class WizardIntelligenceProvider(
     }
 
     private async Task PersistToolInteractionAsync(CovenantTurnScope? scope, GrimoireTurnWriter.TurnHandle handle,
-        string name, string arguments, string text, string model, CancellationToken ct)
+        string name, string arguments, string text, string model, CancellationToken ct,
+        ToolInvocationCompletion? invocationCompletion = null)
     {
         RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationEffect? effect = null;
 
@@ -5972,7 +5975,7 @@ public sealed partial class WizardIntelligenceProvider(
             var token = cancellation?.Token ?? ct;
 
             await grimoireTurnWriter.TryAppendToolInteractionAsync(handle.SessionId, name, arguments, text, model,
-                token, scope?.DerivedSensitivity, handle).ConfigureAwait(false);
+                token, scope?.DerivedSensitivity, handle, invocationCompletion).ConfigureAwait(false);
 
             token.ThrowIfCancellationRequested();
         }

@@ -86,7 +86,8 @@ public static class SessionAttachmentToolInjection
     /// What <c>attach_session_file</c> materialized for the next model turn, or, when it materialized
     /// nothing, the code-owned message the model is shown instead of the tool's acceptance.
     /// </summary>
-    internal sealed record AttachMaterialization(IReadOnlyList<AIContent>? Contents, string? NotAttachedMessage);
+    internal sealed record AttachMaterialization(
+        IReadOnlyList<AIContent>? Contents, string? NotAttachedMessage, SessionAttachmentRecord? Attachment = null);
 
     /// <summary>The words that open every attach outcome that put nothing into the next model turn.</summary>
     internal const string NotAttachedPrefix = "Not attached: ";
@@ -123,12 +124,7 @@ public static class SessionAttachmentToolInjection
             .GetByLogicalAsync(sessionId, logicalName, version, cancellationToken)
             .ConfigureAwait(false);
 
-        if (record is null
-            || record.State != SessionAttachmentState.Bound
-            || record.SessionId != sessionId
-            || string.IsNullOrWhiteSpace(record.RelativePath)
-            || Path.IsPathRooted(record.RelativePath)
-            || HasParentSegment(record.RelativePath))
+        if (record is null || !CanMaterialize(record, sessionId))
         {
             return NotAttached(
                 SystemPromptBuilder.HardenAttachmentIndexName(logicalName.Trim()),
@@ -136,6 +132,23 @@ public static class SessionAttachmentToolInjection
                 "The attachment is not available in this session.");
         }
 
+        return await MaterializeBoundAttachAsync(store, record, settings, requestModel, documentHostFor, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static bool CanMaterialize(SessionAttachmentRecord record, Guid sessionId) =>
+        record.State == SessionAttachmentState.Bound && record.SessionId == sessionId
+        && !string.IsNullOrWhiteSpace(record.RelativePath)
+        && !Path.IsPathRooted(record.RelativePath) && !HasParentSegment(record.RelativePath);
+
+    internal static async Task<AttachMaterialization> MaterializeBoundAttachAsync(
+        ISessionAttachmentStore store,
+        SessionAttachmentRecord record,
+        ArcanumSettings settings,
+        string? requestModel,
+        Func<string, SessionAttachmentDocumentHost?> documentHostFor,
+        CancellationToken cancellationToken)
+    {
         // The settings are the turn's, so the gates are judged here once, by the snapshot the rest of the
         // turn uses; the tool server judged a registry document by its format alone.
         bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings);
@@ -237,7 +250,7 @@ public static class SessionAttachmentToolInjection
             return NotAttached(record, "It is already in this turn's context.");
         }
 
-        return new AttachMaterialization(contents, null);
+        return new AttachMaterialization(contents, null, record);
     }
 
     /// <summary>
