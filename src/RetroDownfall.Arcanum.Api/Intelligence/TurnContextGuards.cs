@@ -19,6 +19,11 @@ internal static class TurnContextGuards
 {
     private static readonly ConditionalWeakTable<MeAiChatMessage, HistoricalToolExchange> HistoricalExchanges = new();
 
+    private static readonly ConditionalWeakTable<MeAiChatMessage, MeAiChatMessage> RecoveryQuestions = new();
+
+    internal static void PreserveRecoveryQuestion(MeAiChatMessage call, MeAiChatMessage result) =>
+        RecoveryQuestions.Add(call, result);
+
     // Legacy tool writes have no call id on their result. The dedicated persistence metadata,
     // append positions and exact paired representation establish a group, never marker text alone.
     internal static bool IsPersistedToolExchange(Entry call, Entry result, Guid sessionId)
@@ -219,6 +224,12 @@ internal static class TurnContextGuards
 
             for (int i = 0; i < messages.Count - 1; i++)
             {
+                if (RecoveryQuestions.TryGetValue(messages[i], out MeAiChatMessage? pairedResult)
+                    && ReferenceEquals(pairedResult, messages[i + 1]))
+                {
+                    continue;
+                }
+
                 if (IsHistoricalToolExchange(messages[i], messages[i + 1]))
                 {
                     removeAt = i;

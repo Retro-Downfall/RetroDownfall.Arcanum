@@ -127,6 +127,14 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimBeginStore
             return StaleClaimBegin();
         }
 
+        if (claimLease.RecoveryCheckpointId is { } recoveryId)
+        {
+            Result recovery = await SessionRecoveryCheckpointStore.ConsumeWithinAsync(lease.Connection, sqliteTransaction,
+                claimLease, recoveryId, cancellationToken).ConfigureAwait(false);
+
+            if (recovery.IsFailure) return recovery.Error;
+        }
+
         int entryCount = await _entryPersistence.GetEntryCountAsync(claimLease.Claim.SessionId, cancellationToken).ConfigureAwait(false);
 
         Error? limit = SessionEntryPersistence.CheckEntryLimits(entryCount, 2, GetSessionSettings(), prompt, string.Empty);

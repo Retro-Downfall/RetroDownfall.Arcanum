@@ -39,7 +39,9 @@ public sealed record SessionDetailDto(
     string? Summary,
     long TotalTokensUsed,
     Guid? ForkedFromSessionId = null,
-    decimal TotalCostUsd = 0);
+    decimal TotalCostUsd = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    SessionRecoveryCheckpoint? RecoveryCheckpoint = null);
 
 /// <summary>
 /// Body for <c>POST /api/sessions/{id}/fork</c>. All fields optional: <paramref name="Title"/>

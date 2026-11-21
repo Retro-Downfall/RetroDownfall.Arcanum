@@ -317,6 +317,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(PromptResponseDto))]
 [JsonSerializable(typeof(ToolEvidenceEviction))]
 [JsonSerializable(typeof(TurnFailureEvidence))]
+[JsonSerializable(typeof(SessionRecoveryCheckpoint))]
 [JsonSerializable(typeof(TurnFailureOutput))]
 [JsonSerializable(typeof(ToolOutcome))]
 [JsonSerializable(typeof(ToolOutcomeCode))]

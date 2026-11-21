@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
@@ -14,6 +15,9 @@ public sealed record TurnFailureEvidence(TurnFailurePhase Phase, TurnEffectState
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? InvocationId { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SessionRecoveryCheckpoint? RecoveryCheckpoint { get; init; }
 
     public static TurnFailureEvidence? FromToolOutcome(ToolOutcome? outcome, string name, int round, int index)
     {
@@ -101,4 +105,8 @@ public enum TurnRecoveryAction
 
     [JsonStringEnumMemberName("reconcileTool")]
     ReconcileTool,
+    [JsonStringEnumMemberName("provideInput")]
+    ProvideInput,
+    [JsonStringEnumMemberName("resumeSession")]
+    ResumeSession,
 }

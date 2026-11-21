@@ -241,6 +241,43 @@ public sealed class SessionManagementCommandTests
         Assert.True(document.RootElement.TryGetProperty("totalCostUsd", out _));
 
         Assert.True(document.RootElement.TryGetProperty("forkedFromSessionId", out _));
+
+        Assert.False(document.RootElement.TryGetProperty("recoveryCheckpoint", out _));
+    }
+
+    [Fact]
+    public void Session_show_json_preserves_the_native_checkpoint_and_invocation_ids()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        SessionRecoveryCheckpoint checkpoint = new(Guid.NewGuid(), sessionId, Guid.NewGuid(),
+            SessionRecoveryKind.ReconciliationRequired, "provider", "model", InvocationId: Guid.NewGuid(),
+            LastVerifiedInvocationId: Guid.NewGuid());
+
+        SessionDetailDto detail = new(sessionId, null, "Quest", "active", 7, DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch, null, 0, RecoveryCheckpoint: checkpoint);
+
+        RecordingHandler handler = new(request => request.RequestUri!.AbsolutePath.EndsWith("/attachments", StringComparison.Ordinal)
+            ? CreateResponse(new ApiResponse<SessionAttachmentDto[]>([], true, null), ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray)
+            : CreateResponse(new ApiResponse<SessionDetailDto>(detail, true, null), ArcanumJsonContext.Default.ApiResponseSessionDetailDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "session", "show", sessionId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        JsonElement recovery = document.RootElement.GetProperty("recoveryCheckpoint");
+
+        Assert.Equal(checkpoint.Id, recovery.GetProperty("id").GetGuid());
+
+        Assert.Equal(sessionId, recovery.GetProperty("sessionId").GetGuid());
+
+        Assert.Equal(checkpoint.InvocationId, recovery.GetProperty("invocationId").GetGuid());
+
+        Assert.Equal(checkpoint.LastVerifiedInvocationId, recovery.GetProperty("lastVerifiedInvocationId").GetGuid());
+
+        Assert.Equal("reconcileTool", recovery.GetProperty("nextAction").GetString());
     }
 
     [Fact]

@@ -34,7 +34,7 @@ public sealed class ToolInvocationSchemaTests
 
         var upgraded = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, default);
 
-        Assert.Equal(41, upgraded.Core.SchemaVersion);
+        Assert.Equal(42, upgraded.Core.SchemaVersion);
 
         command.CommandText = "SELECT Content FROM Entries WHERE Id='30000000-0000-0000-0000-000000000002'";
 

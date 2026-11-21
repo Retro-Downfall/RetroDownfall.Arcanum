@@ -8,7 +8,8 @@ internal static class CoreSchemaVersionFortyFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects { get; } =
         [.. GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name is not
-            ("session_tool_invocations" or "session_tool_invocations_guard_update"))];
+            ("session_tool_invocations" or "session_tool_invocations_guard_update" or "session_recovery_checkpoints"
+                or "session_recovery_checkpoints_guard_update" or "idx_session_recovery_checkpoints_pending"))];
 
     internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
 

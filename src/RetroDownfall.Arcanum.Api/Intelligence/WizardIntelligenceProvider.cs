@@ -711,7 +711,18 @@ public sealed partial class WizardIntelligenceProvider(
 
         CancellationToken inferenceToken = callerToken;
 
-        bool resilienceEnabled = healthTracker is not null || memoryDelegation is not null;
+        (SessionRecoveryCheckpointRecord Checkpoint, ProviderSettings Provider, string Model)? recoveryRoute = null;
+
+        if (request.RecoveryCheckpointId is not null)
+        {
+            var resolved = await ResolveRecoveryRouteAsync(request, invocationContext, inferenceToken).ConfigureAwait(false);
+
+            if (resolved.IsFailure) return Result<PromptTurnResult>.Failure(resolved.Error);
+
+            recoveryRoute = resolved.Value;
+        }
+
+        bool resilienceEnabled = recoveryRoute is null && (healthTracker is not null || memoryDelegation is not null);
 
         Result<CovenantTurnScope> covenantAcquisition = await BeginCovenantTurnAsync(request, invocationContext, cancellationToken)
             .ConfigureAwait(false);
@@ -738,7 +749,9 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     try
                     {
-                        singleLease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+                        singleLease = recoveryRoute is { } selected
+                            ? await chatClientFactory.ResolveClientAsync(selected.Provider, selected.Model, inferenceToken).ConfigureAwait(false)
+                            : await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
                     }
                     catch (InvalidOperationException ex)
                     {
@@ -1125,7 +1138,23 @@ public sealed partial class WizardIntelligenceProvider(
 
         CancellationToken inferenceToken = callerToken;
 
-        bool resilienceEnabled = healthTracker is not null;
+        (SessionRecoveryCheckpointRecord Checkpoint, ProviderSettings Provider, string Model)? recoveryRoute = null;
+
+        if (request.RecoveryCheckpointId is not null)
+        {
+            var resolved = await ResolveRecoveryRouteAsync(request, invocationContext, inferenceToken).ConfigureAwait(false);
+
+            if (resolved.IsFailure)
+            {
+                yield return ErrorFrame(resolved.Error);
+
+                yield break;
+            }
+
+            recoveryRoute = resolved.Value;
+        }
+
+        bool resilienceEnabled = recoveryRoute is null && healthTracker is not null;
 
         // One scope for the whole streamed run, disposed with the enumerator so that an abandoned
         // stream releases the turn lease as reliably as a completed one.
@@ -1156,7 +1185,9 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 try
                 {
-                    leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+                    leaseOrNull = recoveryRoute is { } selected
+                        ? await chatClientFactory.ResolveClientAsync(selected.Provider, selected.Model, inferenceToken).ConfigureAwait(false)
+                        : await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -1894,6 +1925,16 @@ public sealed partial class WizardIntelligenceProvider(
 
         SessionTurnClaimOutcome? terminalOutcome = null;
 
+        string? recoveryWorkspace = null;
+
+        (FunctionCallContent Function, string Question, int Round, int Index)? liveRecoveryQuestion = null;
+
+        var recoveryStore = invocationContext.IsOperatorSurface && request.SessionId is not null && !request.UnattendedMode
+            ? serviceProvider.GetService<ISessionRecoveryCheckpointStore>() : null;
+
+        bool CanSaveRecovery() => recoveryStore is not null && grimoireTurn.ClaimLease is not null
+            && !grimoireTurn.IsFinalized && covenantScope?.Protection is null && covenantScope?.DerivedSensitivity is null;
+
         SessionTurnClaimOutcome RecordTerminal(Error error)
         {
             terminalOutcome = SessionTurnClaimOutcome.RestoredInterrupted(error.Code,
@@ -1958,7 +1999,36 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 if (terminalOutcome is null)
                 {
-                    if (unexpected is { } failure) RecordTerminal(failure);
+                    if (callerToken.IsCancellationRequested && CanSaveRecovery())
+                    {
+                        var progress = await ReadSessionRecoveryProgressAsync(grimoireTurn.ClaimLease!).ConfigureAwait(false);
+
+                        SessionRecoveryCheckpoint? checkpoint = null;
+
+                        if (progress.IsSuccess)
+                        {
+                            Guid? pending = progress.Value.OutstandingInvocationId;
+
+                            SessionRecoveryKind kind = pending is not null ? SessionRecoveryKind.ReconciliationRequired
+                                : liveRecoveryQuestion is not null ? SessionRecoveryKind.AwaitingInput
+                                : SessionRecoveryKind.Interrupted;
+
+                            var saved = await SaveSessionRecoveryAsync(recoveryStore!, grimoireTurn.ClaimLease!, lease,
+                                invocationContext, recoveryWorkspace, kind,
+                                kind == SessionRecoveryKind.AwaitingInput ? liveRecoveryQuestion?.Function : null,
+                                kind == SessionRecoveryKind.AwaitingInput ? liveRecoveryQuestion?.Question : null,
+                                liveRecoveryQuestion?.Round ?? 0, liveRecoveryQuestion?.Index ?? 0, pending,
+                                progress.Value.LastVerifiedInvocationId).ConfigureAwait(false);
+
+                            if (saved.IsSuccess) checkpoint = saved.Value;
+                        }
+
+                        RecordTerminal(new Error(ErrorCodes.Hub.SessionRecoveryCancelled, "The Session turn was cancelled.")
+                        {
+                            FailureEvidence = (TurnCanceledException.CreateFailure().FailureEvidence!) with { RecoveryCheckpoint = checkpoint },
+                        });
+                    }
+                    else if (unexpected is { } failure) RecordTerminal(failure);
                     else if (classification.BufferedTerminal is { IsFailure: true } terminal) RecordTerminal(terminal.Error);
                 }
 
@@ -2004,6 +2074,27 @@ public sealed partial class WizardIntelligenceProvider(
             IChatClient chatClient = lease.ChatClient;
 
             bool humanInteractionAvailable = streaming && !request.UnattendedMode;
+
+            bool preserveBufferedQuestion = !streaming && recoveryStore is not null;
+
+            Guid? recoveryQuestionEntryId = null;
+
+            if (request.RecoveryCheckpointId is not null)
+            {
+                var checkedRecovery = await CheckSessionRecoveryBoundaryAsync(request, invocationContext, lease, inferenceToken)
+                    .ConfigureAwait(false);
+
+                if (checkedRecovery.IsFailure)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(checkedRecovery.Error);
+
+                    yield return await FailureFrameAsync(checkedRecovery.Error);
+
+                    yield break;
+                }
+
+                recoveryQuestionEntryId = checkedRecovery.Value.QuestionEntryId;
+            }
 
             bool streamModelDeclaresToolsUnsupported =
                 ModelDeclaresToolsUnsupported(lease);
@@ -2152,6 +2243,20 @@ public sealed partial class WizardIntelligenceProvider(
                     seed.Thread = thread;
 
                     seed.ThreadLoaded = true;
+                }
+            }
+
+            if (recoveryQuestionEntryId is { } questionEntryId)
+            {
+                Result retained = await RetainRecoveryQuestionAsync(thread, questionEntryId, inferenceToken).ConfigureAwait(false);
+
+                if (retained.IsFailure)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(retained.Error);
+
+                    yield return await FailureFrameAsync(retained.Error);
+
+                    yield break;
                 }
             }
 
@@ -2568,7 +2673,9 @@ public sealed partial class WizardIntelligenceProvider(
                 streamContextRequest,
                 thread,
                 prompt,
-                preserveToolHistory: covenantScope?.HistoryTainted is true);
+                preserveToolHistory: covenantScope?.HistoryTainted is true,
+                recoveryQuestionEntryId: recoveryQuestionEntryId,
+                restoreNativeRecoveryQuestion: !request.ConfirmRecoveryRouteChange);
 
             string? streamCodexContent = await CodexReader
                 .ReadCodexAsync(
@@ -3073,12 +3180,14 @@ public sealed partial class WizardIntelligenceProvider(
             ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
                 request,
                 streamToolSet,
-                humanInteractionAvailable,
+                humanInteractionAvailable || (preserveBufferedQuestion && CanSaveRecovery()),
                 grimoireTurn,
                 targetModel,
                 streamAttachmentPrep.VisibleAttachmentIds,
                 invocationContext,
                 inferenceToken).ConfigureAwait(false);
+
+            recoveryWorkspace = streamTurnContext.WorkspaceRoot;
 
             Result effectiveClientTools = ClientToolCapabilityValidator.ValidateEffectiveToolSet(
                 request,
@@ -3189,6 +3298,8 @@ public sealed partial class WizardIntelligenceProvider(
                                 NewUserPrompt = prompt,
 
                                 PreserveToolHistory = covenantScope?.HistoryTainted is true,
+                                RecoveryQuestionEntryId = recoveryQuestionEntryId,
+                                RestoreNativeRecoveryQuestion = !request.ConfirmRecoveryRouteChange,
 
                                 Lease = lease,
 
@@ -3400,7 +3511,9 @@ public sealed partial class WizardIntelligenceProvider(
                         streamContextRequest,
                         thread,
                         prompt,
-                        preserveToolHistory: covenantScope?.HistoryTainted is true);
+                        preserveToolHistory: covenantScope?.HistoryTainted is true,
+                        recoveryQuestionEntryId: recoveryQuestionEntryId,
+                        restoreNativeRecoveryQuestion: !request.ConfirmRecoveryRouteChange);
 
                     InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -3478,6 +3591,8 @@ public sealed partial class WizardIntelligenceProvider(
                                 NewUserPrompt = prompt,
 
                                 PreserveToolHistory = covenantScope?.HistoryTainted is true,
+                                RecoveryQuestionEntryId = recoveryQuestionEntryId,
+                                RestoreNativeRecoveryQuestion = !request.ConfirmRecoveryRouteChange,
                                 Lease = lease,
                                 ChatOptions = streamChatOptions,
                                 CodexContent = streamCodexContent,
@@ -4269,10 +4384,44 @@ public sealed partial class WizardIntelligenceProvider(
 
                             try
                             {
+                                inferenceToken.ThrowIfCancellationRequested();
+
                                 if (IsAskHumanTool(fcc))
                                 {
                                     if (!humanInteractionAvailable)
                                     {
+                                        if (CanSaveRecovery()
+                                            && streamTurnContext.InferenceTools.OfType<AIFunction>().Any(static tool => tool.Name == "ask_human")
+                                            && TryGetRecoveryQuestion(fcc) is { } bufferedQuestion)
+                                        {
+                                            var progress = await ReadSessionRecoveryProgressAsync(grimoireTurn.ClaimLease!).ConfigureAwait(false);
+
+                                            Result<SessionRecoveryCheckpoint> saved = progress.IsFailure ? progress.Error
+                                                : await SaveSessionRecoveryAsync(recoveryStore!, grimoireTurn.ClaimLease!, lease,
+                                                    invocationContext, recoveryWorkspace, SessionRecoveryKind.AwaitingInput,
+                                                    fcc, bufferedQuestion, streamToolRoundCount - 1, toolCallIndex, progress.Value.OutstandingInvocationId,
+                                                    progress.Value.LastVerifiedInvocationId).ConfigureAwait(false);
+
+                                            Error paused = saved.IsSuccess
+                                                ? new Error(ErrorCodes.Hub.SessionRecoveryInputRequired, "This Session needs your input before it can continue.")
+                                                {
+                                                    FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.NotDispatched,
+                                                        TurnRecoveryAction.ProvideInput, toolCallIndex, streamToolRoundCount - 1, "ask_human")
+                                                    { RecoveryCheckpoint = saved.Value },
+                                                }
+                                                : saved.Error;
+
+                                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(paused);
+
+                                            await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn,
+                                                streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null, CancellationToken.None,
+                                                interruptionOutcome: RecordTerminal(paused)).ConfigureAwait(false);
+
+                                            yield return await FailureFrameAsync(paused);
+
+                                            yield break;
+                                        }
+
                                         ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
                                             fcc,
                                             AskHumanUnavailableMessage);
@@ -4340,6 +4489,11 @@ public sealed partial class WizardIntelligenceProvider(
                                         .ConfigureAwait(false);
 
                                     invokeFcc = PrepareAskHumanFunctionCall(fcc, askHumanReservation.PromptId);
+
+                                    if (CanSaveRecovery()
+                                        && streamTurnContext.InferenceTools.OfType<AIFunction>().Any(static tool => tool.Name == "ask_human")
+                                        && TryGetRecoveryQuestion(fcc) is { } question)
+                                        liveRecoveryQuestion = (fcc, question, streamToolRoundCount - 1, toolCallIndex);
                                 }
 
                                 string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(invokeFcc);
@@ -4452,6 +4606,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                                 ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
 
+                                if (askHumanReservation is not null) liveRecoveryQuestion = null;
+
                                 if (processed.Sensitivity is { } toolSensitivity)
                                 {
                                     covenantScope?.RecordDerived(toolSensitivity);
@@ -4557,6 +4713,9 @@ public sealed partial class WizardIntelligenceProvider(
                                 }
 
                                 toolCallIndex++;
+
+                                if (toolFailure is { Effect: TurnEffectState.Unknown, NextAction: TurnRecoveryAction.ReconcileTool })
+                                    break;
                             }
                             finally
                             {
@@ -4616,6 +4775,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     // either way, so the call is recorded as the happy path would have,
                                     // and nothing here may replace the exception unwinding this finally.
                                     ToolExecutionPipeline.ProcessedToolCall late = finishedToolTask.Result;
+
+                                    if (askHumanReservation is not null && !late.Failed && !late.Denied) liveRecoveryQuestion = null;
 
                                     if (late.Sensitivity is { } lateSensitivity) covenantScope?.RecordDerived(lateSensitivity);
 
@@ -4733,13 +4894,39 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 Error terminalInferenceError = inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError);
 
+                if (CanSaveRecovery()
+                    && terminalInferenceError.Code is ToolInvocationRecovery.ReconciliationRequired or ErrorCodes.Hub.NoProgressDetected)
+                {
+                    TurnFailureEvidence failureEvidence = terminalInferenceError.FailureEvidence
+                        ?? new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectSession);
+
+                    var recovery = await ReadSessionRecoveryProgressAsync(grimoireTurn.ClaimLease!).ConfigureAwait(false);
+
+                    if (recovery.IsSuccess)
+                    {
+                        Guid? pending = recovery.Value.OutstandingInvocationId ?? failureEvidence.InvocationId;
+
+                        if (terminalInferenceError.Code != ToolInvocationRecovery.ReconciliationRequired || pending is not null)
+                        {
+                            var saved = await SaveSessionRecoveryAsync(recoveryStore!, grimoireTurn.ClaimLease!, lease,
+                                invocationContext, recoveryWorkspace,
+                                pending is null ? SessionRecoveryKind.Interrupted : SessionRecoveryKind.ReconciliationRequired,
+                                null, null, 0, 0, pending, recovery.Value.LastVerifiedInvocationId).ConfigureAwait(false);
+
+                            if (saved.IsSuccess)
+                                terminalInferenceError = terminalInferenceError with
+                                {
+                                    FailureEvidence = failureEvidence with { RecoveryCheckpoint = saved.Value },
+                                };
+                        }
+                    }
+                }
+
                 if (!streaming)
                 {
                     if (classification.BufferedTerminal is null)
                     {
-                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                            inferenceTypedError
-                            ?? new Error(ErrorCodes.Hub.Error, inferenceError));
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(terminalInferenceError);
                     }
                 }
 

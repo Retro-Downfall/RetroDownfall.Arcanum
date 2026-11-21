@@ -2407,6 +2407,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IToolInvocationStore, SqliteToolInvocationStore>();
 
+        services.AddScoped<ISessionRecoveryCheckpointStore, SessionRecoveryCheckpointStore>();
+
         services.AddScoped<ICampaignRollupStore, CampaignRollupStore>();
 
         services.AddScoped<ICampaignMaintenanceCheckpointStore, CampaignMaintenanceCheckpointStore>();

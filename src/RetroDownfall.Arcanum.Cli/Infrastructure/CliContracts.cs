@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -91,7 +92,9 @@ public sealed record SessionShowPayload(
     string? Summary,
     long TotalTokensUsed,
     decimal TotalCostUsd,
-    Guid? ForkedFromSessionId);
+    Guid? ForkedFromSessionId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    SessionRecoveryCheckpoint? RecoveryCheckpoint = null);
 
 public sealed record CliFailure(
     CliExitCode ExitCode,

@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
@@ -475,6 +476,60 @@ public sealed class AskCommandReasoningTests
         Assert.Contains("Completion is unknown.", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("Check the provider connection.", string.Join(" ", result.Error.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Completion is unknown.", result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(TurnRecoveryAction.ProvideInput, SessionRecoveryKind.AwaitingInput, "Answer the saved question")]
+    [InlineData(TurnRecoveryAction.ResumeSession, SessionRecoveryKind.Interrupted, "Continue the same Session")]
+    [InlineData(TurnRecoveryAction.InspectSession, SessionRecoveryKind.Interrupted, "Continue the same Session")]
+    public async Task Run_reports_the_native_recovery_checkpoint_on_stderr(
+        TurnRecoveryAction action, SessionRecoveryKind kind, string instruction)
+    {
+        SessionRecoveryCheckpoint checkpoint = new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), kind, "provider", "model");
+
+        string ndjson = SerializeFrames(new IntelligenceEvent(IntelligenceEventType.Error, "Session repair paused")
+        {
+            FailureEvidence = new(TurnFailurePhase.ProviderRequest, TurnEffectState.Unknown, action)
+            {
+                RecoveryCheckpoint = checkpoint,
+            },
+        });
+
+        NdjsonHandler handler = new(ndjson);
+        ServiceCollection services = new();
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+        services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(handler));
+        services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
+        services.AddSingleton<IEyeOfTheWorld, FakeEye>();
+        services.AddSingleton<IGrimoireCliInitialization, NoopGrimoireInitialization>();
+        services.AddSingleton<IChronosyncEngine, NoopChronosyncEngine>();
+        services.AddSingleton<IArcanumServeLauncher, NoopServeLauncher>();
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["run", "question"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Completion is unknown.", result.Error, StringComparison.Ordinal);
+
+        string error = string.Join(" ", result.Error.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.Contains(instruction, error, StringComparison.Ordinal);
+
+        Assert.Contains("POST /api/intelligence/ping", error, StringComparison.Ordinal);
+
+        Assert.Contains(checkpoint.Id.ToString("D"), error, StringComparison.Ordinal);
+
+        Assert.Contains(checkpoint.SessionId.ToString("D"), error, StringComparison.Ordinal);
+
+        Assert.Contains("Idempotency-Key", error, StringComparison.Ordinal);
 
         Assert.DoesNotContain("Completion is unknown.", result.Output, StringComparison.Ordinal);
     }

@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -655,6 +656,52 @@ public sealed class CommandCenterReasoningTests
         Assert.Equal(
             "failed",
             Assert.Single(entries, static entry => entry.Kind == SessionLogEntryKind.Error).Text);
+    }
+
+    [Theory]
+    [InlineData(false, TurnRecoveryAction.ReconcileTool, SessionRecoveryKind.ReconciliationRequired, false)]
+    [InlineData(true, TurnRecoveryAction.ReconcileTool, SessionRecoveryKind.ReconciliationRequired, false)]
+    [InlineData(false, TurnRecoveryAction.ProvideInput, SessionRecoveryKind.AwaitingInput, false)]
+    [InlineData(true, TurnRecoveryAction.ReconcileTool, SessionRecoveryKind.ReconciliationRequired, true)]
+    public async Task Command_Center_identifies_the_exact_pending_tool_invocation(
+        bool invocationOnFailure, TurnRecoveryAction action, SessionRecoveryKind kind, bool conflictingObservation)
+    {
+        Guid invocationId = Guid.NewGuid();
+
+        SessionRecoveryCheckpoint checkpoint = new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            kind, "provider", "model", InvocationId: invocationId);
+
+        Guid? observedInvocation = invocationOnFailure ? invocationId : null;
+
+        if (conflictingObservation) observedInvocation = Guid.NewGuid();
+
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(SerializeFrames(
+            new IntelligenceEvent(IntelligenceEventType.Error, "A tool may still have completed")
+            {
+                FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, action)
+                {
+                    RecoveryCheckpoint = checkpoint,
+                    InvocationId = observedInvocation,
+                },
+            })));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("question", state, updates.Writer, CancellationToken.None);
+
+        string error = Assert.Single(state.Log.Snapshot(), static entry => entry.Kind == SessionLogEntryKind.Error).Text;
+
+        Assert.Contains("Completion is unknown.", error, StringComparison.Ordinal);
+
+        Assert.Contains($"GET /api/sessions/{checkpoint.SessionId:D}/tool-invocations/{invocationId:D}", error, StringComparison.Ordinal);
+
+        Assert.Contains(checkpoint.Id.ToString("D"), error, StringComparison.Ordinal);
+
+        Assert.Contains("before continuing", error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("POST /api/intelligence/ping", error, StringComparison.Ordinal);
     }
 
     private static IntelligenceEvent Reasoning(string text) =>

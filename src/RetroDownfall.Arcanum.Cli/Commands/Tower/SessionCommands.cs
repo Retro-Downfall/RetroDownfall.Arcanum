@@ -171,7 +171,8 @@ public sealed class SessionCommands(
             session.Summary,
             session.TotalTokensUsed,
             session.TotalCostUsd,
-            session.ForkedFromSessionId);
+            session.ForkedFromSessionId,
+            session.RecoveryCheckpoint);
 
         if (CliInvocationContext.Current.Json)
         {

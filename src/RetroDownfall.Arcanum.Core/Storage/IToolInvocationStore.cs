@@ -61,6 +61,8 @@ public sealed record ToolInvocationDispatch(ToolInvocationEvidence Evidence, Gui
     public bool MayDispatch => DispatchId is not null;
 }
 
+public sealed record ToolInvocationTurnProgress(Guid? OutstandingInvocationId, Guid? LastVerifiedInvocationId);
+
 public interface IToolInvocationStore
 {
     Task<Result<ToolInvocationEvidence>> PrepareAsync(ToolInvocationKey key, SessionTurnClaimLease? owner, CancellationToken cancellationToken);
@@ -72,4 +74,6 @@ public interface IToolInvocationStore
     Task<Result> ConfirmAsync(ToolInvocationKey key, Guid resultEntryId, CancellationToken cancellationToken);
 
     Task<Result<ToolInvocationEvidence?>> ReadAsync(Guid sessionId, Guid receiptId, CancellationToken cancellationToken);
+
+    Task<Result<ToolInvocationTurnProgress>> ReadTurnProgressAsync(Guid sessionId, Guid assistantEntryId, CancellationToken cancellationToken);
 }

@@ -45,6 +45,10 @@ internal sealed record ContextCompressionRequest
 
     public bool PreserveToolHistory { get; init; }
 
+    public Guid? RecoveryQuestionEntryId { get; init; }
+
+    public bool RestoreNativeRecoveryQuestion { get; init; } = true;
+
     public required ChatClientLease Lease { get; init; }
 
     public required ChatOptions ChatOptions { get; init; }
@@ -133,12 +137,14 @@ public sealed class InferenceContextBuilder(
         PingRequest request,
         Session? thread,
         string newUserPrompt,
-        bool preserveToolHistory = false)
+        bool preserveToolHistory = false,
+        Guid? recoveryQuestionEntryId = null,
+        bool restoreNativeRecoveryQuestion = true)
     {
 
         List<MeAiChatMessage> messages = HasStatelessMessages(request)
             ? MapStatelessMessagesToMeAi(request.StatelessMessages!)
-            : MapGrimoireToMeAiMessages(thread, newUserPrompt, preserveToolHistory);
+            : MapHistory(thread, newUserPrompt, null, preserveToolHistory, recoveryQuestionEntryId, restoreNativeRecoveryQuestion);
 
         AttachScryingFociToLastMessage(messages, request.ScryingFoci);
 
@@ -285,7 +291,9 @@ public sealed class InferenceContextBuilder(
             thread,
             thread.LastSummarizedMessageAt.Value,
             context.NewUserPrompt,
-            context.PreserveToolHistory);
+            context.PreserveToolHistory,
+            context.RecoveryQuestionEntryId,
+            context.RestoreNativeRecoveryQuestion);
 
         string augmentedSystem = SystemPromptBuilder.Build(
             request,
@@ -353,7 +361,9 @@ public sealed class InferenceContextBuilder(
         Session? session,
         string newUserPrompt,
         DateTime? watermarkExclusive,
-        bool preserveToolHistory)
+        bool preserveToolHistory,
+        Guid? recoveryQuestionEntryId = null,
+        bool restoreNativeRecoveryQuestion = true)
     {
         if (session is null) return [new MeAiChatMessage(ChatRole.User, newUserPrompt)];
 
@@ -380,6 +390,21 @@ public sealed class InferenceContextBuilder(
                 && TurnContextGuards.IsPersistedToolExchange(entry, ordered[index + 1], session.Id))
             {
                 Entry result = ordered[++index];
+
+                if (entry.Id == recoveryQuestionEntryId)
+                {
+                    (MeAiChatMessage recoveryCall, MeAiChatMessage recoveryResult) = restoreNativeRecoveryQuestion
+                        && TryMapRecoveryQuestion(entry, result) is { } native
+                        ? native : (MapHistoryEntry(entry), MapHistoryEntry(result));
+
+                    TurnContextGuards.PreserveRecoveryQuestion(recoveryCall, recoveryResult);
+
+                    messages.Add(recoveryCall);
+
+                    messages.Add(recoveryResult);
+
+                    continue;
+                }
 
                 // Recognize the original pair before filtering. A pin on either half protects
                 // the whole exchange, including the partner preceding a summary watermark.
@@ -408,6 +433,25 @@ public sealed class InferenceContextBuilder(
         return messages;
     }
 
+    private static (MeAiChatMessage Call, MeAiChatMessage Result)? TryMapRecoveryQuestion(Entry call, Entry result)
+    {
+        if (call.ToolName != "ask_human" || call.ToolCallId is not { Length: > 0 } callId
+            || call.ToolArguments is not { Length: > 0 } arguments) return null;
+
+        // MapHistory already established the exact persisted tool pair and an object argument.
+        using JsonDocument document = JsonDocument.Parse(arguments);
+
+        if (!document.RootElement.TryGetProperty("question", out JsonElement question) || question.ValueKind != JsonValueKind.String)
+            return null;
+
+        var callMessage = new MeAiChatMessage(ChatRole.Assistant, [new FunctionCallContent(
+            callId, "ask_human", new Dictionary<string, object?> { ["question"] = question.GetString() })]);
+
+        var resultMessage = new MeAiChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, result.Content["[ToolResult: ".Length..^1])]);
+
+        return (callMessage, resultMessage);
+    }
+
     private static MeAiChatMessage MapHistoryEntry(Entry entry) => new(entry.Role switch
     {
         MessageRole.User => ChatRole.User,
@@ -433,8 +477,10 @@ public sealed class InferenceContextBuilder(
         Session session,
         DateTime watermarkExclusive,
         string newUserPrompt,
-        bool preserveToolHistory) =>
-        MapHistory(session, newUserPrompt, watermarkExclusive, preserveToolHistory);
+        bool preserveToolHistory,
+        Guid? recoveryQuestionEntryId,
+        bool restoreNativeRecoveryQuestion) =>
+        MapHistory(session, newUserPrompt, watermarkExclusive, preserveToolHistory, recoveryQuestionEntryId, restoreNativeRecoveryQuestion);
 
     /// <summary>
     /// Maps stateless <see cref="CoreChatMessage"/> transcripts to <c>Microsoft.Extensions.AI</c>

@@ -258,6 +258,8 @@ public sealed record SessionTurnClaimLease(
     /// </summary>
     public bool IsExecutable => Disposition is not SessionTurnClaimDisposition.Replayed;
 
+    public Guid? RecoveryCheckpointId { get; init; }
+
 }
 
 /// <summary>

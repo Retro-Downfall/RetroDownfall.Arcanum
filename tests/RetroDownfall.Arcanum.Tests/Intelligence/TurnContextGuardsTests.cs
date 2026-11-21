@@ -15,6 +15,33 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class TurnContextGuardsTests
 {
     [Fact]
+    public void Tool_evidence_eviction_keeps_the_exact_pending_question_and_its_result()
+    {
+        MeAiChatMessage question = new(ChatRole.Assistant, [new FunctionCallContent("pending-question", "ask_human")]);
+
+        MeAiChatMessage pause = new(ChatRole.Tool, [new FunctionResultContent("pending-question", "Waiting for input.")]);
+
+        TurnContextGuards.PreserveRecoveryQuestion(question, pause);
+
+        List<MeAiChatMessage> messages =
+        [
+            question,
+            pause,
+            new(ChatRole.Assistant, [new FunctionCallContent("unneeded-read", "read_file")]),
+            new(ChatRole.Tool, [new FunctionResultContent("unneeded-read", "Past inspection.")]),
+            new(ChatRole.User, "Use main."),
+        ];
+
+        Assert.True(TurnContextGuards.TryTrimOldestToolExchanges(messages, static window => window.Count, 3));
+
+        Assert.Same(question, messages[0]);
+
+        Assert.Same(pause, messages[1]);
+
+        Assert.Equal("Use main.", messages[2].Text);
+    }
+
+    [Fact]
     public void ExpandDeletionToCompleteToolGroups_IncludesToolResultPartner()
     {
         Guid callId = Guid.NewGuid();

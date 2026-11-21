@@ -84,6 +84,8 @@ Arcanum does not flatten arbitrary environment variables into the configuration 
 
 ### Edition, host, providers, and model selection
 
+Session recovery uses the provider, model and physical workspace selected by the interrupted turn. Changing the provider route can require an explicit model choice on continuation. Shared local-runtime aliases continue to use the existing foreground priority while the turn is between provider calls.
+
 | Descriptor key | Type and default | Bounds | Semantics |
 |---|---|---|---|
 | `edition` | enum `"local"` | `local`, `development` | Runtime hardening mode; `ARCANUM_EDITION` overrides it. Development-only surfaces still require their companion startup flags. |

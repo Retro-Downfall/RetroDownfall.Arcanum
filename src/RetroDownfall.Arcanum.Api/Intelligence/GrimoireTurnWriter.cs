@@ -850,6 +850,13 @@ public sealed class GrimoireTurnWriter(
                 "The claimed Session reply cannot begin without its atomic persistence ports and exact reserved identity.");
         }
 
+        if (request.RecoveryCheckpointId is { } checkpointId)
+        {
+            if (claimLease is null) return SessionRecoveryRequests.Conflict;
+
+            claimLease = claimLease with { RecoveryCheckpointId = checkpointId };
+        }
+
         // A stateless turn has no durable Session by construction, so there is nothing to begin and
         // nothing to fail. It is the one legitimate handle-free success.
         if (IsStateless(request))

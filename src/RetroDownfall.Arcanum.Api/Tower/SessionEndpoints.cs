@@ -167,9 +167,20 @@ internal static class SessionEndpoints
 
                 int entryCount = await repo.GetEntryCountAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
+                SessionDetailDto detail = SessionMapping.ToDetailDto(session, entryCount);
+
+                var checkpoint = await SessionRecoveryRequests.ReadCurrentAsync(id, ctx.RequestServices, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (checkpoint.IsFailure)
+                {
+                    return Results.Json(ApiResponse<SessionDetailDto>.FromResult(
+                            Result<SessionDetailDto>.Failure(checkpoint.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto, statusCode: ArcanumErrorMapper.ResolveStatusCode(checkpoint.Error.Code));
+                }
+
                 return Results.Ok(
                     ApiResponse<SessionDetailDto>.FromResult(
-                        Result<SessionDetailDto>.Success(SessionMapping.ToDetailDto(session, entryCount)),
+                        Result<SessionDetailDto>.Success(detail with { RecoveryCheckpoint = checkpoint.Value }),
                         traceId));
             })
         .WithName("GetSession");

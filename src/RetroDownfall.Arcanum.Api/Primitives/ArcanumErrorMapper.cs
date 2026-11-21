@@ -279,6 +279,11 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Hub.SessionTurnBusy
                 or ErrorCodes.Hub.SessionHistoryChanged
                 or ErrorCodes.Hub.SessionTurnRestoredInterrupted
+                or Intelligence.ToolInvocationRecovery.ReconciliationRequired
+                or ErrorCodes.Hub.SessionRecoveryCancelled
+                or ErrorCodes.Hub.SessionRecoveryConflict
+                or ErrorCodes.Hub.SessionRecoveryInputRequired
+                or ErrorCodes.Hub.SessionRecoveryRouteChanged
                 or ErrorCodes.Session.CampaignBindingRequired
                 or ErrorCodes.Campaign.PathIdentityRequired =>
                 StatusCodes.Status409Conflict,

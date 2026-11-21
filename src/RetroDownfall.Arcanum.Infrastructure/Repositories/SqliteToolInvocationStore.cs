@@ -143,51 +143,122 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
         {
             await using var tx = lease.Connection.BeginTransaction(deferred: true);
 
-            await using SqliteCommand read = lease.Connection.CreateCommand();
-
-            read.Transaction = tx;
-
-            read.CommandText = """
-                SELECT ReceiptId,AssistantEntryId,RoundOrdinal,CallOrdinal,StateCode,CreatedAtUtcTicks,ResultEntryId,ArgumentsDigest
-                FROM session_tool_invocations WHERE SessionId=$session AND ReceiptId=$receipt
-                """;
-
-            Add(read, "$session", Id(sessionId));
-
-            Add(read, "$receipt", Id(receiptId));
-
-            ToolInvocationEvidence evidence;
-
-            byte[] digest;
-
-            await using (SqliteDataReader row = await read.ExecuteReaderAsync(ct).ConfigureAwait(false))
-            {
-                if (!await row.ReadAsync(ct).ConfigureAwait(false)) return Result<ToolInvocationEvidence?>.Success(null);
-
-                evidence = ReadEvidence(row);
-
-                if (row.GetValue(7) is not byte[] bytes || bytes.Length != 32) return Unavailable;
-
-                digest = bytes;
-            }
-
-            if (evidence.State is ToolInvocationState.Dispatched or ToolInvocationState.Completed)
-            {
-                Guid? receipt = await ReadCommittedResultAsync(lease.Connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
-
-                evidence = evidence with
-                {
-                    State = receipt is not null ? ToolInvocationState.Completed : evidence.State,
-                    ResultEntryId = receipt,
-                };
-            }
-
-            return evidence;
+            return await ReadWithinAsync(lease.Connection, tx, sessionId, receiptId, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqliteException or InvalidDataException or FormatException)
         {
             return Unavailable;
         }
+    }
+
+    public async Task<Result<ToolInvocationTurnProgress>> ReadTurnProgressAsync(Guid sessionId, Guid assistantEntryId, CancellationToken ct)
+    {
+        var opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, ct).ConfigureAwait(false);
+
+        if (opened.IsFailure) return opened.Error;
+
+        await using var lease = opened.Value;
+
+        try
+        {
+            await using var tx = lease.Connection.BeginTransaction(deferred: true);
+
+            return await ReadTurnProgressWithinAsync(lease.Connection, tx, sessionId, assistantEntryId, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SqliteException or InvalidDataException or FormatException)
+        {
+            return Unavailable;
+        }
+    }
+
+    internal static async Task<Result<ToolInvocationTurnProgress>> ReadTurnProgressWithinAsync(SqliteConnection connection, SqliteTransaction tx,
+        Guid sessionId, Guid assistantEntryId, CancellationToken ct)
+    {
+        List<(ToolInvocationEvidence Evidence, byte[] Digest)> receipts = [];
+
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+            read.Transaction = tx;
+
+            read.CommandText = """
+                SELECT ReceiptId,AssistantEntryId,RoundOrdinal,CallOrdinal,StateCode,CreatedAtUtcTicks,ResultEntryId,ArgumentsDigest
+                FROM session_tool_invocations WHERE SessionId=$session AND AssistantEntryId=$assistant AND StateCode IN(2,3)
+                ORDER BY RoundOrdinal DESC,CallOrdinal DESC
+                """;
+
+            Add(read, "$session", Id(sessionId));
+            Add(read, "$assistant", Id(assistantEntryId));
+
+            await using SqliteDataReader row = await read.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await row.ReadAsync(ct).ConfigureAwait(false))
+            {
+                if (row.GetValue(7) is not byte[] digest || digest.Length != 32) return Unavailable;
+
+                receipts.Add((ReadEvidence(row), digest));
+            }
+        }
+
+        Guid? outstanding = null;
+
+        Guid? lastVerified = null;
+
+        foreach ((ToolInvocationEvidence evidence, byte[] digest) in receipts)
+        {
+            Guid? result = await ReadCommittedResultAsync(connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
+
+            if (result is not null)
+                lastVerified ??= evidence.ReceiptId;
+            else if (evidence.State == ToolInvocationState.Dispatched)
+                outstanding = evidence.ReceiptId;
+        }
+
+        return new ToolInvocationTurnProgress(outstanding, lastVerified);
+    }
+
+    internal static async Task<Result<ToolInvocationEvidence?>> ReadWithinAsync(SqliteConnection connection, SqliteTransaction tx,
+        Guid sessionId, Guid receiptId, CancellationToken ct)
+    {
+        await using SqliteCommand read = connection.CreateCommand();
+
+        read.Transaction = tx;
+
+        read.CommandText = """
+            SELECT ReceiptId,AssistantEntryId,RoundOrdinal,CallOrdinal,StateCode,CreatedAtUtcTicks,ResultEntryId,ArgumentsDigest
+            FROM session_tool_invocations WHERE SessionId=$session AND ReceiptId=$receipt
+            """;
+
+        Add(read, "$session", Id(sessionId));
+
+        Add(read, "$receipt", Id(receiptId));
+
+        ToolInvocationEvidence evidence;
+
+        byte[] digest;
+
+        await using (SqliteDataReader row = await read.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            if (!await row.ReadAsync(ct).ConfigureAwait(false)) return Result<ToolInvocationEvidence?>.Success(null);
+
+            evidence = ReadEvidence(row);
+
+            if (row.GetValue(7) is not byte[] bytes || bytes.Length != 32) return Unavailable;
+
+            digest = bytes;
+        }
+
+        if (evidence.State is ToolInvocationState.Dispatched or ToolInvocationState.Completed)
+        {
+            Guid? receipt = await ReadCommittedResultAsync(connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
+
+            evidence = evidence with
+            {
+                State = receipt is not null ? ToolInvocationState.Completed : evidence.State,
+                ResultEntryId = receipt,
+            };
+        }
+
+        return evidence;
     }
 
     private static async Task<Guid?> ReadCommittedResultAsync(SqliteConnection connection, SqliteTransaction tx, Guid session,

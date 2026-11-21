@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS session_recovery_checkpoints (
+    Id TEXT PRIMARY KEY NOT NULL CHECK(length(Id)=36 AND Id=upper(Id)),
+    SessionId TEXT NOT NULL REFERENCES Sessions(Id) ON DELETE CASCADE,
+    AssistantEntryId TEXT NOT NULL CHECK(length(AssistantEntryId)=36 AND AssistantEntryId=upper(AssistantEntryId)),
+    ClaimId TEXT NOT NULL UNIQUE CHECK(length(ClaimId)=36 AND ClaimId=upper(ClaimId)),
+    KindCode INTEGER NOT NULL CHECK(typeof(KindCode)='integer' AND KindCode IN(1,2,3)),
+    Provider TEXT NOT NULL CHECK(typeof(Provider)='text' AND length(Provider) BETWEEN 1 AND 256),
+    Model TEXT NOT NULL CHECK(typeof(Model)='text' AND length(Model) BETWEEN 1 AND 256),
+    ProviderRouteDigest BLOB NOT NULL CHECK(typeof(ProviderRouteDigest)='blob' AND length(ProviderRouteDigest)=32),
+    CampaignId TEXT NULL CHECK(CampaignId IS NULL OR (length(CampaignId)=36 AND CampaignId=upper(CampaignId))),
+    Workspace TEXT NULL CHECK(Workspace IS NULL OR (typeof(Workspace)='text' AND length(Workspace) BETWEEN 1 AND 4096)),
+    WorkspaceIdentity BLOB NULL CHECK(WorkspaceIdentity IS NULL OR (typeof(WorkspaceIdentity)='blob' AND length(WorkspaceIdentity)=32)),
+    QuestionEntryId TEXT NULL REFERENCES Entries(Id) ON DELETE CASCADE CHECK(QuestionEntryId IS NULL OR (length(QuestionEntryId)=36 AND QuestionEntryId=upper(QuestionEntryId))),
+    InvocationId TEXT NULL CHECK(InvocationId IS NULL OR (length(InvocationId)=36 AND InvocationId=upper(InvocationId))),
+    LastVerifiedInvocationId TEXT NULL CHECK(LastVerifiedInvocationId IS NULL OR (length(LastVerifiedInvocationId)=36 AND LastVerifiedInvocationId=upper(LastVerifiedInvocationId))),
+    ConsumingClaimId TEXT NULL UNIQUE CHECK(ConsumingClaimId IS NULL OR (length(ConsumingClaimId)=36 AND ConsumingClaimId=upper(ConsumingClaimId))),
+    CreatedAtUtcTicks INTEGER NOT NULL CHECK(typeof(CreatedAtUtcTicks)='integer' AND CreatedAtUtcTicks BETWEEN 0 AND 3155378975999999999),
+    CHECK ((KindCode=1)=(QuestionEntryId IS NOT NULL)),
+    CHECK (KindCode<>2 OR InvocationId IS NOT NULL),
+    CHECK ((Workspace IS NULL)=(WorkspaceIdentity IS NULL))
+);

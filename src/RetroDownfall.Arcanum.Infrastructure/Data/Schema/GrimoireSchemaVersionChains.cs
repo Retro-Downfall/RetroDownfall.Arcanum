@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 41 and declares forty steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 42 and declares forty-one steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -159,7 +159,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 41 adds content-free invocation evidence scoped to the Session and assistant entry.
     /// Existing transcript rows and tool result receipts keep their identities.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 41;
+    internal const int CoreSchemaVersion = 42;
 
     internal const int GuildCanonicalSchemaVersion = 19;
 
@@ -415,6 +415,8 @@ internal static class GrimoireSchemaVersionChains
 
             // Published Core40 before Session tool invocation evidence.
             [(GrimoireSchemaTransactionTier.Core, 41)] = "FEEE1C2184FD0748760F91F4121FD675E2C977FFC406B609A6FD0E58FFE97E59",
+
+            [(GrimoireSchemaTransactionTier.Core, 42)] = "07294998C49940585EF4E77A45D77DA18841CDE4B94B32BFF246DA1802D5267B",
 
             [(GrimoireSchemaTransactionTier.Core, 39)] = "614F0BD1685656251669D0268734BB045B805B85AD4CD43D9DEDAEA83E4A71B5",
 

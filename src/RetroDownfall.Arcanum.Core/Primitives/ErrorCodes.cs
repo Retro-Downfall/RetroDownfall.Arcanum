@@ -392,6 +392,14 @@ public static class ErrorCodes
         /// claim can be reported but never resumed or replayed.
         /// </summary>
         public const string SessionTurnRestoredInterrupted = "Hub.SessionTurnRestoredInterrupted";
+
+        public const string SessionRecoveryCancelled = "Hub.SessionRecoveryCancelled";
+
+        public const string SessionRecoveryConflict = "Hub.SessionRecoveryConflict";
+
+        public const string SessionRecoveryInputRequired = "Hub.SessionRecoveryInputRequired";
+
+        public const string SessionRecoveryRouteChanged = "Hub.SessionRecoveryRouteChanged";
     }
 
     /// <summary>Campaign — forge workspace registration and paths.</summary>

@@ -432,6 +432,7 @@ public sealed class ToolExecutionPipeline(
         ToolInvocationRecovery? recovery = null;
 
         if (isRegisteredTool && toolInvocationStore is not null && grimoireTurnWriter is not null
+            && !string.Equals(toolName, "ask_human", StringComparison.Ordinal)
             && !string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal)
             && (turnContext.GuildTools ?? GuildToolInvocationAmbient.Current) is null
             && turnContext.PersistedSessionId is { } recoverySession && recoverySession != Guid.Empty

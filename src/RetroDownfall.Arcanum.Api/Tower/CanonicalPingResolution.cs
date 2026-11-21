@@ -59,18 +59,22 @@ internal static class CanonicalPingResolution
     /// maintenance capability all agree with the fence the Long Rest request is admitted under. Every other request, and every request while
     /// Long Rest is off, gets <see cref="ResolveAsync"/>'s answer and reads no registry.
     /// </summary>
-    internal static Task<Result<CanonicalPingTurn>> ResolveTurnAsync(
+    internal static async Task<Result<CanonicalPingTurn>> ResolveTurnAsync(
         PingRequest request,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
 
-        return ResolveCoreAsync(
-            request,
+        Result<PingRequest> prepared = await SessionRecoveryRequests.PrepareAsync(request, httpContext, cancellationToken).ConfigureAwait(false);
+
+        if (prepared.IsFailure) return prepared.Error;
+
+        return await ResolveCoreAsync(
+            prepared.Value,
             httpContext.RequestServices,
             ArcanumInvocationContexts.ResolveContextPolicy(httpContext),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<Result<CanonicalPingTurn>> ResolveCoreAsync(

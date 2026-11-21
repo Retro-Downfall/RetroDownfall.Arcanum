@@ -49,4 +49,8 @@ public sealed record PingRequest(
     /// </summary>
     bool DisableAllTools = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ReasoningRequestOptions? Reasoning = null);
+    ReasoningRequestOptions? Reasoning = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    Guid? RecoveryCheckpointId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool ConfirmRecoveryRouteChange = false);
