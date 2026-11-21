@@ -35,7 +35,8 @@ public sealed partial class WizardIntelligenceProviderTests
             ],
         };
 
-        var messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, "next", preserveToolHistory);
+        var messages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
+            new PingRequest(Prompt: "next", SessionId: sessionId), session, "next", preserveToolHistory);
 
         static int Count(IReadOnlyList<Microsoft.Extensions.AI.ChatMessage> value) =>
             value.SelectMany(static message => message.Contents).OfType<TextContent>().Sum(static content => content.Text.Length);

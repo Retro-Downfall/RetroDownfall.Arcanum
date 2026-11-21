@@ -353,9 +353,8 @@ public sealed class InferenceContextBuilder(
 
     internal static List<MeAiChatMessage> MapGrimoireToMeAiMessages(
         Session? session,
-        string newUserPrompt,
-        bool preserveToolHistory = false) =>
-        MapHistory(session, newUserPrompt, null, preserveToolHistory);
+        string newUserPrompt) =>
+        MapHistory(session, newUserPrompt, null, preserveToolHistory: false);
 
     private static List<MeAiChatMessage> MapHistory(
         Session? session,
