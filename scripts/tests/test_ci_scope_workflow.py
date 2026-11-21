@@ -88,6 +88,12 @@ def selected_inventory(event, qualification, platform, full="true", win_x64="ver
 
 
 class CiScopeWorkflowTests(unittest.TestCase):
+    def test_static_job_provisions_ripgrep_before_running_the_shipping_gate_fixtures(self):
+        body = job("static-analysis")
+        provision = step(body, "Install ripgrep")
+        self.assertIn("apt-get install -y ripgrep", provision)
+        self.assertLess(body.index(provision), body.index("python3 -m unittest discover"))
+
     def test_final_native_qualification_reuses_full_windows_authority(self):
         self.assertNotIn("  guild-final-native:", WORKFLOW.read_text())
         for name, rid in (("windows-suite", "win-x64"), ("windows-arm64-suite", "win-arm64")):
