@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics;
+using RetroDownfall.Arcanum.Api.Diagnostics;
 using Microsoft.AspNetCore.HostFiltering;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -639,6 +640,8 @@ public static class ApiBootstrapper
         services.AddScoped<ToolExecutionPipeline>();
 
         services.AddScoped<DiagnosticMcpInvocationService>();
+
+        services.AddHostDefectDiagnostics();
 
         services.AddScoped<SemanticSpellRouter>();
 
@@ -1512,6 +1515,8 @@ public static class ApiBootstrapper
         apiGroup.MapMcpEndpoints();
 
         apiGroup.MapDiagnosticMcpInvocationEndpoints();
+
+        apiGroup.MapHostDefectEndpoints();
 
         apiGroup.MapPerceptionEndpoints();
 

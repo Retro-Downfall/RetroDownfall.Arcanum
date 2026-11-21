@@ -250,6 +250,8 @@ Clean scheduling never fails a Session turn. A clean request refused with a `Lon
 
 ### Integrations, execution, cost, retention, daemon, and CLI
 
+Host-defect reporting uses the executing build and an isolated provider fixture. Optional GitHub filing requires both `ARCANUM_HOST_DEFECT_GITHUB_REPOSITORY` as a single `owner/repository` and `ARCANUM_HOST_DEFECT_GITHUB_TOKEN` as the dedicated Issues-capable credential for that repository. Set `ARCANUM_HOST_DEFECT_GITHUB_PROJECT_ID` to the exact authorized Projects v2 node ID and `ARCANUM_HOST_DEFECT_GITHUB_PARENT_ISSUE` to the positive issue number in that repository. The token needs the applicable Issues and Projects write permissions. These values belong to the host process. Filing occurs only on the authenticated tracker request. Absent or inaccessible tracker credentials leave the local diagnostic available.
+
 The editor carries pricing and USD budget values as exact decimals through loading, text edits, cent increments and saving. A cent increment adds `0.01` without removing existing sub-cent precision. Nullable prices distinguish an explicit zero from an unset value. Invalid numeric input leaves the prior saved value intact; boxed binary floating-point values are rejected rather than converted into money.
 
 | Descriptor key | Type and default | Bounds | Semantics |
