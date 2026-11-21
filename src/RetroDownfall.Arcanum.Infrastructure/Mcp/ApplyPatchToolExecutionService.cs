@@ -536,35 +536,40 @@ internal sealed class ApplyPatchToolExecutionService
         bool rollbackIncomplete) =>
         new(serializedResult,
             RequiresReconciliation: rollbackIncomplete,
-            FailureEvidence: new(
-                TurnFailurePhase.ToolExecution,
-                rollbackIncomplete ? TurnEffectState.Unknown : TurnEffectState.Completed,
-                TurnRecoveryAction.InspectWorkspace),
+            FailureEvidence: ObserveExecutionFailure(result),
             FailureDiagnostics: result);
 
-    private ApplyPatchToolExecutionResponse Recovered(string serializedResult)
+    internal static TurnFailureEvidence ObserveExecutionFailure(WorkspacePatchToolResultEnvelope result) =>
+        new(TurnFailurePhase.ToolExecution,
+            result.Status == "rollback_incomplete" ? TurnEffectState.Unknown : TurnEffectState.Completed,
+            TurnRecoveryAction.InspectWorkspace)
+        {
+            Output = result.Output,
+        };
+
+    internal static WorkspacePatchToolResultEnvelope? ReadReceipt(string serializedResult)
     {
-        // Replay is a host-owned receipt with exact persisted bytes. A retained recovery receipt
-        // can confirm uncertainty without admitting a new mutation or rewriting the receipt.
         try
         {
-            WorkspacePatchToolResultEnvelope? result = JsonSerializer.Deserialize(
-                serializedResult, _json.WorkspacePatchToolResultEnvelope);
-
-            if (result?.Status == "rollback_incomplete")
-            {
-                return Normal(serializedResult) with
-                {
-                    FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectWorkspace),
-                };
-            }
+            return JsonSerializer.Deserialize(serializedResult, McpJsonSerializerContext.Default.WorkspacePatchToolResultEnvelope);
         }
         catch (JsonException)
         {
-            // Historical entries need not have the current structured status.
+            return null;
         }
+    }
 
-        return Normal(serializedResult);
+    internal static bool ReceiptIsUnresolved(WorkspacePatchToolResultEnvelope? result) =>
+        result?.Status is not ("ok" or "dry_run" or "conflict");
+
+    private ApplyPatchToolExecutionResponse Recovered(string serializedResult)
+    {
+        // Replay consumes the exact host-owned receipt and can retain an unresolved outcome.
+        WorkspacePatchToolResultEnvelope? result = ReadReceipt(serializedResult);
+
+        return result is { Status: "conflict" or "rollback_incomplete" }
+            ? Normal(serializedResult) with { FailureEvidence = ObserveExecutionFailure(result) }
+            : Normal(serializedResult);
     }
 
     private static WorkspacePatchToolResultEnvelope ReceiptPreflightFailure(

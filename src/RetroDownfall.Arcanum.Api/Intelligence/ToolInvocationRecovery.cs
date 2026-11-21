@@ -71,10 +71,11 @@ internal sealed class ToolInvocationRecovery(IToolInvocationStore store, Grimoir
 
         ReusedReceipt = true;
 
-        _ = await store.ConfirmAsync(key, key.Receipt.ResultEntryId, ct).ConfigureAwait(false);
-
         return result;
     }
+
+    internal Task<Result> ConfirmReusedReceiptAsync(CancellationToken ct) =>
+        store.ConfirmAsync(key, key.Receipt.ResultEntryId, ct);
 
     internal async Task ReleaseUndispatchedAsync(CancellationToken ct)
     {

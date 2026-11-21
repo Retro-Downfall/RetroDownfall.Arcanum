@@ -5,11 +5,14 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
+    internal Func<string, MultiFileCommitCoordinator>? PatchCoordinatorForTests { get; set; }
+
     private async Task<McpToolsCallResultWire> ExecuteApplyPatchAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -71,6 +74,7 @@ internal sealed partial class ArcanumInternalToolServer
             _workspacePatchSettings,
             budget,
             _json,
+            coordinatorFactory: PatchCoordinatorForTests,
             allowProtectedPathWrites: _allowProtectedPathWrites);
 
         ApplyPatchToolExecutionResponse response =

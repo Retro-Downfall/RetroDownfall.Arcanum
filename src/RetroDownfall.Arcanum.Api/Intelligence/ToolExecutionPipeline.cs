@@ -593,8 +593,9 @@ public sealed class ToolExecutionPipeline(
             }
         }
 
-        if (isApplyPatch && recovery is { AdmittedForDispatch: true }
-            && applyPatchContext?.ReceiptHandled != true && wardedExecution.FailureEvidence?.Effect == TurnEffectState.NotDispatched)
+        if (recovery is { AdmittedForDispatch: true } && applyPatchContext?.ReceiptHandled != true
+            && wardedExecution.FailureEvidence?.Effect == TurnEffectState.NotDispatched
+            && (isApplyPatch || toolName is ToolRiskClassifier.WorkspaceCheckToolName or "read_file"))
         {
             await recovery.ReleaseUndispatchedAsync(CancellationToken.None).ConfigureAwait(false);
         }
@@ -740,11 +741,11 @@ public sealed class ToolExecutionPipeline(
         bool receiptHandled = applyPatchContext?.ReceiptHandled == true
             || recovery is { ReusedReceipt: true } or { OwnerResultRecorded: true };
 
-        bool observedWorkspaceCheck = toolName == ToolRiskClassifier.WorkspaceCheckToolName
+        bool observedOwnerResult = (isApplyPatch || toolName == ToolRiskClassifier.WorkspaceCheckToolName)
             && wardedExecution.FailureEvidence is { Phase: TurnFailurePhase.ToolExecution, Effect: TurnEffectState.Completed };
 
         if (recovery is { AdmittedForDispatch: true } && executedSuccessfully
-            && (wardedExecution.FailureEvidence is null || observedWorkspaceCheck)
+            && (wardedExecution.FailureEvidence is null || observedOwnerResult)
             && !turnContext.ProtectedContent && wardedExecution.Sensitivity is null
             && toolName is not ("attach_session_file" or "refresh_session_file"))
         {
@@ -1930,11 +1931,17 @@ public sealed class ToolExecutionPipeline(
 
             if (admitted.Value is { } saved)
             {
+                McpBridgeTool? nativeBridge = ResolveRegisteredFunction(chatOptions, fcc.Name) as McpBridgeTool;
+
+                TurnFailureEvidence? savedFailure = null;
+
                 if (ApplyPatchInvocationAmbient.Current is { } patch)
                 {
                     patch.RecordHandoffOutcome(MandatoryToolInteractionAppendOutcome.RecoveredCommitted);
 
-                    if (PatchReceiptNeedsReconciliation(saved))
+                    WorkspacePatchToolResultEnvelope? verdict = ApplyPatchToolExecutionService.ReadReceipt(saved);
+
+                    if (ApplyPatchToolExecutionService.ReceiptIsUnresolved(verdict))
                     {
                         return new(saved, wardEvents, Failed: true)
                         {
@@ -1944,14 +1951,18 @@ public sealed class ToolExecutionPipeline(
                             },
                         };
                     }
+
+                    if (nativeBridge is { OwnsWorkspacePatchResult: true } && verdict is { Status: "conflict" })
+                        savedFailure = ApplyPatchToolExecutionService.ObserveExecutionFailure(verdict);
+                }
+                else if (nativeBridge is { OwnsWorkspaceCheckResult: true })
+                {
+                    savedFailure = ReadCompletedWorkspaceCheckFailure(saved);
                 }
 
-                return new(saved, wardEvents)
-                {
-                    FailureEvidence = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool { OwnsWorkspaceCheckResult: true }
-                        ? ReadCompletedWorkspaceCheckFailure(saved)
-                        : null,
-                };
+                _ = await recovery.ConfirmReusedReceiptAsync(CancellationToken.None).ConfigureAwait(false);
+
+                return new(saved, wardEvents) { FailureEvidence = savedFailure };
             }
         }
 
@@ -1962,7 +1973,11 @@ public sealed class ToolExecutionPipeline(
 
         if (rawResult is McpToolFailure failure)
         {
-            return new(failure.ResultText, wardEvents, Denied: failure.Outcome.Denied, Failed: true) { ToolOutcome = failure.Outcome };
+            return new(failure.ResultText, wardEvents, Denied: failure.Outcome.Denied, Failed: true)
+            {
+                ToolOutcome = failure.Outcome,
+                FailureEvidence = failure.FailureEvidence,
+            };
         }
 
         if (rawResult is Tools.MemoryRecallToolResult recall)
@@ -2018,20 +2033,6 @@ public sealed class ToolExecutionPipeline(
         catch (JsonException)
         {
             return null;
-        }
-    }
-
-    private static bool PatchReceiptNeedsReconciliation(string serializedResult)
-    {
-        try
-        {
-            var result = JsonSerializer.Deserialize(serializedResult, McpJsonSerializerContext.Default.WorkspacePatchToolResultEnvelope);
-
-            return result is null || result.Status == "rollback_incomplete";
-        }
-        catch (JsonException)
-        {
-            return true;
         }
     }
 

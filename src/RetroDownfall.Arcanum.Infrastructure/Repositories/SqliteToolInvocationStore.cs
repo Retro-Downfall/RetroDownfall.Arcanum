@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -105,23 +106,22 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
 
             if (prior.Value is not { } existing || existing.Evidence.State == ToolInvocationState.Prepared) return Conflict;
 
+            var proof = await ReadCommittedResultAsync(connection, tx, key.SessionId, existing.Evidence,
+                key.ArgumentsDigest.Bytes.ToArray(), token).ConfigureAwait(false);
+
+            if (proof.UnresolvedPatch) return Conflict;
+
             if (existing.Evidence.State == ToolInvocationState.Completed)
                 return existing.Evidence.ResultEntryId == resultEntryId ? true : Conflict;
+
+            if (proof.ResultEntryId != resultEntryId) return Conflict;
 
             await using SqliteCommand update = KeyCommand(connection, tx, key, """
                 UPDATE session_tool_invocations SET StateCode=3,ResultEntryId=$result
                 WHERE ReceiptId=$receipt AND SessionId=$session AND StateCode=2
-                  AND EXISTS(SELECT 1 FROM Entries WHERE Id=$callEntry AND SessionId=$session AND Role=$assistantRole)
-                  AND EXISTS(SELECT 1 FROM Entries WHERE Id=$result AND SessionId=$session AND Role=$resultRole)
                 """);
 
-            Add(update, "$callEntry", Id(key.Receipt.CallEntryId));
-
             Add(update, "$result", Id(resultEntryId));
-
-            Add(update, "$assistantRole", (int)MessageRole.Assistant);
-
-            Add(update, "$resultRole", (int)MessageRole.System);
 
             return await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) == 1 ? true : Unavailable;
         }, ct).ConfigureAwait(false);
@@ -236,11 +236,11 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
 
         foreach ((ToolInvocationEvidence evidence, byte[] digest) in receipts)
         {
-            Guid? result = await ReadCommittedResultAsync(connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
+            var proof = await ReadCommittedResultAsync(connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
 
-            if (result is not null)
+            if (proof.ResultEntryId is not null)
                 lastVerified ??= evidence.ReceiptId;
-            else if (evidence.State == ToolInvocationState.Dispatched)
+            else if (proof.UnresolvedPatch || evidence.State == ToolInvocationState.Dispatched)
                 outstanding = evidence.ReceiptId;
         }
 
@@ -280,19 +280,20 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
 
         if (evidence.State is ToolInvocationState.Dispatched or ToolInvocationState.Completed)
         {
-            Guid? receipt = await ReadCommittedResultAsync(connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
+            var proof = await ReadCommittedResultAsync(connection, tx, sessionId, evidence, digest, ct).ConfigureAwait(false);
 
             evidence = evidence with
             {
-                State = receipt is not null ? ToolInvocationState.Completed : evidence.State,
-                ResultEntryId = receipt,
+                State = proof.UnresolvedPatch ? ToolInvocationState.Dispatched
+                    : proof.ResultEntryId is not null ? ToolInvocationState.Completed : evidence.State,
+                ResultEntryId = proof.ResultEntryId,
             };
         }
 
         return evidence;
     }
 
-    private static async Task<Guid?> ReadCommittedResultAsync(SqliteConnection connection, SqliteTransaction tx, Guid session,
+    private static async Task<(Guid? ResultEntryId, bool UnresolvedPatch)> ReadCommittedResultAsync(SqliteConnection connection, SqliteTransaction tx, Guid session,
         ToolInvocationEvidence evidence, byte[] digest, CancellationToken ct)
     {
         Guid call = ToolInteractionReceiptDerivation.DeriveCallEntryId(evidence.ReceiptId);
@@ -302,8 +303,8 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
         if (evidence is { State: ToolInvocationState.Completed, ResultEntryId: { } ownerEntry }
             && ownerEntry != result)
         {
-            return await ReadProtectedResultReferenceAsync(connection, tx, session, evidence.ReceiptId, ownerEntry, ct)
-                .ConfigureAwait(false);
+            return (await ReadProtectedResultReferenceAsync(connection, tx, session, evidence.ReceiptId, ownerEntry, ct)
+                .ConfigureAwait(false), false);
         }
 
         await using SqliteCommand read = connection.CreateCommand();
@@ -311,7 +312,8 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
         read.Transaction = tx;
 
         read.CommandText = """
-            SELECT c.ToolName,c.ToolCallId,c.ToolArguments,c.CreatedAt
+            SELECT c.ToolName,c.ToolCallId,c.ToolArguments,c.CreatedAt,
+                   CASE WHEN c.ToolName=$patch THEN substr(r.Content,14,length(r.Content)-14) END
             FROM Entries c JOIN Entries r ON r.Id=$result AND r.SessionId=c.SessionId
             WHERE c.Id=$call AND c.SessionId=$session AND c.Role=$assistant AND r.Role=$system
               AND length(c.ToolName) BETWEEN 1 AND 256 AND (c.ToolCallId IS NULL OR length(c.ToolCallId)<=256)
@@ -331,16 +333,24 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
 
         Add(read, "$system", (int)MessageRole.System);
 
+        Add(read, "$patch", ToolRiskClassifier.ApplyPatchToolName);
+
         await using SqliteDataReader row = await read.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
-        if (!await row.ReadAsync(ct).ConfigureAwait(false) || UtcInstantText.Parse(row.GetString(3)) != evidence.CreatedAt) return null;
+        if (!await row.ReadAsync(ct).ConfigureAwait(false) || UtcInstantText.Parse(row.GetString(3)) != evidence.CreatedAt) return default;
 
         ToolInvocationIdentity identity = new(evidence.AssistantEntryId.ToString("D"), row.IsDBNull(1) ? null : row.GetString(1),
             evidence.Round, evidence.Call, row.GetString(0));
 
         ToolInvocationKey key = ToolInvocationKey.Capture(session, evidence.AssistantEntryId, identity, row.GetString(2));
 
-        return key.Receipt.Id == evidence.ReceiptId && key.ArgumentsDigest.Bytes.SequenceEqual(digest) ? result : null;
+        if (key.Receipt.Id != evidence.ReceiptId || !key.ArgumentsDigest.Bytes.SequenceEqual(digest)) return default;
+
+        if (identity.ToolName == ToolRiskClassifier.ApplyPatchToolName
+            && ApplyPatchToolExecutionService.ReceiptIsUnresolved(ApplyPatchToolExecutionService.ReadReceipt(row.GetString(4))))
+            return (null, true);
+
+        return (result, false);
     }
 
     private static async Task<Guid?> ReadProtectedResultReferenceAsync(SqliteConnection connection, SqliteTransaction tx,

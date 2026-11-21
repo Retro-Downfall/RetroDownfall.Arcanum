@@ -51,6 +51,11 @@ internal sealed class McpBridgeTool : AIFunction
         _trustedStructuredResultKind == TrustedStructuredToolResultKind.WorkspaceCheck
         && IsHostResultTransport(_client);
 
+    internal bool OwnsWorkspacePatchResult =>
+        _name == ToolRiskClassifier.ApplyPatchToolName
+        && _trustedStructuredResultKind == TrustedStructuredToolResultKind.WorkspacePatch
+        && IsHostResultTransport(_client);
+
     internal bool OwnsSessionAttachmentResult =>
         _name == "attach_session_file" && IsHostResultTransport(_client);
 
@@ -221,7 +226,13 @@ internal sealed class McpBridgeTool : AIFunction
 
             if (McpToolFailure.ReadNative(result.StructuredContent) is { } knownFailure)
             {
-                return knownFailure;
+                return trustStructuredResult && _name == "read_file" && knownFailure.Outcome.Code == ToolOutcomeCode.NotFound
+                    ? knownFailure with
+                    {
+                        FailureEvidence = new(TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched,
+                            TurnRecoveryAction.InspectWorkspace),
+                    }
+                    : knownFailure;
             }
 
             // Unknown native errors remain infrastructure failures. Neither their text nor an
