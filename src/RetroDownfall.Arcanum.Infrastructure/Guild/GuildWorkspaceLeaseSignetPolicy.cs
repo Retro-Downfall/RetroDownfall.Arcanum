@@ -52,7 +52,18 @@ internal sealed class GuildWorkspaceLeaseSignetPolicy(SignetAuthority authority,
         if (proof is null || effect is null || workspaceId == Guid.Empty) return Denied<T>();
 
         if (proof.Execution is { } execution)
-            return RunAsync(execution, workspaceId, GuildAuthorityAction.WorkspaceMutate, null, effect, ct);
+            return RunAsync(execution, workspaceId, GuildAuthorityAction.WorkspaceMutate, null, (binding, token) =>
+            {
+                if (proof.Tool is not { } exactTool) return effect(binding, token);
+
+                GuildVerifiedAuthority live = binding.Authority;
+
+                if (proof.Action != GuildAuthorityAction.WorkspaceMutate || proof.ResourceId != workspaceId
+                    || !live.EffectiveGrant!.Tools.Contains(exactTool)) return Denied<T>();
+
+                return effect(binding with { Authority = new(execution, live.Action, workspaceId,
+                    live.AuthorityGeneration, live.EffectiveGrant, exactTool) }, token);
+            }, ct);
 
         return proof.OperatorContext is { } caller && host.Authenticates(caller)
             && caller.InstallationGeneration == host.InstallationGeneration

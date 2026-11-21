@@ -16,12 +16,18 @@ internal sealed partial class ArcanumInternalToolServer
         "read_file" => "Read a range of lines from a file in the granted workspace. Follow the continuation to read the rest of the range.",
         "list_directory" => "List entries within the Quest's granted workspace paths. Follow the continuation for additional entries.",
         "search_workspace" => "Find literal or regex matches in UTF-8 files within the Quest's granted workspace paths. Pass the returned nextCursor as cursor to continue.",
+        "acquire_workspace_lease" => "Acquire a Quest-owned lease on granted files or subtrees. Retain its id, epoch and revision for renewal or release.",
+        "renew_workspace_lease" => "Renew this Quest's held lease using its id, epoch and current revision.",
+        "release_workspace_lease" => "Release this Quest's lease using its id, epoch and current revision. In-flight writes drain before reassignment.",
         "create_agent_task" => "Admit an asynchronous child Guild Quest. Omit agent for local work; agent selects an exact configured remote URL. cardId selects a local Card and excludes agent. Returns the admitted Quest without waiting.",
         "send_agent_message" => "Send an informational message to one questId or broadcast to the current cohortId membership; these addresses are mutually exclusive. Only questId can continue input-required work with expectedRevision. Messages never widen authority.",
         "get_agent_task" => "Read the exact current Quest projection in the authorized task subtree.",
         "cancel_agent_task" => "Request subtree cancellation; the receipt distinguishes the accepted request from actual convergence.",
         "list_agents" => "List Cards visible in the current Guild owner scope using a bounded continuation page.",
         "create_cohort" => "Create a result-collection Cohort under the current Quest with an immutable grant ceiling and all, first, or exact-byte quorum convergence. Membership remains open until explicitly closed.",
+        "write_file" => "Write UTF-8 text to a file within the Quest's granted workspace paths.",
+        "edit_file" => "Replace a literal UTF-8 text block inside the Quest's granted workspace paths.",
+        "apply_patch" => "Apply a canonical unified diff entirely within the Quest's granted workspace paths.",
         "admit_cohort_member" => "Atomically issue one ordinary local or remote primary voting Quest into an open Cohort. Requires the current Cohort revision. Host identity and one-vote membership are derived from the accepted issue.",
         "close_cohort" => "Freeze an open Cohort's active voting membership and evaluate its retained results. The decision remains provisional until all associated work and accounting drain.",
         "remove_cohort_member" => "Withdraw an exact member and request its associated subtree cancellation. Removing a frozen member does not shrink the electorate or lower quorum.",
@@ -38,6 +44,12 @@ internal sealed partial class ArcanumInternalToolServer
 
     internal static JsonElement BuildTaskToolSchema(string name, WorkspaceSearchSettings? searchSettings = null)
     {
+        if (name == "write_file") return BuildWriteFileSchema();
+
+        if (name == "edit_file") return BuildReplaceTextBlockSchema();
+
+        if (name == "apply_patch") return BuildApplyPatchSchema(ArcanumRuntimeDefaults.CodingTools.Patch);
+
         if (name == "read_file") return BuildReadFileChunkSchema(includeContinuation: true);
 
         if (name == "list_directory") return BuildListDirectorySchema();
@@ -50,6 +62,20 @@ internal sealed partial class ArcanumInternalToolServer
 
         string schema = name switch
         {
+            "acquire_workspace_lease" => """
+                {"type":"object","properties":{
+                  "scopes":{"type":"array","minItems":1,"items":{"type":"object","properties":{
+                    "relativePath":{"type":"string"},"kind":{"type":"string","enum":["file","subtree"]}},
+                    "required":["relativePath","kind"],"additionalProperties":false}},
+                  "idempotencyKey":{"type":"string","format":"uuid"}
+                },"required":["scopes"],"additionalProperties":false}
+                """,
+            "renew_workspace_lease" or "release_workspace_lease" => """
+                {"type":"object","properties":{
+                  "leaseId":{"type":"string","format":"uuid"},"epoch":{"type":"integer","minimum":1},
+                  "expectedRevision":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","format":"uuid"}
+                },"required":["leaseId","epoch","expectedRevision"],"additionalProperties":false}
+                """,
             "create_agent_task" => """
                 {
                   "type":"object",

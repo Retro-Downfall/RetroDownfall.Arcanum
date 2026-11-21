@@ -10,7 +10,7 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed record ApplyPatchToolExecutionResponse(
-    string SerializedResult);
+    string SerializedResult, bool WorkspaceChanged = false, bool RequiresReconciliation = false);
 
 internal sealed class ApplyPatchToolExecutionService
 {
@@ -309,7 +309,8 @@ internal sealed class ApplyPatchToolExecutionService
                     commit.Recovery).ConfigureAwait(false);
             }
 
-            return Normal(failureResult);
+            return new ApplyPatchToolExecutionResponse(failureResult,
+                RequiresReconciliation: commit.Status == WorkspaceCommitStatus.RollbackIncomplete);
         }
 
         if (commit.Transaction is null)
@@ -393,7 +394,7 @@ internal sealed class ApplyPatchToolExecutionService
         if (handoff.Outcome is MandatoryToolInteractionAppendOutcome.NewlyCommitted
             or MandatoryToolInteractionAppendOutcome.RecoveredCommitted)
         {
-            return Normal(serializedResult);
+            return new ApplyPatchToolExecutionResponse(serializedResult, WorkspaceChanged: true);
         }
 
         if (handoff.Outcome == MandatoryToolInteractionAppendOutcome.Failed)
@@ -419,7 +420,7 @@ internal sealed class ApplyPatchToolExecutionService
                     .ConfigureAwait(false);
             }
 
-            return Normal(failureResult);
+            return new ApplyPatchToolExecutionResponse(failureResult, RequiresReconciliation: !rollback.Complete);
         }
 
         throw new ApplyPatchReceiptHandoffException(

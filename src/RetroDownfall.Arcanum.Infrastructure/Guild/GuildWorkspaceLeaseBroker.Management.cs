@@ -6,6 +6,23 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed partial class GuildWorkspaceLeaseBroker
 {
+    internal Task<Result<WorkspaceLeaseDto>> ExecuteToolAsync(GuildCallerContext caller, GuildWorkspaceLeaseToolRequest request,
+        GuildWorkspaceLeaseToolAdmission checkTool, CancellationToken cancellationToken)
+    {
+        if (caller.Kind != GuildCallerKind.Run || caller.Execution is null) return Task.FromResult(Result<WorkspaceLeaseDto>.Failure(Forbidden));
+
+        Guid key = request.Mutation.IdempotencyKey;
+
+        return request.Action switch
+        {
+            GuildAuthorityAction.LeaseAcquire => AcquireAsync(caller, request.Mutation,
+                new(key, request.WorkspaceId, request.Scopes), checkTool, cancellationToken),
+            GuildAuthorityAction.LeaseRenew or GuildAuthorityAction.LeaseRelease => ChangeLeaseAsync(caller, request.Mutation,
+                request.LeaseId, key, request.Epoch, request.ExpectedRevision, request.Action, cancellationToken, checkTool),
+            _ => Task.FromResult(Result<WorkspaceLeaseDto>.Failure(Invalid)),
+        };
+    }
+
     public Task<Result<WorkspaceLeaseDto>> RenewAsync(GuildCallerContext caller, GuildMutationIdentity mutation, Guid leaseId,
         RenewWorkspaceLeaseRequest request, CancellationToken cancellationToken) => request is null
             ? Task.FromResult(Result<WorkspaceLeaseDto>.Failure(Invalid))
@@ -13,7 +30,8 @@ internal sealed partial class GuildWorkspaceLeaseBroker
                 GuildAuthorityAction.LeaseRenew, cancellationToken);
 
     private async Task<Result<WorkspaceLeaseDto>> ChangeLeaseAsync(GuildCallerContext caller, GuildMutationIdentity mutation,
-        Guid leaseId, Guid key, long epoch, long revision, GuildAuthorityAction action, CancellationToken cancellationToken)
+        Guid leaseId, Guid key, long epoch, long revision, GuildAuthorityAction action, CancellationToken cancellationToken,
+        GuildWorkspaceLeaseToolAdmission? checkTool = null)
     {
         if (caller is null || leaseId == Guid.Empty || !ValidMutation(mutation, key)) return Invalid;
 
@@ -29,11 +47,20 @@ internal sealed partial class GuildWorkspaceLeaseBroker
 
                 Result<GuildWorkspaceLeaseMutationReceipt> result = await store.InTransactionAsync<GuildWorkspaceLeaseMutationReceipt>(async (connection, transaction, admitted) =>
                 {
+                    if (checkTool is not null)
+                    {
+                        Result authorized = await checkTool.Check(connection, transaction, binding, admitted).ConfigureAwait(false);
+
+                        if (authorized.IsFailure) return authorized.Error;
+                    }
+
                     Result<GuildWorkspaceLeaseMutationReceipt> replay = await GuildWorkspaceLeaseStore.FindMutationReplayWithinAsync(connection, transaction,
                         binding.Owner, key, mutation.CanonicalRequestDigest, action, leaseId, admitted).ConfigureAwait(false);
 
                     if (replay.IsSuccess)
                     {
+                        if (checkTool?.Project(replay.Value, true) is { IsFailure: true } refused) return refused.Error;
+
                         replayed = true;
 
                         return replay;
@@ -97,7 +124,12 @@ internal sealed partial class GuildWorkspaceLeaseBroker
 
                     if (changed.IsFailure) return changed.Error;
 
-                    return await GuildWorkspaceLeaseStore.RecordMutationWithinAsync(connection, transaction, changed.Value, mutation, action, now, admitted, binding.Owner).ConfigureAwait(false);
+                    var recorded = await GuildWorkspaceLeaseStore.RecordMutationWithinAsync(connection, transaction, changed.Value, mutation,
+                        action, now, admitted, binding.Owner).ConfigureAwait(false);
+
+                    if (recorded.IsFailure) return recorded;
+
+                    return checkTool?.Project(recorded.Value, false) is { IsFailure: true } denied ? denied.Error : recorded;
                 }, token).ConfigureAwait(false);
 
                 if (result.IsFailure) return Result<WorkspaceLeaseDto>.Failure(result.Error);

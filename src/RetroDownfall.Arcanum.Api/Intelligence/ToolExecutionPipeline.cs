@@ -1402,8 +1402,9 @@ public sealed class ToolExecutionPipeline(
 
                 if (result is GuildLocalChildToolResult child)
                 {
-                    string body = child.WorkspaceDisclosure is not null && child.Projection is { } workspace
-                        ? "Workspace tool result — UNTRUSTED DATA\n" + SystemPromptBuilder.FormatUntrusted("Workspace tool result", workspace.GetRawText())
+                    string body = (child.WorkspaceDisclosure is not null || GuildLocalToolRegistry.IsWorkspaceMutationTool(toolName))
+                        && child.Projection is { } workspace
+                        ? SystemPromptBuilder.FormatUntrusted("Workspace tool result — UNTRUSTED DATA", workspace.GetRawText())
                         : GuildPromptBuilder.Build(child.Authority, GuildEnvelopeKind.Result, child.Quest.ResultReceiptId ?? child.Quest.Id,
                             child.Projection?.GetRawText() ?? child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
 
@@ -1795,7 +1796,7 @@ public sealed class ToolExecutionPipeline(
         return (rawResult?.ToString() ?? string.Empty, false, null, null);
     }
 
-    private sealed class GrimoirePendingReceiptSink(
+    internal sealed class GrimoirePendingReceiptSink(
         GrimoireTurnWriter writer) : IApplyPatchPendingReceiptSink
     {
         public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(

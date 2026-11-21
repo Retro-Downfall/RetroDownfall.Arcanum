@@ -10,12 +10,14 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal enum GuildLocalChildToolKind { DelegateTask, CreateAgentTask, SendAgentMessage, GetAgentTask, CancelAgentTask, ListAgents, SearchMemory,
-    ReadFile, ListDirectory, SearchWorkspace,
+    ReadFile, ListDirectory, SearchWorkspace, AcquireWorkspaceLease, RenewWorkspaceLease, ReleaseWorkspaceLease,
+    WriteFile, EditFile, ApplyPatch,
     CreateCohort, AdmitCohortMember, CloseCohort, RemoveCohortMember, PostWorkOffer, SubmitBid, WithdrawBid, AwardWork, WithdrawWorkOffer, AppendSharedNote, ReadSharedNotes }
 
 /// <summary>Host output consumed before generic model-tool stringification.</summary>
 internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null,
-    GuildAuthorityKind Authority = GuildAuthorityKind.Child, GuildWorkspaceReadDisclosure? WorkspaceDisclosure = null);
+    GuildAuthorityKind Authority = GuildAuthorityKind.Child, GuildWorkspaceReadDisclosure? WorkspaceDisclosure = null,
+    ImmutableArray<string> ChangedWorkspacePaths = default);
 
 internal interface IGuildLocalChildToolDispatcher
 {
@@ -26,6 +28,10 @@ internal interface IGuildLocalChildToolDispatcher
     bool SupportsMemory => false;
 
     bool SupportsWorkspaceReads => false;
+
+    bool SupportsWorkspaceLeases => false;
+
+    bool SupportsWorkspaceMutations => false;
 
     bool SupportsCohorts => false;
 
@@ -90,6 +96,12 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
             "read_file" => GuildLocalChildToolKind.ReadFile,
             "list_directory" => GuildLocalChildToolKind.ListDirectory,
             "search_workspace" => GuildLocalChildToolKind.SearchWorkspace,
+            "acquire_workspace_lease" => GuildLocalChildToolKind.AcquireWorkspaceLease,
+            "renew_workspace_lease" => GuildLocalChildToolKind.RenewWorkspaceLease,
+            "release_workspace_lease" => GuildLocalChildToolKind.ReleaseWorkspaceLease,
+            "write_file" => GuildLocalChildToolKind.WriteFile,
+            "edit_file" => GuildLocalChildToolKind.EditFile,
+            "apply_patch" => GuildLocalChildToolKind.ApplyPatch,
             "create_cohort" => GuildLocalChildToolKind.CreateCohort,
             "admit_cohort_member" => GuildLocalChildToolKind.AdmitCohortMember,
             "close_cohort" => GuildLocalChildToolKind.CloseCohort,
@@ -163,7 +175,8 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
 
 /// <summary>Closed local routes tied to one actual driver, accepted input and live host call scope.</summary>
 internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent, GuildLocalExecutionInput acceptedInput,
-    IGuildLocalChildToolDispatcher? childDispatcher, long outputAllocationBytes = 1_048_576) : IDisposable
+    IGuildLocalChildToolDispatcher? childDispatcher, long outputAllocationBytes = 1_048_576,
+    IGuildWorkspaceMutationRuntime? workspaceMutations = null) : IDisposable
 {
     private static readonly AsyncLocal<Invocation?> Current = new();
 
@@ -174,6 +187,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     private readonly (CancellationTokenSource Source, CancellationToken Token) _lifetime = CreateLifetime();
 
     private readonly List<GuildWorkspaceReadDisclosure> _workspaceDisclosures = [];
+
+    private readonly List<Guid> _retiredWorkspaceReads = [];
 
     private int _closed;
 
@@ -188,6 +203,12 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
             new(GuildToolSourceKind.InternalMcp, "arcanum", "read_file"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "list_directory"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "search_workspace"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "acquire_workspace_lease"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "renew_workspace_lease"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "release_workspace_lease"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "write_file"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "edit_file"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "apply_patch"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "create_cohort"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "admit_cohort_member"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "close_cohort"),
@@ -206,6 +227,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
     internal IGuildLocalChildToolDispatcher? ChildDispatcher { get; } = childDispatcher;
 
+    internal IGuildWorkspaceMutationRuntime? WorkspaceMutations { get; } = workspaceMutations;
+
     internal long OutputAllocationBytes { get; } = Math.Max(0, outputAllocationBytes);
 
     internal bool IsActive => Volatile.Read(ref _closed) == 0;
@@ -214,6 +237,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         && AcceptedInput is not null && ChildDispatcher is not null && AcceptedInput.Mode == GuildLocalExecutionMode.Apprentice && SupportedTools.Contains(tool)
         && (tool.Name != "search_memory" || ChildDispatcher.SupportsMemory)
         && (!IsWorkspaceReadTool(tool.Name) || ChildDispatcher.SupportsWorkspaceReads)
+        && (!IsWorkspaceLeaseTool(tool.Name) || ChildDispatcher.SupportsWorkspaceLeases)
+        && (!IsWorkspaceMutationTool(tool.Name) || ChildDispatcher.SupportsWorkspaceMutations && WorkspaceMutations is not null)
         && (!IsCohortTool(tool.Name) || ChildDispatcher.SupportsCohorts)
         && (tool.Name is not ("create_agent_task" or "admit_cohort_member") || ChildDispatcher.SupportsLocal || ChildDispatcher.SupportsRemote);
 
@@ -223,9 +248,25 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
     internal static bool IsWorkspaceReadTool(string name) => name is "read_file" or "list_directory" or "search_workspace";
 
+    internal static bool IsWorkspaceLeaseTool(string name) => name is "acquire_workspace_lease" or "renew_workspace_lease" or "release_workspace_lease";
+
+    internal static bool IsWorkspaceMutationTool(string name) => name is "write_file" or "edit_file" or "apply_patch";
+
     internal GuildWorkspaceReadDisclosure[] CaptureWorkspaceDisclosures()
     {
         lock (_workspaceDisclosures) return [.. _workspaceDisclosures];
+    }
+
+    internal Guid[] TakeRetiredWorkspaceReads()
+    {
+        lock (_workspaceDisclosures)
+        {
+            Guid[] retired = [.. _retiredWorkspaceReads];
+
+            _retiredWorkspaceReads.Clear();
+
+            return retired;
+        }
     }
 
     internal bool Matches(GuildExecutionHandle execution, IGuildToolAuthority authority) =>
@@ -298,6 +339,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
         lock (frame.Sync)
         {
+            if (IsWorkspaceMutationTool(tool.Name) && frame.MutationClaimed) return Format(Conflict);
+
             if (frame.Admission is { } existing)
             {
                 if (existing.ArgumentsDigest != frozen.Value.Digest) return Format(Conflict);
@@ -312,6 +355,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
                 frame.Admission = admission;
             }
+
+            if (IsWorkspaceMutationTool(tool.Name)) frame.MutationClaimed = true;
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
@@ -325,11 +370,18 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         Result<GuildLocalChildToolResult> result = await ChildDispatcher!.DispatchAsync(
             new(kind, admission.Arguments, authorized.Value.Quest, admission), linked.Token).ConfigureAwait(false);
 
-        if (result.IsFailure) return Format(result.Error);
+        if (result.IsFailure)
+        {
+            if (IsWorkspaceMutationTool(tool.Name) && result.Error.Code == ErrorCodes.Guild.ReconciliationRequired)
+                frame.FatalError = result.Error;
+
+            return Format(result.Error);
+        }
 
         if (!Owns(admission) || !admission.MatchesCommitted(result.Value.Quest)) return Format(Unavailable);
 
-        if (IsCohortTool(tool.Name) && !admission.MatchesCommittedProjection(result.Value.Projection)) return Format(Unavailable);
+        if ((IsCohortTool(tool.Name) || IsWorkspaceLeaseTool(tool.Name) || IsWorkspaceMutationTool(tool.Name))
+            && !admission.MatchesCommittedProjection(result.Value.Projection)) return Format(Unavailable);
 
         if (result.Value.Projection is { } projection
             && System.Text.Encoding.UTF8.GetByteCount(projection.GetRawText()) > admission.ResponseAllocationBytes)
@@ -349,8 +401,29 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
             lock (_workspaceDisclosures) _workspaceDisclosures.Add(proof);
         }
 
+        if (!result.Value.ChangedWorkspacePaths.IsDefaultOrEmpty && IsWorkspaceMutationTool(tool.Name))
+            RetireWorkspaceReads(result.Value.ChangedWorkspacePaths);
+
         return result.Value;
     }
+
+    private void RetireWorkspaceReads(ImmutableArray<string> changedPaths)
+    {
+        lock (_workspaceDisclosures)
+        {
+            _workspaceDisclosures.RemoveAll(read =>
+            {
+                if (!read.SourcePaths.Any(path => changedPaths.Any(changed => Overlaps(path, changed)))) return false;
+
+                _retiredWorkspaceReads.Add(read.LogicalCallId);
+
+                return true;
+            });
+        }
+    }
+
+    private static bool Overlaps(string left, string right) => left == right
+        || left.StartsWith(right + "/", StringComparison.Ordinal) || right.StartsWith(left + "/", StringComparison.Ordinal);
 
     public void Dispose()
     {
@@ -384,6 +457,10 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         internal GuildToolGrant Tool { get; } = tool;
 
         internal GuildChildToolAdmission? Admission;
+
+        internal bool MutationClaimed;
+
+        internal Error? FatalError;
 
         internal long OutputAllocationBytes { get; private set; } = registry.OutputAllocationBytes;
 

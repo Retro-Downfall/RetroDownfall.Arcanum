@@ -34,6 +34,8 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-workspace.t
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_mutates_only_its_Quest_workspace_and_commits_the_patch_receipt \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Quest_lease_tools_manage_the_same_Quest_owned_epoch_and_refuse_a_sibling_path \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_reads_lists_and_searches_only_its_physical_workspace_with_financial_controls_off \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Retained_workspace_function_refuses_disclosure_after_loss_of_authority \
   --required-case "$host_lock_case" \

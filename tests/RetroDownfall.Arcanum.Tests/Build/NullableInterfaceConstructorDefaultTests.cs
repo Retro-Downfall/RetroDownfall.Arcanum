@@ -249,6 +249,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs:GuildQuestStore:readiness"] = "the host registers IGuildLocalHostReadiness; omission makes RequireLocalExecutionReady return GuildLocalHostReadiness.Unavailable rather than admitting local execution",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalToolRegistry.cs:GuildLocalToolRegistry:workspaceMutations"] = "the live provider turn supplies a per-turn managed mutation and receipt adapter. If it is absent, the closed registry refuses all three workspace mutation tools before advertising or dispatching them",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/ConclaveArchmage.cs:ConclaveArchmage:guildScheduler"] = "the host registers IGuildLocalQuestScheduler; CanIssueGuild refuses when it is absent or unavailable, and cancellation refuses before it can schedule",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/ConclaveArchmage.cs:ConclaveArchmage:memorySearch"] = "the host registers scoped IMemorySearchService; without it SupportsMemory is false and the Guild memory tool returns unavailable before searching",

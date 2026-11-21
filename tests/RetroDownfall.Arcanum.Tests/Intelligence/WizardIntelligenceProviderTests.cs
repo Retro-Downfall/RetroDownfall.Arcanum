@@ -9899,7 +9899,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     private WizardIntelligenceProvider CreateWizard(
         ScriptingChatClient chatClient,
         ArcanumSettings? settings = null,
-        FakeGrimoireRepository? grimoire = null,
+        IGrimoireRepository? grimoire = null,
         FakeWard? ward = null,
         FakeMcpConnectionManager? mcp = null,
         IChatClientFactory? factory = null,

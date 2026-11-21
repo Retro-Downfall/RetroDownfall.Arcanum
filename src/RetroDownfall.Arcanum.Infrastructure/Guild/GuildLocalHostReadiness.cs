@@ -16,6 +16,8 @@ internal interface IGuildLocalHostReadiness
 
     Result<IGuildWorkspaceLeaseService> GetWorkspaceLeaseService() => GuildLocalHostReadiness.Unavailable;
 
+    Result<GuildWorkspaceMutationFence> GetWorkspaceMutationFence() => GuildLocalHostReadiness.Unavailable;
+
     Result<IDisposable> RetainPhysicalWorkOwnership() => GuildLocalHostReadiness.Unavailable;
 }
 
@@ -53,6 +55,14 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
             && installed.Generation == policy.InstallationGeneration && installed.Principal == policy.OperatorPrincipalId
             && installed.HostLock.Validate().IsSuccess
             ? Result<IGuildWorkspaceLeaseService>.Success(installed.Broker) : Unavailable;
+    }
+
+    public Result<GuildWorkspaceMutationFence> GetWorkspaceMutationFence()
+    {
+        Installation? installed = Volatile.Read(ref _installed);
+
+        return installed is not null && RequireExecutionReady().IsSuccess && ReferenceEquals(installed, Volatile.Read(ref _installed))
+            ? Result<GuildWorkspaceMutationFence>.Success(installed.Fence) : Unavailable;
     }
 
     public Result<IDisposable> RetainPhysicalWorkOwnership()
@@ -132,13 +142,15 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
             GuildWorkspaceLeaseBroker broker = new(new GuildWorkspaceLeaseStore(connections), new WorkspaceLeaseIdentityResolver(),
                 new GuildWorkspaceLeaseSignetPolicy(authority, policy), time, hostLock);
 
+            GuildWorkspaceMutationFence fence = new(broker);
+
             WorkspaceMutationFence.Registration registration;
 
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                registration = WorkspaceMutationFence.Install(new GuildWorkspaceMutationFence(broker));
+                registration = WorkspaceMutationFence.Install(fence);
             }
             catch (InvalidOperationException)
             {
@@ -154,7 +166,7 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
             }
 
             Volatile.Write(ref _installed, new Installation(policy.InstallationGeneration, policy.OperatorPrincipalId,
-                hostLock, broker, registration));
+                hostLock, broker, fence, registration));
 
             return RequireExecutionReady();
         }
@@ -193,5 +205,5 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
     }
 
     private sealed record Installation(Guid Generation, Guid Principal, GuildWorkspaceLeaseHostLock HostLock,
-        GuildWorkspaceLeaseBroker Broker, WorkspaceMutationFence.Registration Registration);
+        GuildWorkspaceLeaseBroker Broker, GuildWorkspaceMutationFence Fence, WorkspaceMutationFence.Registration Registration);
 }

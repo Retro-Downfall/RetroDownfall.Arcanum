@@ -196,7 +196,7 @@ internal sealed partial class ArcanumInternalToolServer
     private static McpToolsCallResultWire ToolFault(string text) =>
         McpToolFailure.Fault(text);
 
-    private static int CountOccurrences(string source, string value)
+    internal static int CountOccurrences(string source, string value)
     {
         int count = 0;
 

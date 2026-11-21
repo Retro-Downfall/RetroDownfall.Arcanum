@@ -10,6 +10,7 @@ internal sealed record GuildWorkspaceReadAdmission(Guid WorkspaceId, GuildGrant 
 /// <summary>Evidence for replaying an already-materialized read, with no authority to run another tool.</summary>
 internal sealed record GuildWorkspaceReadDisclosure(GuildLocalToolRegistry Registry, GuildToolGrant Tool,
     Func<GuildToolGrant, bool> Eligibility, Guid WorkspaceId, ImmutableArray<GuildWorkspaceGrant> Scopes,
+    Guid LogicalCallId, ImmutableArray<string> SourcePaths,
     Func<CancellationToken, Task<Result>> VerifyPhysicalAsync);
 
 internal sealed partial class GuildQuestStore

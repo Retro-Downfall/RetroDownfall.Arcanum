@@ -18,13 +18,15 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
 
     private static readonly AsyncLocal<Invocation?> Current = new();
 
-    internal IDisposable EnterInvocation(GuildVerifiedAuthority authority, Guid workspaceId)
+    internal IDisposable EnterInvocation(GuildVerifiedAuthority authority, Guid workspaceId,
+        Func<CancellationToken, Task<Result>>? reauthorize = null, WorkspaceLeaseIdentitySet? initialTargets = null,
+        string? callDigest = null)
     {
         ArgumentNullException.ThrowIfNull(authority);
 
         Invocation? previous = Current.Value;
 
-        Invocation invocation = new(this, authority, workspaceId);
+        Invocation invocation = new(this, authority, workspaceId, reauthorize, initialTargets, callDigest);
 
         Current.Value = invocation;
 
@@ -38,24 +40,40 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
 
         if (invocation is null || !invocation.Active || !ReferenceEquals(invocation.Owner, this)) return Forbidden;
 
+        if (invocation.Reauthorize is { } check)
+        {
+            Result live = await check(cancellationToken).ConfigureAwait(false);
+
+            if (live.IsFailure) return live.Error;
+
+            if (!invocation.Active || !ReferenceEquals(Current.Value, invocation)) return Forbidden;
+        }
+
         GuildMutationPlan plan = new(invocation.WorkspaceId, scopes, string.Empty);
 
-        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(workspaceRoot + "\0"
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(workspaceRoot + "\0" + invocation.CallDigest + "\0"
             + JsonSerializer.Serialize(plan, GuildJsonContext.Default.GuildMutationPlan))));
 
         Result<GuildMutationPermit> admitted = await broker.AdmitWriterMutationAsync(invocation.Authority,
-            plan with { EffectPlanDigest = digest }, workspaceRoot, cancellationToken).ConfigureAwait(false);
+            plan with { EffectPlanDigest = digest }, workspaceRoot, cancellationToken, invocation.InitialTargets).ConfigureAwait(false);
 
         return admitted.IsSuccess ? Result<IWorkspaceMutationLease>.Success(new Lease(this, invocation, admitted.Value)) : admitted.Error;
     }
 
-    private sealed class Invocation(GuildWorkspaceMutationFence owner, GuildVerifiedAuthority authority, Guid workspaceId)
+    private sealed class Invocation(GuildWorkspaceMutationFence owner, GuildVerifiedAuthority authority, Guid workspaceId,
+        Func<CancellationToken, Task<Result>>? reauthorize, WorkspaceLeaseIdentitySet? initialTargets, string? callDigest)
     {
         internal GuildWorkspaceMutationFence Owner { get; } = owner;
 
         internal GuildVerifiedAuthority Authority { get; } = authority;
 
         internal Guid WorkspaceId { get; } = workspaceId;
+
+        internal Func<CancellationToken, Task<Result>>? Reauthorize { get; } = reauthorize;
+
+        internal WorkspaceLeaseIdentitySet? InitialTargets { get; } = initialTargets;
+
+        internal string? CallDigest { get; } = callDigest;
 
         internal volatile bool Active = true;
     }
@@ -77,6 +95,15 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
         public async ValueTask<Result> ValidateAsync(bool rollback, CancellationToken cancellationToken)
         {
             if (!CanUse(rollback)) return Forbidden;
+
+            if (!rollback && invocation.Reauthorize is { } check)
+            {
+                Result live = await check(cancellationToken).ConfigureAwait(false);
+
+                if (live.IsFailure) return live;
+
+                if (!CanUse(rollback)) return Forbidden;
+            }
 
             return rollback
                 ? await owner.Broker.ValidateRollbackAsync(permit, cancellationToken).ConfigureAwait(false)

@@ -116,6 +116,11 @@ internal sealed record WorkspaceLeaseIdentitySet(
     internal bool Covers(WorkspaceLeaseIdentitySet other) =>
         other.Scopes.All(candidate => Scopes.Any(scope => scope.Covers(candidate)));
 
+    internal bool IncludesExactTargets(WorkspaceLeaseIdentitySet expected) => RootIdentity == expected.RootIdentity
+        && expected.Scopes.All(target => Scopes.Any(actual => actual.RelativePath == target.RelativePath
+            && actual.Kind == target.Kind && actual.IsDirectory == target.IsDirectory && actual.ObjectIdentity == target.ObjectIdentity
+            && actual.Segments.SequenceEqual(target.Segments) && actual.Ancestors.SequenceEqual(target.Ancestors)));
+
     internal string ToJson() => JsonSerializer.Serialize(this, WorkspaceLeaseIdentityJsonContext.Default.WorkspaceLeaseIdentitySet);
 
     internal static Result<WorkspaceLeaseIdentitySet> FromJson(string json)

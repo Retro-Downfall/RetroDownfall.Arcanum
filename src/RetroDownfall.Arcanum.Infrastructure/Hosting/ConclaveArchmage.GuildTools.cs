@@ -15,6 +15,8 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 
     public bool SupportsCohorts => cohorts is not null && CanIssueGuild();
 
+    public bool SupportsWorkspaceLeases => CanIssueGuild() && quests!.HasWorkspaceLeaseBroker;
+
     public async Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken)
     {
         if (call is null || call.Admission is null || !CanIssueGuild()
@@ -28,6 +30,12 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 
         if (GuildLocalToolRegistry.IsWorkspaceReadTool(call.Admission.Tool.Name))
             return await ReadGuildWorkspaceAsync(call, cancellationToken).ConfigureAwait(false);
+
+        if (GuildLocalToolRegistry.IsWorkspaceLeaseTool(call.Admission.Tool.Name))
+            return await quests!.ExecuteWorkspaceLeaseToolAsync(call, cancellationToken).ConfigureAwait(false);
+
+        if (GuildLocalToolRegistry.IsWorkspaceMutationTool(call.Admission.Tool.Name))
+            return await MutateGuildWorkspaceAsync(call, cancellationToken).ConfigureAwait(false);
 
         if (GuildLocalToolRegistry.IsMarketTool(call.Admission.Tool.Name))
             return await DispatchMarketToolAsync(call, cancellationToken).ConfigureAwait(false);

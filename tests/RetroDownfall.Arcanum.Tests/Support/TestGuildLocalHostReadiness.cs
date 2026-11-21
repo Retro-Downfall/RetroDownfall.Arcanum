@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -9,6 +10,12 @@ internal sealed class TestGuildLocalHostReadiness : IGuildLocalHostReadiness
     internal IGuildLocalHostReadiness? Inner { get; set; }
 
     internal bool Available { get; set; } = true;
+
+    public Result<IGuildWorkspaceLeaseService> GetWorkspaceLeaseService() =>
+        Inner?.GetWorkspaceLeaseService() ?? GuildLocalHostReadiness.Unavailable;
+
+    public Result<GuildWorkspaceMutationFence> GetWorkspaceMutationFence() =>
+        Inner?.GetWorkspaceMutationFence() ?? GuildLocalHostReadiness.Unavailable;
 
     public Result RequireExecutionReady() => Inner?.RequireExecutionReady() ?? (Available
         ? Result.Success() : Result.Failure(GuildLocalHostReadiness.Unavailable));

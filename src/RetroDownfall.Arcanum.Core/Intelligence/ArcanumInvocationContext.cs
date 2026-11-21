@@ -26,8 +26,8 @@ public sealed class ArcanumInvocationContext
 {
     internal IGuildInvocationBinding? GuildBinding { get; private init; }
 
-    internal static ArcanumInvocationContext ForGuild(IGuildInvocationBinding binding) => new(
-        ArcanumExecutionSurface.InternalBackground, null, InvocationAttendance.Unattended,
+    internal static ArcanumInvocationContext ForGuild(IGuildInvocationBinding binding, CanonicalCampaignContext? campaign = null) => new(
+        ArcanumExecutionSurface.InternalBackground, campaign, InvocationAttendance.Unattended,
         CovenantContextPolicy.None, ToolPolicy.NoTools, null) { GuildBinding = binding };
 
     private ArcanumInvocationContext(

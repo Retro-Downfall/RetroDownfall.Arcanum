@@ -374,6 +374,12 @@ internal static class GuildAotSmoke
 
         Exercise(GuildWorkspaceAccess.Read, GuildJsonContext.Default.GuildWorkspaceAccess);
 
+        GuildWorkspaceLeaseToolReceipt leaseObservation = new(Id, Id, GuildWorkspaceLeaseOwnerKind.Quest, Id,
+            GuildWorkspaceLeaseState.Held, 3, 4, Instant, SampleGuildMutationReceiptDto());
+
+        if (RoundTrip(leaseObservation, GuildWorkspaceLeaseToolJsonContext.Default.GuildWorkspaceLeaseToolReceipt) != leaseObservation)
+            throw new InvalidOperationException("The model-facing workspace lease receipt changed during serialization.");
+
         Exercise(GuildWorkspaceLeaseOwnerKind.Quest, GuildJsonContext.Default.GuildWorkspaceLeaseOwnerKind);
 
         Exercise(GuildWorkspaceLeaseState.Held, GuildJsonContext.Default.GuildWorkspaceLeaseState);

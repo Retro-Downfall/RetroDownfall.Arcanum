@@ -37,7 +37,11 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
     private bool _stopping;
 
     public Task<Result<WorkspaceLeaseDto>> AcquireAsync(GuildCallerContext caller, GuildMutationIdentity mutation,
-        AcquireWorkspaceLeaseRequest request, CancellationToken cancellationToken)
+        AcquireWorkspaceLeaseRequest request, CancellationToken cancellationToken) =>
+        AcquireAsync(caller, mutation, request, null, cancellationToken);
+
+    private Task<Result<WorkspaceLeaseDto>> AcquireAsync(GuildCallerContext caller, GuildMutationIdentity mutation,
+        AcquireWorkspaceLeaseRequest request, GuildWorkspaceLeaseToolAdmission? checkTool, CancellationToken cancellationToken)
     {
         if (caller is null || request is null || !ValidMutation(mutation, request.IdempotencyKey)
             || request.WorkspaceId == Guid.Empty || request.Scopes.IsDefaultOrEmpty)
@@ -52,6 +56,13 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
 
                 Result<GuildWorkspaceLeaseRecord> history = await store.ReadTransactionAsync<GuildWorkspaceLeaseRecord>(async (connection, transaction, admitted) =>
                 {
+                    if (checkTool is not null)
+                    {
+                        Result authorized = await checkTool.Check(connection, transaction, binding, admitted).ConfigureAwait(false);
+
+                        if (authorized.IsFailure) return authorized.Error;
+                    }
+
                     Result<GuildWorkspaceLeaseRecord> prior = await GuildWorkspaceLeaseStore.FindReplayWithinAsync(connection, transaction,
                         binding.Owner, mutation.IdempotencyKey, mutation.CanonicalRequestDigest, admitted).ConfigureAwait(false);
 
@@ -63,6 +74,8 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
                     if (accepted.IsFailure) return Unavailable;
 
                     historicalAcceptance = accepted.Value;
+
+                    if (checkTool?.Project(accepted.Value, true) is { IsFailure: true } refused) return refused.Error;
 
                     return prior;
                 }, token).ConfigureAwait(false);
@@ -91,6 +104,13 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
 
                 Result<GuildWorkspaceLeaseRecord> acquired = await store.InTransactionAsync<GuildWorkspaceLeaseRecord>(async (connection, transaction, admitted) =>
                 {
+                    if (checkTool is not null)
+                    {
+                        Result authorized = await checkTool.Check(connection, transaction, binding, admitted).ConfigureAwait(false);
+
+                        if (authorized.IsFailure) return authorized.Error;
+                    }
+
                     Result<GuildWorkspaceLeaseRecord> replay = await GuildWorkspaceLeaseStore.FindReplayWithinAsync(connection, transaction,
                         binding.Owner, mutation.IdempotencyKey, mutation.CanonicalRequestDigest, admitted).ConfigureAwait(false);
 
@@ -102,6 +122,8 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
                         if (acceptedReplay.IsFailure) return Unavailable;
 
                         acceptance = acceptedReplay.Value;
+
+                        if (checkTool?.Project(acceptedReplay.Value, true) is { IsFailure: true } replayRefusal) return replayRefusal.Error;
 
                         return replay;
                     }
@@ -132,6 +154,8 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
 
                     acceptance = original.Value;
 
+                    if (checkTool?.Project(original.Value, false) is { IsFailure: true } refused) return refused.Error;
+
                     inserted = true;
 
                     return saved;
@@ -159,7 +183,7 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
         CancellationToken cancellationToken) => AdmitMutationCoreAsync(authority, plan, null, cancellationToken);
 
     private Task<Result<GuildMutationPermit>> AdmitMutationCoreAsync(GuildVerifiedAuthority authority, GuildMutationPlan plan,
-        string? writerRoot, CancellationToken cancellationToken)
+        string? writerRoot, CancellationToken cancellationToken, WorkspaceLeaseIdentitySet? initialTargets = null)
     {
         if (authority is null || plan is null || plan.WorkspaceId == Guid.Empty || plan.Scopes.IsDefaultOrEmpty
             || string.IsNullOrWhiteSpace(plan.EffectPlanDigest)) return Task.FromResult(Result<GuildMutationPermit>.Failure(Invalid));
@@ -178,6 +202,9 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
             Result<WorkspaceLeaseIdentitySet> resolved = await identities.ResolveAsync(binding.WorkspaceRoot, plan.Scopes, token).ConfigureAwait(false);
 
             if (resolved.IsFailure) return Result<GuildMutationPermit>.Failure(resolved.Error);
+
+            if (initialTargets is not null && !resolved.Value.IncludesExactTargets(initialTargets))
+                return Result<GuildMutationPermit>.Failure(WorkspaceLeaseIdentityResolver.Unavailable);
 
             Result coverage = await CoversAllowedAsync(binding, resolved.Value, plan.Scopes, token).ConfigureAwait(false);
 

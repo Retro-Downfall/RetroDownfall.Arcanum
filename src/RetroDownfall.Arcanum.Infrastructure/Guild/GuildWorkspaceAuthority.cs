@@ -19,7 +19,7 @@ internal sealed record GuildWorkspaceRegistration(Guid WorkspaceId, string RootP
 internal sealed partial class GuildWorkspaceAuthority(GuildWorkspaceRegistration registration, PhysicalCampaignRootOpener opener,
     Func<CancellationToken, Task<Result<GuildWorkspaceRegistration>>> resolveCurrent)
 {
-    private GuildWorkspaceRegistration Registration => registration;
+    internal GuildWorkspaceRegistration Registration => registration;
 
     private PhysicalCampaignRootOpener Opener => opener;
 

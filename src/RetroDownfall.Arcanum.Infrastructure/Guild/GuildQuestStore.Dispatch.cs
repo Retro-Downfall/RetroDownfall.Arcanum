@@ -245,6 +245,16 @@ internal sealed partial class GuildQuestStore
             if (live.IsFailure) return live.Error;
         }
 
+        return await RequireDriverBindingWithinAsync(connection, transaction, driver, requireLease, allowCancelling, ct)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<Result<(GuildQuestStored Row, LongRunningOperation Operation)>> RequireDriverBindingWithinAsync(
+        SqliteConnection connection, SqliteTransaction transaction, GuildQuestDriver driver, bool requireLease, bool allowCancelling,
+        CancellationToken ct)
+    {
+        bool cleanup = driver.Caller?.Kind == GuildCallerKind.HostReceipt;
+
         Result<GuildQuestStored> found = await ReadWithinAsync(connection, transaction, driver.Execution.QuestId, ct).ConfigureAwait(false);
 
         if (found.IsFailure) return found.Error;

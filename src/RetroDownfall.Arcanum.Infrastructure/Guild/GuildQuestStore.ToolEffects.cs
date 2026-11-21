@@ -163,6 +163,14 @@ internal sealed partial class GuildQuestStore
         if (GuildLocalToolRegistry.IsWorkspaceReadTool(tool.Name) && (admitted.Value.Row.Quest.WorkspaceId is not { } workspaceId
             || !live.Value.Workspaces.Any(scope => scope.WorkspaceId == workspaceId))) return WorkspaceReadNotGranted;
 
+        if (GuildLocalToolRegistry.IsWorkspaceMutationTool(tool.Name) && (admitted.Value.Row.Quest.WorkspaceId is not { } writable
+            || admitted.Value.Row.Quest.SessionId is null || !live.Value.Workspaces.Any(scope =>
+                scope.WorkspaceId == writable && scope.Access == GuildWorkspaceAccess.ReadWrite))) return WorkspaceMutationNotGranted;
+
+        if (GuildLocalToolRegistry.IsWorkspaceLeaseTool(tool.Name) && (admitted.Value.Row.Quest.WorkspaceId is not { } leaseWorkspace
+            || !live.Value.Workspaces.Any(scope => scope.WorkspaceId == leaseWorkspace && scope.Access == GuildWorkspaceAccess.ReadWrite)))
+            return new Error(ErrorCodes.Guild.Forbidden, "A Quest lease tool requires a writable scope in its bound workspace.");
+
         if (tool.Name is "create_agent_task" or "admit_cohort_member" && arguments is not null
             && (remoteTool ? registry.ChildDispatcher?.SupportsRemote != true : registry.ChildDispatcher?.SupportsLocal != true))
             return new Error(ErrorCodes.Guild.Unavailable, "The selected task destination capability is unavailable.");

@@ -97,7 +97,8 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
 
         using GuildLocalToolRegistry registry = new(binding.Execution, binding.Input,
             serviceProvider?.GetService<IGuildLocalChildToolDispatcher>(),
-            ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.ResolveIntelligence().ToolOutputCapBytes));
+            ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.ResolveIntelligence().ToolOutputCapBytes),
+            new WorkspaceMutationRuntime(this, binding));
 
         bool Eligible(GuildToolGrant tool)
         {
@@ -125,6 +126,8 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
         List<ChatMessage> messages = [new(ChatRole.User, request.Prompt)];
 
         List<GuildCircleInputBatch> circleInputs = [];
+
+        Dictionary<Guid, int> workspaceReadResults = [];
 
         ChatCompletionUsage? usage = null;
 
@@ -215,7 +218,20 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
 
                 if (processed.Sensitivity is not null) return GuildContextUnavailable;
 
+                if (registry.CaptureInvocation(grant)?.FatalError is { } failure) return failure;
+
+                foreach (Guid retired in registry.TakeRetiredWorkspaceReads())
+                {
+                    if (!workspaceReadResults.Remove(retired, out int position)
+                        || messages[position].Contents.SingleOrDefault() is not FunctionResultContent prior) return GuildContextUnavailable;
+
+                    messages[position] = new(ChatRole.Tool, [new FunctionResultContent(prior.CallId,
+                        "The workspace source for this result changed after a qualified mutation. Read the current source again.")]);
+                }
+
                 ToolExecutionPipeline.AppendToolExchangeToMessages(messages, call, processed.CallId, processed.ResultText);
+
+                if (GuildLocalToolRegistry.IsWorkspaceReadTool(grant.Name)) workspaceReadResults.Add(logicalCall, messages.Count - 1);
             }
 
             roundOrdinal++;

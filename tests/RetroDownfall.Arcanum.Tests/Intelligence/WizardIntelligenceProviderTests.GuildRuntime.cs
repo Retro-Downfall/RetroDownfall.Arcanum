@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -44,7 +45,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
     internal async Task<(IGuildLocalInferenceRuntime Runtime, Func<int> Calls, Func<IReadOnlyList<ChatMessage>> Messages,
         Func<ChatOptions?> Options)> CreateGuildRuntimeAsync(BudgetReservationService daily,
-            ArcanumSettings? settings = null, IChatClientFactory? factory = null, IGuildLocalChildToolDispatcher? guildChildren = null)
+            ArcanumSettings? settings = null, IChatClientFactory? factory = null, IGuildLocalChildToolDispatcher? guildChildren = null,
+            IGrimoireRepository? grimoire = null)
     {
         await InitializeAsync();
 
@@ -55,7 +57,7 @@ public sealed partial class WizardIntelligenceProviderTests
             Usage = new UsageDetails { InputTokenCount = 7, OutputTokenCount = 3, TotalTokenCount = 10 },
         });
 
-        var wizard = CreateWizard(chat, settings, factory: factory, budgetReservationService: daily, guildChildren: guildChildren);
+        var wizard = CreateWizard(chat, settings, grimoire: grimoire, factory: factory, budgetReservationService: daily, guildChildren: guildChildren);
 
         return (Assert.IsAssignableFrom<IGuildLocalInferenceRuntime>(wizard), () => chat.BufferedCallCount,
             () => chat.LastBufferedMessages, () => chat.LastChatOptions);

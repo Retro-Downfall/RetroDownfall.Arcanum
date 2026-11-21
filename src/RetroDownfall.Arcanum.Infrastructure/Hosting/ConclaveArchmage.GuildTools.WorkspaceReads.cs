@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -57,6 +58,13 @@ internal sealed partial class ConclaveArchmage
 
         return new GuildLocalChildToolResult(call.ParentQuest, Projection: projection,
             WorkspaceDisclosure: new(admission.Registry, admission.Tool, admission.Eligibility,
-                read.WorkspaceId, read.Grant.Workspaces, verifyPhysical));
+                read.WorkspaceId, read.Grant.Workspaces, admission.LogicalCallId, WorkspaceReadPaths(admission, projection), verifyPhysical));
     }
+
+    private static ImmutableArray<string> WorkspaceReadPaths(GuildChildToolAdmission admission, JsonElement result) => admission.Tool.Name switch
+    {
+        "read_file" => [admission.Arguments.GetProperty("relativePath").GetString()!],
+        "list_directory" => [.. result.GetProperty("paths").EnumerateArray().Select(path => path.GetString()!)],
+        _ => [.. result.GetProperty("matches").EnumerateArray().Select(match => match.GetProperty("path").GetString()!).Distinct(StringComparer.Ordinal)],
+    };
 }
