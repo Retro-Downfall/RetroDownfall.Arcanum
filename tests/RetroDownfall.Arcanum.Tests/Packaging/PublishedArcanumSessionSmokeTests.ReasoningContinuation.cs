@@ -44,6 +44,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
         ProcessOutputCapture? output = null;
 
+        List<(bool Streaming, string? Reasoning, string? Visible)> observedReasoning = [];
+
         try
         {
             isolation.Prepare();
@@ -86,8 +88,6 @@ public sealed partial class PublishedArcanumSessionSmokeTests
             using HttpClient client = new() { BaseAddress = new Uri($"http://127.0.0.1:{port}/"), Timeout = TimeSpan.FromSeconds(45) };
 
             client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, masterKey);
-
-            List<(bool Streaming, string? Reasoning, string? Visible)> observedReasoning = [];
 
             foreach (bool streaming in new[] { false, true })
             {
@@ -159,12 +159,6 @@ public sealed partial class PublishedArcanumSessionSmokeTests
             Assert.Equal(0, process.ExitCode);
 
             Assert.DoesNotContain(ReasoningSentinel, output.SafeDiagnostics(masterKey), StringComparison.Ordinal);
-
-            Assert.All(observedReasoning, observation => Assert.True(observation.Reasoning == ReasoningSentinel,
-                $"Ollama continuation omitted provider reasoning (streaming={observation.Streaming})."));
-
-            Assert.All(observedReasoning, observation => Assert.True(observation.Visible == ReasoningVisible,
-                $"Ollama continuation omitted visible assistant text (streaming={observation.Streaming})."));
         }
         finally
         {
@@ -183,6 +177,21 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         }
 
         string? receiptPath = global::System.Environment.GetEnvironmentVariable("ARCANUM_PUBLISHED_REASONING_RECEIPT");
+
+        bool mismatch = observedReasoning.Any(observation => observation.Reasoning != ReasoningSentinel
+            || observation.Visible != ReasoningVisible);
+
+        if (mismatch && !string.IsNullOrWhiteSpace(receiptPath))
+        {
+            await File.WriteAllTextAsync(receiptPath,
+                "published-reasoning-continuation:wire-mismatch:v1" + global::System.Environment.NewLine);
+        }
+
+        Assert.All(observedReasoning, observation => Assert.True(observation.Reasoning == ReasoningSentinel,
+            $"Ollama continuation omitted provider reasoning (streaming={observation.Streaming})."));
+
+        Assert.All(observedReasoning, observation => Assert.True(observation.Visible == ReasoningVisible,
+            $"Ollama continuation omitted visible assistant text (streaming={observation.Streaming})."));
 
         if (!string.IsNullOrWhiteSpace(receiptPath))
         {

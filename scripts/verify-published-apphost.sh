@@ -12,15 +12,18 @@ TEST_FILTER='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedA
 EXPECTED_SMOKE_RECEIPT='published-session-smoke:v1'
 REASONING_TEST_FILTER='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests.Published_ollama_tool_continuation_replays_reasoning_without_persisting_it'
 EXPECTED_REASONING_RECEIPT='published-reasoning-continuation:v1'
+EXPECTED_MISMATCH_RECEIPT='published-reasoning-continuation:wire-mismatch:v1'
+EXPECT_REASONING_MISMATCH=0
 
 usage() {
   cat <<'EOF'
-Usage: verify-published-apphost.sh --executable <published-apphost> [--configuration <name>]
+Usage: verify-published-apphost.sh --executable <published-apphost> [--configuration <name>] [--expect-ollama-mismatch]
 
 Builds the managed smoke harness without warnings, then exercises exactly the supplied published
 apphost as both host and CLI through the deterministic first-session provider-contract test, and
 checks Ollama reasoning continuation with a loopback provider. Each test must write its expected
 success receipt after all assertions and cleanup. This gate never publishes or substitutes a product binary.
+The historical regression flag requires the first-session control to pass and the exact continuation mismatch.
 EOF
 }
 
@@ -33,6 +36,10 @@ while [[ $# -gt 0 ]]; do
     --configuration)
       CONFIGURATION="${2:?--configuration requires a name}"
       shift 2
+      ;;
+    --expect-ollama-mismatch)
+      EXPECT_REASONING_MISMATCH=1
+      shift
       ;;
     -h | --help)
       usage
@@ -151,6 +158,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+TEST_ARTIFACTS="$WORK/test-artifacts"
+
+if [[ "${ARCANUM_PUBLISHED_REPAIR_CONFINEMENT:-}" == "1" && -n "${ARCANUM_PUBLISHED_ACCEPTANCE_ARTIFACTS:-}" ]]; then
+  TEST_ARTIFACTS="$ARCANUM_PUBLISHED_ACCEPTANCE_ARTIFACTS"
+fi
+
 TEST_BUILD_LOG="$WORK/test-build.log"
 TEST_LOG="$WORK/test.log"
 REASONING_TEST_LOG="$WORK/reasoning-test.log"
@@ -191,7 +204,7 @@ require_exact_receipt() {
 
   if [[ ! -f "$receipt" ]]; then
     echo "error: $description did not execute successfully (success receipt was not created)" >&2
-    exit 1
+    exit 3
   fi
 
   IFS= read -r actual <"$receipt" || true
@@ -205,14 +218,14 @@ require_exact_receipt() {
 
   if [[ "$actual" != "$expected" || "$actual_byte_count" != "$expected_byte_count" ]]; then
     echo "error: $description did not execute successfully (invalid success receipt)" >&2
-    exit 1
+    exit 3
   fi
 }
 
 echo "==> Building the published-apphost smoke harness without warnings"
 dotnet build "$TEST_PROJECT" \
   -c "$CONFIGURATION" \
-  --artifacts-path "$WORK/test-artifacts" \
+  --artifacts-path "$TEST_ARTIFACTS" \
   --disable-build-servers \
   -m:1 \
   2>&1 | tee "$TEST_BUILD_LOG"
@@ -229,7 +242,7 @@ dotnet test "$TEST_PROJECT" \
   --blame-hang-timeout 15m \
   --blame-hang-dump-type none \
   --filter "$TEST_FILTER" \
-  --artifacts-path "$WORK/test-artifacts" \
+  --artifacts-path "$TEST_ARTIFACTS" \
   --disable-build-servers \
   -m:1 \
   --no-build \
@@ -245,21 +258,41 @@ require_exact_receipt \
 rm -f "$REASONING_RECEIPT"
 
 echo "==> Exercising Ollama reasoning continuation on the exact published apphost"
-ARCANUM_PUBLISHED_EXECUTABLE="$SMOKE_EXECUTABLE" \
-ARCANUM_PUBLISHED_REASONING_RECEIPT="$REASONING_RECEIPT_FOR_TEST" \
-dotnet test "$TEST_PROJECT" \
-  -c "$CONFIGURATION" \
-  --blame-hang-timeout 15m \
-  --blame-hang-dump-type none \
-  --filter "$REASONING_TEST_FILTER" \
-  --artifacts-path "$WORK/test-artifacts" \
-  --disable-build-servers \
-  -m:1 \
-  --no-build \
-  --no-restore \
-  2>&1 | tee "$REASONING_TEST_LOG"
+if ARCANUM_PUBLISHED_EXECUTABLE="$SMOKE_EXECUTABLE" \
+  ARCANUM_PUBLISHED_REASONING_RECEIPT="$REASONING_RECEIPT_FOR_TEST" \
+  dotnet test "$TEST_PROJECT" \
+    -c "$CONFIGURATION" \
+    --blame-hang-timeout 15m \
+    --blame-hang-dump-type none \
+    --filter "$REASONING_TEST_FILTER" \
+    --artifacts-path "$TEST_ARTIFACTS" \
+    --disable-build-servers \
+    -m:1 \
+    --no-build \
+    --no-restore \
+    2>&1 | tee "$REASONING_TEST_LOG"; then
+  reasoning_status=0
+else
+  reasoning_status=$?
+fi
 
 reject_warnings "$REASONING_TEST_LOG"
+
+if [[ "$EXPECT_REASONING_MISMATCH" -eq 1 ]]; then
+  if [[ "$reasoning_status" -ne 1 ]]; then
+    echo "error: expected a historical Ollama continuation test failure" >&2
+    exit 1
+  fi
+
+  require_exact_receipt "$REASONING_RECEIPT" "$EXPECTED_MISMATCH_RECEIPT" "historical reasoning smoke test"
+  echo "==> Historical published apphost reproduced the exact Ollama wire mismatch"
+  exit 0
+fi
+
+if [[ "$reasoning_status" -ne 0 ]]; then
+  exit "$reasoning_status"
+fi
+
 require_exact_receipt \
   "$REASONING_RECEIPT" \
   "$EXPECTED_REASONING_RECEIPT" \

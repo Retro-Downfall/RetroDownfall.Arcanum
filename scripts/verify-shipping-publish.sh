@@ -9,12 +9,15 @@ PROJECT="$REPO_ROOT/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.cspr
 CONFIGURATION=Release
 RID=""
 RETAIN_PUBLISH_DIR=""
+INSPECT_PUBLISH_DIR=""
+EXPECT_REASONING_MISMATCH=0
+INSTALL_LAYOUT=0
 RETAIN_OWNED=0
 VERIFICATION_COMPLETE=0
 
 usage() {
   cat <<'EOF'
-Usage: verify-shipping-publish.sh [--rid <shipping-rid>] [--configuration <name>] [--retain-publish-dir <directory>]
+Usage: verify-shipping-publish.sh [--rid <shipping-rid>] [--configuration <name>] [--retain-publish-dir <directory> | --inspect-publish-dir <directory>] [--expect-ollama-mismatch | --install-layout]
 
 Publishes the self-contained Native AOT Arcanum host, fails on any publish warning, then delegates
 the exact published apphost to the reusable deterministic in-process provider stub gate.
@@ -22,6 +25,10 @@ This CI-safe contract smoke never contacts Ollama or any other real inference mo
 With --retain-publish-dir, copies the validated whole publish closure to a fresh leaf under an
 existing parent. Reports retained success only after private temporary cleanup succeeds.
 Without this option, all publish contents are removed after verification.
+With --inspect-publish-dir, the independent verifier inspects an existing closure and runs the
+trusted apphost tests without building candidate source. Build warnings belong to the build proof.
+--expect-ollama-mismatch requires a historical apphost with the exact continuation regression.
+--install-layout selects the canonical arcanum executable name from the reviewed install closure.
 EOF
 }
 
@@ -39,6 +46,18 @@ while [[ $# -gt 0 ]]; do
       RETAIN_PUBLISH_DIR="${2:?--retain-publish-dir requires a directory}"
       shift 2
       ;;
+    --inspect-publish-dir)
+      INSPECT_PUBLISH_DIR="${2:?--inspect-publish-dir requires a directory}"
+      shift 2
+      ;;
+    --install-layout)
+      INSTALL_LAYOUT=1
+      shift
+      ;;
+    --expect-ollama-mismatch)
+      EXPECT_REASONING_MISMATCH=1
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -50,6 +69,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$INSPECT_PUBLISH_DIR" ]]; then
+  if [[ -n "$RETAIN_PUBLISH_DIR" || -L "$INSPECT_PUBLISH_DIR" ]] || ! INSPECT_PUBLISH_DIR="$(cd "$INSPECT_PUBLISH_DIR" && pwd -P)"; then
+    echo "error: --inspect-publish-dir requires an existing plain directory and cannot be used with retention" >&2
+    exit 2
+  fi
+elif [[ "$EXPECT_REASONING_MISMATCH" -eq 1 || "$INSTALL_LAYOUT" -eq 1 ]]; then
+  echo "error: a historical mismatch or install-layout check requires --inspect-publish-dir" >&2
+  exit 2
+fi
 
 if [[ -n "$RETAIN_PUBLISH_DIR" ]]; then
   RETAIN_PARENT="$(dirname "$RETAIN_PUBLISH_DIR")"
@@ -146,7 +175,11 @@ cleanup() {
       echo "==> Retained qualified publish: $RETAIN_PUBLISH_DIR"
     fi
 
-    echo "==> Shipping publish is Native AOT, warning-free, and its first-session provider contract is healthy"
+    if [[ -n "$INSPECT_PUBLISH_DIR" ]]; then
+      echo "==> Existing Native AOT closure passed the requested independent provider checks"
+    else
+      echo "==> Shipping publish is Native AOT, warning-free, and its first-session provider contract is healthy"
+    fi
   fi
 
   exit "$final_status"
@@ -204,28 +237,36 @@ reject_warnings() {
   fi
 }
 
-require_property PublishAot true
-require_property SelfContained true
-require_property PublishSingleFile false
-
-echo "==> Publishing warning-free Native AOT Arcanum ($RID)"
-if dotnet publish "$PROJECT" \
-  -c "$CONFIGURATION" \
-  -r "$RID" \
-  --self-contained true \
-  --artifacts-path "$WORK/publish-artifacts" \
-  --disable-build-servers \
-  -m:1 \
-  -o "$PUBLISH_DIR" \
-  2>&1 | tee "$PUBLISH_LOG"; then
-  :
+if [[ -n "$INSPECT_PUBLISH_DIR" ]]; then
+  PUBLISH_DIR="$INSPECT_PUBLISH_DIR"
 else
-  exit "$?"
+  require_property PublishAot true
+  require_property SelfContained true
+  require_property PublishSingleFile false
+
+  echo "==> Publishing warning-free Native AOT Arcanum ($RID)"
+  if dotnet publish "$PROJECT" \
+    -c "$CONFIGURATION" \
+    -r "$RID" \
+    --self-contained true \
+    --artifacts-path "$WORK/publish-artifacts" \
+    --disable-build-servers \
+    -m:1 \
+    -o "$PUBLISH_DIR" \
+    2>&1 | tee "$PUBLISH_LOG"; then
+    :
+  else
+    exit "$?"
+  fi
+
+  reject_warnings "$PUBLISH_LOG"
 fi
 
-reject_warnings "$PUBLISH_LOG"
-
 PUBLISHED_NAME="RetroDownfall.Arcanum.Cli"
+
+if [[ "$INSTALL_LAYOUT" -eq 1 ]]; then
+  PUBLISHED_NAME="arcanum"
+fi
 
 if [[ "$RID" == win-* ]]; then
   PUBLISHED_NAME="$PUBLISHED_NAME.exe"
@@ -250,6 +291,11 @@ if [[ "$RID" == osx-* ]]; then
       exit 2
     fi
   done
+
+  if [[ -n "$INSPECT_PUBLISH_DIR" && "$(file -b "$EXECUTABLE")" != *Mach-O*arm64* ]]; then
+    echo "error: retained apphost does not contain the selected macOS arm64 architecture" >&2
+    exit 1
+  fi
 
   PUBLISH_ROOT="$(cd "$PUBLISH_DIR" && pwd -P)"
   NON_PORTABLE_DEPENDENCIES=""
@@ -366,9 +412,15 @@ if [[ -n "$HOSTPOLICY_MATCH" ]]; then
 fi
 
 echo "==> Delegating the exact shipping publish to the reusable apphost gate"
+if [[ "$EXPECT_REASONING_MISMATCH" -eq 1 ]]; then
+  REASONING_GATE_ARGS=(--expect-ollama-mismatch)
+else
+  REASONING_GATE_ARGS=()
+fi
+
 if bash "$SCRIPT_DIR/verify-published-apphost.sh" \
   --executable "$EXECUTABLE" \
-  --configuration "$CONFIGURATION"; then
+  --configuration "$CONFIGURATION" ${REASONING_GATE_ARGS[@]+"${REASONING_GATE_ARGS[@]}"}; then
   :
 else
   exit "$?"

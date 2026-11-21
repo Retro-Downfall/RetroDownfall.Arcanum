@@ -1255,7 +1255,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
         isolation.ApplyTemporaryEnvironment(start);
 
-        return start;
+        return ConfineRepairApphost(start, executable, isolation);
     }
 
     private static void CopyIfPresent(
