@@ -150,6 +150,8 @@ public sealed class ToolExecutionPipeline(
         public ProviderCallSensitivity? Sensitivity { get; init; }
 
         public ToolOutcome? ToolOutcome { get; init; }
+
+        public TurnFailureEvidence? FailureEvidence { get; init; }
     }
 
     public sealed record ProcessedToolCall(
@@ -167,6 +169,8 @@ public sealed class ToolExecutionPipeline(
         public ProviderCallSensitivity? Sensitivity { get; init; }
 
         public ToolOutcome? ToolOutcome { get; init; }
+
+        public TurnFailureEvidence? FailureEvidence { get; init; }
     }
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
@@ -181,10 +185,19 @@ public sealed class ToolExecutionPipeline(
         // The SDK retains malformed argument JSON as a parse exception and may leave Arguments
         // null. Null alone also represents legitimate no-argument calls, so do not erase the
         // exception by serializing that call as an empty object before validating the whole set.
-        return calls.Any(static call => call.Exception is not null)
-            ? Result.Failure(new Error(ErrorCodes.Hub.ProviderToolCallInvalid,
-                "A provider tool call carried arguments that are not valid JSON."))
-            : Result.Success();
+        for (int index = 0; index < calls.Count; index++)
+        {
+            if (calls[index].Exception is null) continue;
+
+            return Result.Failure(new Error(ErrorCodes.Hub.ProviderToolCallInvalid,
+                "A provider tool call carried arguments that are not valid JSON.")
+            {
+                FailureEvidence = new(TurnFailurePhase.ToolArguments, TurnEffectState.NotDispatched,
+                    TurnRecoveryAction.CorrectArguments, index),
+            });
+        }
+
+        return Result.Success();
     }
 
     private static readonly ConditionalWeakTable<FunctionCallContent, string> _fallbackCallIds = new();
@@ -670,7 +683,7 @@ public sealed class ToolExecutionPipeline(
             applyPatchContext?.ReceiptHandled == true,
             wardedExecution.Denied,
             attachmentRefresh)
-        { Sensitivity = wardedExecution.Sensitivity, ToolOutcome = wardedExecution.ToolOutcome };
+        { Sensitivity = wardedExecution.Sensitivity, ToolOutcome = wardedExecution.ToolOutcome, FailureEvidence = wardedExecution.FailureEvidence };
     }
 
     private sealed record RefreshPostProcess(
@@ -1439,20 +1452,14 @@ public sealed class ToolExecutionPipeline(
                 .ConfigureAwait(false);
         }
 
-        (string directResult, bool directDenied, ProviderCallSensitivity? sensitivity, ToolOutcome? toolOutcome) = await InvokeToolCallWithSanctumAsync(
+        return await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
             chatOptions,
             turnContext,
             argsSnapshot,
-            cancellationToken).ConfigureAwait(false);
-
-        return new WardedToolExecutionResult(
-            directResult,
             BufferedWardEventsOrEmpty(wardEvents),
-            directDenied,
-            Failed: toolOutcome is not null)
-        { Sensitivity = sensitivity, ToolOutcome = toolOutcome };
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RecordUngatedWardResolutionAsync(
@@ -1658,17 +1665,15 @@ public sealed class ToolExecutionPipeline(
                         Nonce = nonce,
                     });
 
-                    (string text, bool denied, ProviderCallSensitivity? sensitivity, ToolOutcome? toolOutcome) = await InvokeToolCallWithSanctumAsync(
+                    return Result<WardedToolExecutionResult>.Success(await InvokeToolCallWithSanctumAsync(
                             fcc,
                             activeSpell,
                             chatOptions,
                             turnContext,
                             argsSnapshot,
+                            wardEvents,
                             effectToken)
-                        .ConfigureAwait(false);
-
-                    return Result<WardedToolExecutionResult>.Success(
-                        new WardedToolExecutionResult(text, wardEvents, denied, Failed: toolOutcome is not null) { Sensitivity = sensitivity, ToolOutcome = toolOutcome });
+                        .ConfigureAwait(false));
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1726,12 +1731,13 @@ public sealed class ToolExecutionPipeline(
         IReadOnlyList<IntelligenceEvent> wardEvents) =>
         new(message, wardEvents, Denied: true);
 
-    private async Task<(string ResultText, bool Denied, ProviderCallSensitivity? Sensitivity, ToolOutcome? ToolOutcome)> InvokeToolCallWithSanctumAsync(
+    private async Task<WardedToolExecutionResult> InvokeToolCallWithSanctumAsync(
         FunctionCallContent fcc,
         ParsedSpell? activeSpell,
         ChatOptions chatOptions,
         TurnContext turnContext,
         string argsSnapshot,
+        IReadOnlyList<IntelligenceEvent> wardEvents,
         CancellationToken cancellationToken)
     {
         SanctumEnforcementOutcome outcome = await EnforceSanctumAsync(
@@ -1743,7 +1749,10 @@ public sealed class ToolExecutionPipeline(
 
         if (outcome.Enabled && !SanctumEnforcement.AllowsContinuation(outcome.Result, outcome.Mode))
         {
-            return (SanctumDenialMessage(outcome.Result), true, null, null);
+            return new(SanctumDenialMessage(outcome.Result), wardEvents, Denied: true)
+            {
+                FailureEvidence = new(TurnFailurePhase.ToolAuthorization, TurnEffectState.NotDispatched, TurnRecoveryAction.UseAuthorizedScope),
+            };
         }
 
         // Sanctum cleared the initial URL above; the ward keeps every redirect hop under the same policy.
@@ -1756,12 +1765,12 @@ public sealed class ToolExecutionPipeline(
 
         if (rawResult is McpToolFailure failure)
         {
-            return (failure.ResultText, failure.Outcome.Denied, null, failure.Outcome);
+            return new(failure.ResultText, wardEvents, Denied: failure.Outcome.Denied, Failed: true) { ToolOutcome = failure.Outcome };
         }
 
         if (rawResult is Tools.MemoryRecallToolResult recall)
         {
-            return (recall.Text, false, recall.Sensitivity, null);
+            return new(recall.Text, wardEvents) { Sensitivity = recall.Sensitivity };
         }
 
         if (rawResult is MemoryDelegationToolResult delegated)
@@ -1769,7 +1778,7 @@ public sealed class ToolExecutionPipeline(
             string text = toolResultMaterializer is null ? delegated.Text
                 : MaterializeToolResultForModel(fcc.Name ?? string.Empty, delegated.Text, toolResultMaterializer);
 
-            return (text, false, delegated.Sensitivity, null);
+            return new(text, wardEvents) { Sensitivity = delegated.Sensitivity };
         }
 
         if (rawResult is TrustedStructuredToolResult
@@ -1779,7 +1788,7 @@ public sealed class ToolExecutionPipeline(
             && (exactPatchResult.ReceiptHandled
                 || ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true))
         {
-            return (exactPatchResult.Text, false, null, null);
+            return new(exactPatchResult.Text, wardEvents) { FailureEvidence = exactPatchResult.FailureEvidence };
         }
 
         if (toolResultMaterializer is not null)
@@ -1790,10 +1799,10 @@ public sealed class ToolExecutionPipeline(
                 rawResult,
                 toolResultMaterializer);
 
-            return (materialized, false, null, null);
+            return new(materialized, wardEvents) { FailureEvidence = (rawResult as TrustedStructuredToolResult)?.FailureEvidence };
         }
 
-        return (rawResult?.ToString() ?? string.Empty, false, null, null);
+        return new(rawResult?.ToString() ?? string.Empty, wardEvents) { FailureEvidence = (rawResult as TrustedStructuredToolResult)?.FailureEvidence };
     }
 
     internal sealed class GrimoirePendingReceiptSink(

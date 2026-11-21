@@ -394,7 +394,8 @@ internal sealed partial class ArcanumInternalToolServer
     }
 
     private static JsonElement BuildReadCommandOutputSchema(
-        int maxPageBytes)
+        int maxPageBytes,
+        bool diagnosticsOnly = false)
     {
         return BuildSchema(w =>
         {
@@ -405,7 +406,9 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "handle",
-                "Opaque complete-output handle returned by execute_command on this connection.");
+                diagnosticsOnly
+                    ? "Opaque diagnostic output handle returned by a native coding tool in this Session and connection."
+                    : "Opaque complete-output handle returned by execute_command on this connection.");
 
             w.WriteStartObject("stream");
 
@@ -417,9 +420,15 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteStartArray("enum");
 
-            w.WriteStringValue("stdout");
-
-            w.WriteStringValue("stderr");
+            if (diagnosticsOnly)
+            {
+                w.WriteStringValue("diagnostics");
+            }
+            else
+            {
+                w.WriteStringValue("stdout");
+                w.WriteStringValue("stderr");
+            }
 
             w.WriteEndArray();
 

@@ -2,6 +2,7 @@ using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -1753,6 +1754,8 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         using JsonDocument payload = JsonDocument.Parse(response.SerializedResult);
         Assert.Equal("conflict", payload.RootElement.GetProperty("status").GetString());
         Assert.Equal("receipt_failed", payload.RootElement.GetProperty("code").GetString());
+        Assert.Equal(TurnEffectState.Completed, response.FailureEvidence?.Effect);
+        Assert.Equal(TurnRecoveryAction.InspectWorkspace, response.FailureEvidence?.NextAction);
         Assert.False(context.ReceiptHandled);
         Assert.False(context.RequiresTurnFailure);
         Assert.Equal("before\n", await ReadTextAsync("failed.txt"));
@@ -1791,6 +1794,8 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 .EnumerateArray()
                 .Select(static item => item.GetString()!),
             AssertRelativeRecoveryPath);
+        Assert.Equal(TurnEffectState.Unknown, response.FailureEvidence?.Effect);
+        Assert.Equal(TurnRecoveryAction.InspectWorkspace, response.FailureEvidence?.NextAction);
         Assert.Equal(
             "external-after-handoff\n",
             await ReadTextAsync("failed-incomplete.txt"));

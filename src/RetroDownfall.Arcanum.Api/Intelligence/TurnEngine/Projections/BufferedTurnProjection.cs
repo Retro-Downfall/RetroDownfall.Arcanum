@@ -9,6 +9,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 /// </summary>
 internal sealed class BufferedTurnProjection
 {
+    private List<TurnFailureEvidence>? _toolFailures;
+
     private RunCompleted? _completed;
 
     private RunFailed? _failed;
@@ -21,6 +23,11 @@ internal sealed class BufferedTurnProjection
 
         switch (evt)
         {
+            case ToolInvocationCompleted { FailureEvidence: { } evidence }:
+                (_toolFailures ??= []).Add(evidence);
+
+                break;
+
             case RunCompleted completed:
                 _completed = completed;
 
@@ -49,6 +56,7 @@ internal sealed class BufferedTurnProjection
                 _completed.FinishReason)
             {
                 ModelUsed = _completed.ModelUsed,
+                ToolFailures = _toolFailures?.ToArray(),
                 Warnings = _completed.Warnings,
                 Notices = _completed.Notices,
                 Reasoning = _completed.Reasoning,

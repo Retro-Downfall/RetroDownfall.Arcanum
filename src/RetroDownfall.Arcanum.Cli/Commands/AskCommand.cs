@@ -91,6 +91,8 @@ public sealed class AskCommand(
                 ? [.. preparedScryingFoci]
                 : null;
 
+        bool streamingRequestStarted = false;
+
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         void RequestCancellation()
@@ -218,6 +220,8 @@ public sealed class AskCommand(
                 AttachmentReferences: attachmentReferences,
                 OverrideSpellName: overrideSpellName);
 
+            streamingRequestStarted = true;
+
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
                 receivedAnyStreamEvent = true;
@@ -297,7 +301,7 @@ public sealed class AskCommand(
                             streamContent,
                             palette.ErrorMarkup(
                                 Markup.Escape(
-                                    $"⚠ Tool {TerminalTextSanitizer.SanitizeLine(evt.Message)} failed (tolerated)")));
+                                    TurnFailureDisplay.Append($"⚠ Tool {TerminalTextSanitizer.SanitizeLine(evt.Message)} failed (tolerated)", evt.FailureEvidence))));
 
                         break;
 
@@ -306,7 +310,7 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(evt.Data ?? evt.Message))));
+                            palette.MutedMarkup(Markup.Escape(TurnFailureDisplay.Append(TerminalTextSanitizer.SanitizeLine(evt.Data ?? evt.Message), evt.FailureEvidence))));
 
                         break;
 
@@ -347,7 +351,7 @@ public sealed class AskCommand(
                             streamContent,
                             palette.ErrorLabelMarkup(
                                 Markup.Escape("Error:"),
-                                Markup.Escape(TerminalTextSanitizer.SanitizeLine(FormatStreamTransportError(evt.Message)))));
+                                Markup.Escape(TurnFailureDisplay.Append(TerminalTextSanitizer.SanitizeLine(FormatStreamTransportError(evt.Message)), evt.FailureEvidence))));
 
                         return 1;
                 }
@@ -370,6 +374,11 @@ public sealed class AskCommand(
             if (hitl is not null)
             {
                 _ = await hitl.DrainAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            if (streamingRequestStarted)
+            {
+                CliStreamDiagnostic.WriteMarkupLine(stderrConsole, streamContent, palette.MutedMarkup(Markup.Escape(TurnFailureDisplay.InterruptedRequest)));
             }
 
             // W4.1: return 130 (SIGINT) only on an actual user/host cancellation. A cancellation

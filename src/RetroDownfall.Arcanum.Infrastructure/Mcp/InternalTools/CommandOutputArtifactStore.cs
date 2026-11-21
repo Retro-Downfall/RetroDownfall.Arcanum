@@ -1,9 +1,13 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
+
+internal sealed record CommandDiagnosticScope(string OwnerTool, Guid? SessionId);
 
 internal readonly record struct CommandOutputArtifactRegistration(
     string Handle,
@@ -90,6 +94,44 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
 
     }
 
+    internal async Task<CommandOutputArtifactRegistration> RegisterDiagnosticsAsync<T>(
+        T diagnostics,
+        JsonTypeInfo<T> json,
+        CommandDiagnosticScope scope,
+        CancellationToken cancellationToken)
+    {
+        string path = Path.Combine(SpillDirectory, $"{Guid.NewGuid():N}.diagnostics");
+
+        try
+        {
+            FileStreamOptions options = new()
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                Options = FileOptions.Asynchronous,
+            };
+
+            if (!OperatingSystem.IsWindows())
+            {
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+
+            await using (FileStream file = new(path, options))
+            {
+                await JsonSerializer.SerializeAsync(file, diagnostics, json, cancellationToken).ConfigureAwait(false);
+            }
+
+            return RegisterFiles(path, stderrPath: null, scope);
+        }
+        catch
+        {
+            TryDelete(path);
+
+            throw;
+        }
+    }
+
     internal CommandOutputArtifactRegistration Register(
         CappedStreamOutput stdout,
         CappedStreamOutput stderr)
@@ -105,6 +147,14 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
             root,
             stderr);
 
+        return RegisterFiles(stdoutPath, stderrPath, diagnostics: null);
+    }
+
+    private CommandOutputArtifactRegistration RegisterFiles(
+        string? stdoutPath,
+        string? stderrPath,
+        CommandDiagnosticScope? diagnostics)
+    {
         if (stdoutPath is null && stderrPath is null)
         {
 
@@ -140,7 +190,8 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
 
         CommandOutputArtifact artifact = new(
             stdoutStream,
-            stderrStream);
+            stderrStream,
+            diagnostics);
 
         lock (_rootGate)
         {
@@ -172,7 +223,7 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
         if (stdoutPath is not null)
         {
 
-            streams.Add("stdout");
+            streams.Add(diagnostics is null ? "stdout" : "diagnostics");
 
         }
 
@@ -194,7 +245,9 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
         string streamName,
         long offset,
         int maxBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? requestingSessionId = null,
+        Func<string, bool>? canReadDiagnostics = null)
     {
 
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -205,6 +258,23 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
             throw new KeyNotFoundException(
                 "The command-output handle is unknown or has expired with its connection.");
 
+        }
+
+        if (canReadDiagnostics is not null)
+        {
+            if (streamName != "diagnostics"
+                || artifact.Diagnostics is not { } scope
+                || requestingSessionId != scope.SessionId
+                || !canReadDiagnostics(scope.OwnerTool))
+            {
+                throw new KeyNotFoundException("The diagnostic output is unavailable under this tool and Session authority.");
+            }
+
+            streamName = "stdout";
+        }
+        else if (artifact.Diagnostics is not null)
+        {
+            throw new KeyNotFoundException("The requested handle is not a command output artifact.");
         }
 
         await artifact.ReadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -567,10 +637,13 @@ internal sealed class CommandOutputArtifactStore : IAsyncDisposable
 
     private sealed class CommandOutputArtifact(
         FileStream? stdout,
-        FileStream? stderr) : IDisposable
+        FileStream? stderr,
+        CommandDiagnosticScope? diagnostics) : IDisposable
     {
 
         internal SemaphoreSlim ReadGate { get; } = new(1, 1);
+
+        internal CommandDiagnosticScope? Diagnostics { get; } = diagnostics;
 
         internal FileStream? Stdout { get; private set; } = stdout;
 

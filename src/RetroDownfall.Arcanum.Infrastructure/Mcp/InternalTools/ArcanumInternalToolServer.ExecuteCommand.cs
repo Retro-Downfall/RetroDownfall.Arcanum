@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
@@ -404,11 +405,22 @@ internal sealed partial class ArcanumInternalToolServer
     private static string AbandonedStreamNotice(string streamName) =>
         $"[{streamName} not captured: the command exited but a process it left running still held the pipe open, so the output was abandoned]";
 
-    private async Task<McpToolsCallResultWire> ExecuteReadCommandOutputAsync(
+    private Task<McpToolsCallResultWire> ExecuteReadCommandOutputAsync(
         JsonElement arguments,
+        CancellationToken cancellationToken) =>
+        ExecuteReadOutputAsync(arguments, diagnosticsOnly: false, cancellationToken);
+
+    private Task<McpToolsCallResultWire> ExecuteReadToolOutputAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken) =>
+        ExecuteReadOutputAsync(arguments, diagnosticsOnly: true, cancellationToken);
+
+    private async Task<McpToolsCallResultWire> ExecuteReadOutputAsync(
+        JsonElement arguments,
+        bool diagnosticsOnly,
         CancellationToken cancellationToken)
     {
-        if (!_allowHostProcessTools)
+        if (!diagnosticsOnly && !_allowHostProcessTools)
         {
             return ToolError(
                 Core.Security.HostProcessToolPolicy.DeniedMessage);
@@ -420,6 +432,10 @@ internal sealed partial class ArcanumInternalToolServer
         {
             return gate;
         }
+
+        string toolName = diagnosticsOnly
+            ? ToolRiskClassifier.ReadToolOutputToolName
+            : ToolRiskClassifier.ReadCommandOutputToolName;
 
         ReadCommandOutputParams? args;
 
@@ -433,10 +449,10 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(
                 ex,
-                "read_command_output argument deserialization failed.");
+                "{ToolName} argument deserialization failed.", toolName);
 
             return ToolError(
-                "Invalid arguments for read_command_output.");
+                $"Invalid arguments for {toolName}.");
         }
 
         if (args is null
@@ -447,32 +463,23 @@ internal sealed partial class ArcanumInternalToolServer
                 out _))
         {
             return ToolError(
-                "read_command_output requires the opaque 'handle' returned by execute_command.");
+                diagnosticsOnly
+                    ? "read_tool_output requires the opaque diagnostic 'handle' returned by a native coding tool."
+                    : "read_command_output requires the opaque 'handle' returned by execute_command.");
         }
 
-        string streamName;
+        string streamName = args.Stream?.ToLowerInvariant() ?? string.Empty;
+        bool validStream = diagnosticsOnly ? streamName == "diagnostics" : streamName is "stdout" or "stderr";
 
-        if (string.Equals(
-                args.Stream,
-                "stdout",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            streamName = "stdout";
-        }
-        else if (string.Equals(
-                     args.Stream,
-                     "stderr",
-                     StringComparison.OrdinalIgnoreCase))
-        {
-            streamName = "stderr";
-        }
-        else
+        if (!validStream)
         {
             return ToolError(
-                "read_command_output stream must be 'stdout' or 'stderr'.");
+                diagnosticsOnly
+                    ? "read_tool_output stream must be 'diagnostics'."
+                    : "read_command_output stream must be 'stdout' or 'stderr'.");
         }
 
-        int maximumPageBytes = GetMaxCommandOutputPageBytes();
+        int maximumPageBytes = diagnosticsOnly ? GetMaxToolOutputPageBytes() : GetMaxCommandOutputPageBytes();
 
         int pageBytes = args.MaxBytes
             ?? Math.Min(
@@ -482,7 +489,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (pageBytes < 4 || pageBytes > maximumPageBytes)
         {
             return ToolError(
-                $"read_command_output maxBytes must be between 4 and {maximumPageBytes}; the upper bound preserves the existing JSON-RPC line boundary. Continue with additional pages for any remaining output.");
+                $"{toolName} maxBytes must be between 4 and {maximumPageBytes}; the upper bound preserves the existing JSON-RPC line boundary. Continue with additional pages for any remaining output.");
         }
 
         try
@@ -493,7 +500,9 @@ internal sealed partial class ArcanumInternalToolServer
                     streamName,
                     args.Offset,
                     pageBytes,
-                    cancellationToken)
+                    cancellationToken,
+                    requestingSessionId: diagnosticsOnly ? DiagnosticSessionId : null,
+                    canReadDiagnostics: diagnosticsOnly ? CanReadDiagnostics : null)
                 .ConfigureAwait(false);
 
             CommandOutputPageResultWire wire = new()
@@ -534,7 +543,7 @@ internal sealed partial class ArcanumInternalToolServer
             when (cancellationToken.IsCancellationRequested)
         {
             return ToolError(
-                "read_command_output: canceled.");
+                $"{toolName}: canceled.");
         }
         catch (Exception ex)
             when (ex is InvalidDataException
@@ -542,15 +551,17 @@ internal sealed partial class ArcanumInternalToolServer
                   or KeyNotFoundException)
         {
             _logger?.LogWarning(
-                "read_command_output could not read the requested page: {ExceptionType}",
-                ex.GetType().Name);
+                "{ToolName} could not read the requested page: {ExceptionType}",
+                toolName, ex.GetType().Name);
 
             return ToolError(
                 ex switch
                 {
-                    KeyNotFoundException => "read_command_output: the requested command-output handle or stream is unavailable. Use an active handle returned by execute_command.",
-                    ArgumentOutOfRangeException => "read_command_output: invalid page range. Use the returned page boundary and a supported byte limit.",
-                    _ => "read_command_output: the requested page could not be decoded. Use a page boundary returned by read_command_output.",
+                    KeyNotFoundException => diagnosticsOnly
+                        ? "read_tool_output: the requested diagnostic handle or stream is unavailable in this Session and connection."
+                        : "read_command_output: the requested command-output handle or stream is unavailable. Use an active handle returned by execute_command.",
+                    ArgumentOutOfRangeException => $"{toolName}: invalid page range. Use the returned page boundary and a supported byte limit.",
+                    _ => $"{toolName}: the requested page could not be decoded. Use a page boundary returned by {toolName}.",
                 });
         }
         catch (Exception ex)
@@ -559,13 +570,16 @@ internal sealed partial class ArcanumInternalToolServer
                   or ObjectDisposedException)
         {
             _logger?.LogWarning(
-                "read_command_output artifact access failed: {ExceptionType}",
-                ex.GetType().Name);
+                "{ToolName} artifact access failed: {ExceptionType}",
+                toolName, ex.GetType().Name);
 
             return ToolError(
-                "read_command_output: the private artifact could not be read.");
+                $"{toolName}: the private artifact could not be read.");
         }
     }
+
+    // The diagnostic page must fit the normal model-facing result allocation after JSON escaping.
+    private int GetMaxToolOutputPageBytes() => Math.Min(1_024, GetMaxCommandOutputPageBytes());
 
     private int GetMaxCommandOutputPageBytes()
     {

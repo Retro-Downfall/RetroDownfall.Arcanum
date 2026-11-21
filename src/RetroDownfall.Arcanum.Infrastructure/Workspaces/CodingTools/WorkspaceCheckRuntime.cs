@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -20,6 +21,8 @@ internal sealed record WorkspaceCheckRuntimeRequest(
 internal interface IWorkspaceCheckRuntime
 {
     WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot);
+
+    bool CanReadRetainedOutput(string workspaceRoot);
 
     Task<WorkspaceCheckToolResultEnvelope> RunAsync(
         WorkspaceCheckRuntimeRequest request,
@@ -132,13 +135,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
         using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
 
-        if (_currentSettingsProvider is not null
-            && !string.Equals(
-                _settingsFingerprint,
-                InternalCodingToolSettingsFingerprint
-                    .BuildWorkspaceCheck(
-                        _currentSettingsProvider()),
-                StringComparison.Ordinal))
+        if (!HasCurrentConfiguration())
         {
             return new WorkspaceCheckExecutionStatus(
                 false,
@@ -198,6 +195,18 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     ?? "The workspace-selected SDK or trusted launch chain is unavailable.",
             };
     }
+
+    public bool CanReadRetainedOutput(string workspaceRoot) =>
+        OperatingSystem.IsMacOS()
+        && _settings.Enabled
+        && HasCurrentConfiguration()
+        && _executablePolicy.ResolveConfiguredOrInstalled(_settings.ExecutableCatalog?.DotNet?.Path, workspaceRoot).Success
+        && WorkspaceCheckLaunchChainPolicy.Capture() is not null;
+
+    private bool HasCurrentConfiguration() =>
+        _currentSettingsProvider is null
+        || string.Equals(_settingsFingerprint,
+            InternalCodingToolSettingsFingerprint.BuildWorkspaceCheck(_currentSettingsProvider()), StringComparison.Ordinal);
 
     public async Task<WorkspaceCheckToolResultEnvelope> RunAsync(
         WorkspaceCheckRuntimeRequest request,
@@ -557,7 +566,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 throw new OperationCanceledException(cancellationToken);
             }
 
-            return BuildRunResult(
+            WorkspaceCheckToolResultEnvelope result = BuildRunResult(
                 request.ProfileId,
                 sdk.Snapshot.Version,
                 profile.Profile.Parser,
@@ -565,6 +574,16 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 directories.TestResultsSource!,
                 run,
                 runLimits);
+
+            // A false Process.Start result is positive evidence. Exceptions from the start
+            // boundary alone cannot establish the child's effects.
+            return run.Outcome == CappedChildProcessOutcome.FailedToStart && run.FaultException is null
+                ? result with
+                {
+                    ProcessStartFailure = new(
+                        TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectWorkspace),
+                }
+                : result;
         }
         finally
         {

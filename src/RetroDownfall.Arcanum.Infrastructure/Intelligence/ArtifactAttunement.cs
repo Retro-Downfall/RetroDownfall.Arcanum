@@ -26,6 +26,12 @@ internal static class ArtifactAttunement
 
         }
 
+        if (allow.Contains(ToolRiskClassifier.ApplyPatchToolName)
+            || allow.Contains(ToolRiskClassifier.WorkspaceCheckToolName))
+        {
+            allow.Add(ToolRiskClassifier.ReadToolOutputToolName);
+        }
+
         var allowed = new List<AITool>(mcpTools.Count);
 
         var excluded = new List<string>();

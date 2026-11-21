@@ -69,6 +69,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _readCommandOutputSchema;
 
+    private readonly JsonElement _readToolOutputSchema;
+
     private readonly JsonElement _askHumanSchema;
 
     private readonly JsonElement _scribeLexiconSchema;
@@ -364,6 +366,8 @@ internal sealed partial class ArcanumInternalToolServer
 
         _readCommandOutputSchema = BuildReadCommandOutputSchema(
             GetMaxCommandOutputPageBytes());
+
+        _readToolOutputSchema = BuildReadCommandOutputSchema(GetMaxToolOutputPageBytes(), diagnosticsOnly: true);
 
         _askHumanSchema = BuildAskHumanSchema();
 
@@ -898,6 +902,13 @@ internal sealed partial class ArcanumInternalToolServer
                         "Applies a canonical unified diff as one reversible, sequential multi-file transaction. "
                         + "All paths and hunks are planned before mutation; dryRun performs the same validation without staging or writes.",
                     InputSchema = _applyPatchSchema,
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = ToolRiskClassifier.ReadToolOutputToolName,
+                    Description =
+                        "Reads one UTF-8 page of diagnostics retained by a native coding tool. Use its output handle, stream, and each nextOffset until complete. Handles are private to the issuing Session and live tool connection.",
+                    InputSchema = _readToolOutputSchema,
                 },
             ]);
         }

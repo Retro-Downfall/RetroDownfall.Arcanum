@@ -20,6 +20,9 @@ public readonly record struct Error(
     public IReadOnlyList<ConfigurationValidationError>? Details { get; init; } =
         Details is null ? null : System.Array.AsReadOnly<ConfigurationValidationError>([.. Details]);
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Intelligence.Models.TurnFailureEvidence? FailureEvidence { get; init; }
+
     /// <summary>In-process, content-free context admission data; never part of the error wire shape.</summary>
     [JsonIgnore]
     public ContextOverflowDetails? ContextOverflow { get; init; }

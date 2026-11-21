@@ -16,6 +16,9 @@ public sealed record PromptResponseDto(
 
     public IReadOnlyList<InferenceNotice> Notices { get; init; } = [];
 
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<TurnFailureEvidence>? ToolFailures { get; init; }
+
     public static PromptResponseDto From(PromptTurnResult turn) =>
         new(
             turn.Text,
@@ -25,5 +28,6 @@ public sealed record PromptResponseDto(
         {
             Reasoning = turn.Reasoning,
             Notices = turn.Notices,
+            ToolFailures = turn.ToolFailures,
         };
 }

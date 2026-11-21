@@ -45,6 +45,36 @@ public sealed class CommandCenterReasoningTests
         Assert.Null(entry.SourceEntryId);
     }
 
+    [Fact]
+    public async Task A_recoverable_patch_failure_explains_effect_and_next_action_on_the_correlated_call()
+    {
+        IntelligenceToolCallEvent call = new("patch-call", "apply_patch", "{}");
+
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(SerializeFrames(
+            new IntelligenceEvent(IntelligenceEventType.ToolCall, "apply_patch", ToolCall: call),
+            new IntelligenceEvent(IntelligenceEventType.ToolResult, "apply_patch", "stale patch", ToolCall: call)
+            {
+                FailureEvidence = new(TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectWorkspace),
+            },
+            new IntelligenceEvent(IntelligenceEventType.Result, "done", "done"))));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("apply the patch", state, updates.Writer, CancellationToken.None);
+
+        IncantationRecord record = Assert.Single(state.Incantations.Snapshot());
+
+        Assert.Equal(IncantationState.Failed, record.State);
+
+        Assert.Contains("The tool was never dispatched.", record.ErrorText, StringComparison.Ordinal);
+
+        Assert.Contains("Inspect the current workspace.", record.ErrorText, StringComparison.Ordinal);
+
+        Assert.Equal("stale patch", record.ResultText);
+    }
+
     [Theory]
     [InlineData(ToolOutcomeCode.NotFound)]
     [InlineData(ToolOutcomeCode.WorkspacePolicyDenied)]
@@ -563,6 +593,9 @@ public sealed class CommandCenterReasoningTests
         Assert.Equal(
             "partial\n… [cancelled]",
             Assert.Single(entries, static entry => entry.Kind == SessionLogEntryKind.Assistant).Text);
+
+        Assert.Contains(state.Log.Snapshot(), entry => entry.Kind == SessionLogEntryKind.Status
+            && entry.Text.Contains("Completion is unknown.", StringComparison.Ordinal));
     }
 
     /// <summary>

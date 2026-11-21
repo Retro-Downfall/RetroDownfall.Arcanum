@@ -654,6 +654,23 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         Assert.DoesNotContain("structured-content-canary", failure.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Native_coding_owner_evidence_survives_the_exact_sdk_transport()
+    {
+        await using SdkMcpClientWrapper client = await CreateInitializedClientAsync();
+
+        McpBridgeTool patch = Assert.Single(await client.GetToolsAsync(), static tool => tool.Name == "apply_patch")
+            .WithTrustedStructuredResult(TrustedStructuredToolResultKind.WorkspacePatch);
+
+        TrustedStructuredToolResult result = Assert.IsType<TrustedStructuredToolResult>(
+            await patch.InvokeAsync(new AIFunctionArguments { ["patch"] = "fixture patch" }));
+
+        Assert.Equal(TurnFailurePhase.ToolPrecondition, result.FailureEvidence?.Phase);
+        Assert.Equal(TurnEffectState.NotDispatched, result.FailureEvidence?.Effect);
+        Assert.Equal(TurnRecoveryAction.InspectSession, result.FailureEvidence?.NextAction);
+        Assert.Null(result.FailureEvidence?.Output);
+    }
+
     private async Task<SdkMcpClientWrapper> CreateInitializedClientAsync()
     {
         string normalizedRoot = Path.GetFullPath(_workspace.Root);

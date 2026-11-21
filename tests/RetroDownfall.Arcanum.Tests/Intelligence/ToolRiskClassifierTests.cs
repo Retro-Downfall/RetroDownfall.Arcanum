@@ -84,6 +84,7 @@ public sealed class ToolRiskClassifierTests
         "execute_command",
         "run_script",
         "read_command_output",
+        "read_tool_output",
         "delete_memory",
         "save_memory",
         "search_memory",
@@ -128,11 +129,11 @@ public sealed class ToolRiskClassifierTests
     }
 
     [Fact]
-    public void Known_tool_inventory_contains_45_distinct_names()
+    public void Known_tool_inventory_contains_46_distinct_names()
     {
-        Assert.Equal(45, KnownToolNames.Length);
+        Assert.Equal(46, KnownToolNames.Length);
 
-        Assert.Equal(45, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(46, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -144,9 +145,9 @@ public sealed class ToolRiskClassifierTests
 
         IReadOnlyList<WardToolInventoryRow> rows = ReadWardToolInventory(design);
 
-        Assert.Equal(45, rows.Count);
+        Assert.Equal(46, rows.Count);
 
-        Assert.Equal(45, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(46, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
 
         Assert.Equal(
             KnownToolNames.OrderBy(static name => name, StringComparer.Ordinal).ToArray(),

@@ -165,7 +165,12 @@ public sealed record McpToolsCallResultWire
 public sealed record McpToolResultMetadata
 {
     [JsonPropertyName("arcanum/toolOutcome")]
-    public required ToolOutcome Outcome { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ToolOutcome? Outcome { get; init; }
+
+    [JsonPropertyName("arcanum/turnFailureEvidence")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TurnFailureEvidence? FailureEvidence { get; init; }
 }
 
 /// <summary>

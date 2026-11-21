@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using Spectre.Console;
 
@@ -27,6 +28,45 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 public sealed class CliDiagnosticConsoleTests
 {
     private const string Markup = "[bold]diagnostic words[/]";
+
+    [Fact]
+    public void Buffered_terminal_errors_explain_the_observed_phase_and_recovery()
+    {
+        Error failure = new("Hub.Error", "Request failed")
+        {
+            FailureEvidence = new(TurnFailurePhase.HostPreparation, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession),
+        };
+
+        string message = IThemePaletteMarkupExtensions.FormatError(failure);
+
+        Assert.Contains("Turn preparation.", message, StringComparison.Ordinal);
+
+        Assert.Contains("The request was never dispatched.", message, StringComparison.Ordinal);
+
+        Assert.Contains("Inspect the current Session", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Buffered_tool_failure_keeps_the_paged_diagnostic_handle_available_on_stderr()
+    {
+        const string handle = "31415926535897932384626433832795";
+
+        PromptResponseDto response = new("answer", null)
+        {
+            ToolFailures = [new(TurnFailurePhase.ToolExecution, TurnEffectState.Completed, TurnRecoveryAction.ReadToolOutput)
+            {
+                Output = new("read_tool_output", handle, ["stderr"]),
+            }],
+        };
+
+        IThemePalette palette = new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors());
+
+        string message = CaptureError("plain", () => ExecuteResultRendering.WriteExecuteResultAsync(response, palette).GetAwaiter().GetResult());
+
+        Assert.Contains("read_tool_output", message, StringComparison.Ordinal);
+
+        Assert.Contains(handle, message, StringComparison.Ordinal);
+    }
 
     [Theory]
     [InlineData(InferenceNoticeCode.ToolCompatibilityRestart, "continuing without local tools")]

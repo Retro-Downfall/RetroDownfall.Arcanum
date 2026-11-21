@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal enum TrustedStructuredToolResultKind
@@ -16,5 +18,7 @@ internal sealed record TrustedStructuredToolResult(
     string Text,
     bool ReceiptHandled = false)
 {
+    internal TurnFailureEvidence? FailureEvidence { get; init; }
+
     public override string ToString() => Text;
 }

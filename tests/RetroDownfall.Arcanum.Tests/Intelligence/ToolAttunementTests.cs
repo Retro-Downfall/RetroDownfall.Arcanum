@@ -80,6 +80,27 @@ public sealed class ToolAttunementTests
         Assert.Equal(["apply_patch", "workspace_check"], result.Excluded);
     }
 
+    [Theory]
+    [InlineData(ToolRiskClassifier.ApplyPatchToolName)]
+    [InlineData(ToolRiskClassifier.WorkspaceCheckToolName)]
+    public void Coding_owner_attunement_pairs_diagnostics_without_command_access(string owner)
+    {
+        List<AITool> mcpTools =
+        [
+            CreateTool(owner),
+            CreateTool(ToolRiskClassifier.ReadToolOutputToolName),
+            CreateTool(ToolRiskClassifier.ReadCommandOutputToolName),
+            CreateTool(ToolRiskClassifier.ExecuteCommandToolName),
+        ];
+
+        AttunementResult result = ArtifactAttunement.ApplyAttunement(mcpTools, [owner]);
+
+        Assert.Equal([owner, ToolRiskClassifier.ReadToolOutputToolName],
+            result.Allowed.OfType<AIFunction>().Select(tool => tool.Name));
+        Assert.Equal([ToolRiskClassifier.ReadCommandOutputToolName, ToolRiskClassifier.ExecuteCommandToolName],
+            result.Excluded);
+    }
+
     [Fact]
     public void ApplyAttunement_declared_execute_command_includes_its_read_continuation()
     {

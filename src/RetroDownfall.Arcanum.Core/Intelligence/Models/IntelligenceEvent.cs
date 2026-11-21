@@ -60,6 +60,9 @@ public sealed record IntelligenceEvent(
     [JsonIgnore]
     internal StreamDeliveryAcknowledgement? DeliveryAcknowledgement { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TurnFailureEvidence? FailureEvidence { get; init; }
+
     /// <summary>A code-owned non-success outcome for this toolResult; absent on successful results.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ToolOutcome? ToolOutcome { get; init; }

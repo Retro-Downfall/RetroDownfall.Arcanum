@@ -17,6 +17,9 @@ public sealed record PromptTurnResult(
     /// <summary>Transient operational observations, separate from structured-output warnings.</summary>
     public IReadOnlyList<InferenceNotice> Notices { get; init; } = [];
 
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<TurnFailureEvidence>? ToolFailures { get; init; }
+
     public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
 
     [System.Text.Json.Serialization.JsonIgnore]

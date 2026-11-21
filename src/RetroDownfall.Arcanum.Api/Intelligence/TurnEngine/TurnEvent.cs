@@ -112,6 +112,8 @@ internal sealed record ToolInvocationCompleted(
     bool AttachmentPostProcessed) : TurnEvent(Correlation)
 {
     public ToolOutcome? ToolOutcome { get; init; }
+
+    public TurnFailureEvidence? FailureEvidence { get; init; }
 }
 
 internal sealed record AttachmentRefreshed(

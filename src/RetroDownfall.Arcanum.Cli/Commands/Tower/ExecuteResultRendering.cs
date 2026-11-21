@@ -24,6 +24,16 @@ internal static class ExecuteResultRendering
             noticeConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(notice.Message)));
         }
 
+        if (response.ToolFailures is { Count: > 0 } failures)
+        {
+            IAnsiConsole diagnostics = CliConsoleFactory.CreateDiagnostic();
+
+            foreach (TurnFailureEvidence failure in failures)
+            {
+                diagnostics.MarkupLine(themePalette.MutedMarkup(Markup.Escape(TurnFailureDisplay.Describe(failure))));
+            }
+        }
+
         if (response.ToolCalls is not { Count: > 0 } toolCalls)
         {
             return;

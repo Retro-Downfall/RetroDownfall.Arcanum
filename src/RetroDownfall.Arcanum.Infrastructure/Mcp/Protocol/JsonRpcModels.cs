@@ -97,6 +97,7 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(McpToolResultMetadata))]
 [JsonSerializable(typeof(ToolOutcome))]
 [JsonSerializable(typeof(ToolOutcomeCode))]
+[JsonSerializable(typeof(TurnFailureEvidence))]
 [JsonSerializable(typeof(McpToolDefinitionWire))]
 [JsonSerializable(typeof(McpToolDefinitionWire[]))]
 [JsonSerializable(typeof(ReadFileChunkParams))]

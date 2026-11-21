@@ -116,14 +116,18 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
         try
         {
-            await foreach (IntelligenceEvent frame in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
+            await using var frames = transport.Reader.ReadAllAsync(executionToken).GetAsyncEnumerator();
+
+            while (await ReadNextAsync(frames, executionToken).ConfigureAwait(false))
             {
+                IntelligenceEvent frame = frames.Current;
+
                 yield return frame;
 
                 // A plain async-enumerable consumer has processed the yielded frame when it asks
                 // for the next one. HTTP writers claim this callback themselves before writing.
                 // Abandonment skips this continuation and must never count as acknowledgement.
-                executionToken.ThrowIfCancellationRequested();
+                TurnCanceledException.ThrowIfRequested(executionToken);
 
                 frame.DeliveryAcknowledgement?.Claim()?.Invoke();
             }
@@ -133,6 +137,18 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
         finally
         {
             await JoinProducerAsync(produce, producerCancellation, drained).ConfigureAwait(false);
+        }
+    }
+
+    private static async ValueTask<bool> ReadNextAsync(IAsyncEnumerator<IntelligenceEvent> frames, CancellationToken token)
+    {
+        try
+        {
+            return await frames.MoveNextAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw new TurnCanceledException(token);
         }
     }
 

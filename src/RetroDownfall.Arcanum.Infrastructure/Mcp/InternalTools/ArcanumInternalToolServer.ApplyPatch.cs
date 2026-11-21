@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -23,7 +24,8 @@ internal sealed partial class ArcanumInternalToolServer
                     Code = "session_required",
                     Message =
                         "apply_patch requires a bound persisted session and assistant-turn invocation.",
-                });
+                },
+                new(TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession));
         }
 
         McpToolsCallResultWire? workspaceGate = TryRequireWorkspaceRoot();
@@ -55,7 +57,8 @@ internal sealed partial class ArcanumInternalToolServer
                     Code = "invalid_request",
                     Message =
                         "apply_patch requires a canonical unified diff in 'patch'.",
-                });
+                },
+                new(TurnFailurePhase.ToolArguments, TurnEffectState.NotDispatched, TurnRecoveryAction.CorrectArguments));
         }
 
         long budget =
@@ -76,13 +79,36 @@ internal sealed partial class ArcanumInternalToolServer
                 invocation,
                 cancellationToken).ConfigureAwait(false);
 
-        return StructuredTextResult(
-            response.SerializedResult,
-            isError: false);
+        TurnFailureEvidence? evidence = response.FailureEvidence;
+
+        if (evidence is not null && response.FailureDiagnostics is { } diagnostics)
+        {
+            TurnFailureOutput? output = await RetainDiagnosticsAsync(
+                diagnostics,
+                _json.WorkspacePatchToolResultEnvelope,
+                ToolRiskClassifier.ApplyPatchToolName,
+                invocation.SessionId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (output is not null)
+            {
+                evidence = evidence with { Output = output };
+
+                if (!invocation.ReceiptHandled)
+                {
+                    string serialized = executor.SerializeBounded(diagnostics with { Output = output });
+
+                    return WithOwnerEvidence(StructuredTextResult(serialized, isError: false), evidence);
+                }
+            }
+        }
+
+        return WithOwnerEvidence(StructuredTextResult(response.SerializedResult, isError: false), evidence);
     }
 
     private McpToolsCallResultWire BuildSmallStructuredPatchResult(
-        WorkspacePatchToolResultEnvelope result)
+        WorkspacePatchToolResultEnvelope result,
+        TurnFailureEvidence evidence)
     {
         long budget =
             ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
@@ -100,6 +126,6 @@ internal sealed partial class ArcanumInternalToolServer
                 _json.MinimalStructuredToolResultEnvelope);
         }
 
-        return StructuredTextResult(serialized, isError: false);
+        return WithOwnerEvidence(StructuredTextResult(serialized, isError: false), evidence);
     }
 }

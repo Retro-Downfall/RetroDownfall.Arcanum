@@ -19,6 +19,9 @@ public static class ToolRiskClassifier
     public const string ReadCommandOutputToolName =
         "read_command_output";
 
+    public const string ReadToolOutputToolName =
+        "read_tool_output";
+
     public static bool IsReadOnlyCodingTool(string? toolName) =>
         string.Equals(
             toolName,
@@ -27,6 +30,10 @@ public static class ToolRiskClassifier
         || string.Equals(
             toolName,
             ReadCommandOutputToolName,
+            StringComparison.OrdinalIgnoreCase)
+        || string.Equals(
+            toolName,
+            ReadToolOutputToolName,
             StringComparison.OrdinalIgnoreCase);
 
     public static string GetWardDisclosure(string? toolName) =>

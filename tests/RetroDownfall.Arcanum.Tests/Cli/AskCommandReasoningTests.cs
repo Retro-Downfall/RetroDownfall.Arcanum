@@ -444,6 +444,41 @@ public sealed class AskCommandReasoningTests
         Assert.Contains("reasoning truncated", result.Error, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Run_explains_unknown_provider_completion_and_recovery_on_stderr()
+    {
+        string ndjson = SerializeFrames(new IntelligenceEvent(IntelligenceEventType.Error, "Provider disconnected")
+        {
+            FailureEvidence = new(TurnFailurePhase.ProviderRequest, TurnEffectState.Unknown, TurnRecoveryAction.CheckProvider),
+        });
+
+        NdjsonHandler handler = new(ndjson);
+        ServiceCollection services = new();
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+        services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+        services.AddSingleton<IHttpClientFactory>(new FakeHttpClientFactory(handler));
+        services.AddSingleton<ISecretStore>(new FakeSecretStore());
+
+        CliTestHarness.AddKeyedArcanumResponder(
+            services,
+            "test-key");
+
+        services.AddSingleton<IEyeOfTheWorld, FakeEye>();
+        services.AddSingleton<IGrimoireCliInitialization, NoopGrimoireInitialization>();
+        services.AddSingleton<IChronosyncEngine, NoopChronosyncEngine>();
+        services.AddSingleton<IArcanumServeLauncher, NoopServeLauncher>();
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["run", "question"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Completion is unknown.", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Check the provider connection.", string.Join(" ", result.Error.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Completion is unknown.", result.Output, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Status lines, tool names and tool output arrive from the model and its tools, and the diagnostics
     /// are written to the operator's terminal on stderr, which acts on control sequences instead of

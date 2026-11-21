@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
 
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
@@ -182,6 +184,9 @@ public sealed record WorkspacePatchToolResultEnvelope
 
     public int OmittedRecoveryArtifactPathCount { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TurnFailureOutput? Output { get; init; }
+
     public bool Truncated { get; init; }
 
     [JsonIgnore]
@@ -300,6 +305,12 @@ public sealed record WorkspaceCheckToolResultEnvelope
     public string? StandardOutput { get; init; }
 
     public string? StandardError { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TurnFailureOutput? Output { get; init; }
+
+    [JsonIgnore]
+    internal TurnFailureEvidence? ProcessStartFailure { get; init; }
 
     public bool Truncated { get; init; }
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
@@ -74,13 +75,46 @@ internal sealed partial class ArcanumInternalToolServer
                             StringComparer.OrdinalIgnoreCase)),
                 cancellationToken).ConfigureAwait(false);
 
-        return BuildBoundedStructuredWorkspaceCheckResult(result);
+        TurnFailureEvidence? evidence = ObserveWorkspaceCheckFailure(result);
+
+        if (evidence is not null && result.MaterializationItemCount > 0)
+        {
+            TurnFailureOutput? output = await RetainDiagnosticsAsync(
+                result,
+                _json.WorkspaceCheckToolResultEnvelope,
+                ToolRiskClassifier.WorkspaceCheckToolName,
+                DiagnosticSessionId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (output is not null)
+            {
+                result = result with { Output = output };
+                evidence = evidence with { Output = output, NextAction = TurnRecoveryAction.ReadToolOutput };
+            }
+        }
+
+        return BuildBoundedStructuredWorkspaceCheckResult(result, evidence);
     }
 
+    private static TurnFailureEvidence? ObserveWorkspaceCheckFailure(
+        WorkspaceCheckToolResultEnvelope result) =>
+        result.ProcessStartFailure ?? (result.Status switch
+        {
+            "ok" => null,
+            "invalid_request" => new(TurnFailurePhase.ToolArguments, TurnEffectState.NotDispatched, TurnRecoveryAction.CorrectArguments),
+            "restore_required" => new(TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectWorkspace),
+            "unavailable" when result.Code != "resource_limit_unavailable" =>
+                new(TurnFailurePhase.ToolAuthorization, TurnEffectState.NotDispatched, TurnRecoveryAction.UseAuthorizedScope),
+            "failed" when result.ExitCode is not null =>
+                new(TurnFailurePhase.ToolExecution, TurnEffectState.Completed, TurnRecoveryAction.InspectWorkspace),
+            _ => new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectWorkspace),
+        });
+
     private McpToolsCallResultWire BuildBoundedStructuredWorkspaceCheckResult(
-        WorkspaceCheckToolResultEnvelope result)
+        WorkspaceCheckToolResultEnvelope result,
+        TurnFailureEvidence? evidence = null)
     {
-        return BuildBoundedStructuredResult(
+        McpToolsCallResultWire wire = BuildBoundedStructuredResult(
             result,
             _json.WorkspaceCheckToolResultEnvelope,
             isError: false,
@@ -90,5 +124,7 @@ internal sealed partial class ArcanumInternalToolServer
                 StandardError = null,
                 Truncated = true,
             });
+
+        return WithOwnerEvidence(wire, evidence ?? ObserveWorkspaceCheckFailure(result));
     }
 }

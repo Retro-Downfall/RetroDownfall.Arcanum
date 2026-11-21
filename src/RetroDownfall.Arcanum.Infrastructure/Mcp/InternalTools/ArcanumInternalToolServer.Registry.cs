@@ -49,6 +49,8 @@ internal sealed partial class ArcanumInternalToolServer
 
             "read_command_output",
 
+            ToolRiskClassifier.ReadToolOutputToolName,
+
             "set_task_priority",
 
             "send_notification",
@@ -152,6 +154,7 @@ internal sealed partial class ArcanumInternalToolServer
             ["execute_command"] = ExecuteCommandAsync,
 
             ["read_command_output"] = ExecuteReadCommandOutputAsync,
+            [ToolRiskClassifier.ReadToolOutputToolName] = ExecuteReadToolOutputAsync,
 
             ["set_task_priority"] = ExecuteAdjustInitiativeAsync,
 

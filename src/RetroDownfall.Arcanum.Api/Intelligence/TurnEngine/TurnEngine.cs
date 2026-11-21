@@ -96,7 +96,7 @@ internal sealed class TurnEngine(
             }
         }
 
-        executionToken.ThrowIfCancellationRequested();
+        TurnCanceledException.ThrowIfRequested(executionToken);
     }
 
     private async Task ProduceAsync(
@@ -151,7 +151,7 @@ internal sealed class TurnEngine(
                     .EmitAsync(
                         new RunAbandoned(
                             emitter.NextCorrelation(),
-                            new Error(ErrorCodes.Hub.Error, "Turn cancelled."),
+                            TurnCanceledException.CreateFailure(),
                             TurnTerminationReason.Cancelled,
                             Usage: null,
                             Warnings: [],

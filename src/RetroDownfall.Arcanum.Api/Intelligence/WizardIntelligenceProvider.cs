@@ -508,7 +508,7 @@ public sealed partial class WizardIntelligenceProvider(
                         ToleratedFailure: toleratedFailure,
                         PublicErrorText: publicError,
                         Duration: TimeSpan.Zero,
-                        AttachmentPostProcessed: false) { ToolOutcome = frame.ToolOutcome };
+                        AttachmentPostProcessed: false) { ToolOutcome = frame.ToolOutcome, FailureEvidence = frame.FailureEvidence };
 
                     yield break;
 
@@ -543,7 +543,7 @@ public sealed partial class WizardIntelligenceProvider(
                     // is only the backstop for a frame that arrives without one.
                     yield return new RunFailed(
                         correlation,
-                        new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message) { ContextOverflow = frame.ContextOverflow },
+                        new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message) { ContextOverflow = frame.ContextOverflow, FailureEvidence = frame.FailureEvidence },
                         TurnTerminationReason.PipelineFailure,
                         frame.Usage,
                         frame.Warnings,
@@ -1050,7 +1050,7 @@ public sealed partial class WizardIntelligenceProvider(
             LogPipelineFailure(lease.Provider, lease.ResolvedModel, request.SessionId, ex);
 
             return new InferenceAttemptResult(
-                Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage)),
+                Result<PromptTurnResult>.Failure(classification.LocalFailure(PublicInferenceFailureMessage)),
                 IsConnectivityFailure: false,
                 classification.ProviderCommitted);
         }
@@ -1252,7 +1252,7 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 LogPipelineFailure(singleLease.Provider, singleLease.ResolvedModel, request.SessionId, singleMoveFailure);
 
-                yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
+                yield return ErrorFrame(singleClassification.LocalFailure(PublicInferenceFailureMessage),
                     singleClassification.PartialReplyDropped);
             }
 
@@ -1435,9 +1435,9 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return TerminalFrame(new Error(
-                        ErrorCodes.Hub.Error,
-                        ModelCallExecutor is global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
+                    yield return TerminalFrame(ModelCallExecutor is NativeModelCallExecutor
+                        ? classification.LocalFailure(PublicInferenceFailureMessage)
+                        : new Error(ErrorCodes.Hub.Error, BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
                         classification.PartialReplyDropped);
 
                     yield break;
@@ -1528,9 +1528,9 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return TerminalFrame(new Error(
-                        ErrorCodes.Hub.Error,
-                        ModelCallExecutor is global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
+                    yield return TerminalFrame(ModelCallExecutor is NativeModelCallExecutor
+                        ? classification.LocalFailure(PublicInferenceFailureMessage)
+                        : new Error(ErrorCodes.Hub.Error, BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
                         classification.PartialReplyDropped);
 
                     yield break;
@@ -1629,7 +1629,7 @@ public sealed partial class WizardIntelligenceProvider(
                             midStreamFailure.GetType().FullName);
                     }
 
-                    yield return TerminalFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
+                    yield return TerminalFrame(classification.LocalFailure(PublicInferenceFailureMessage),
                         classification.PartialReplyDropped);
                 }
 
@@ -1725,7 +1725,7 @@ public sealed partial class WizardIntelligenceProvider(
                 ? $"{error.Message} The partial reply was dropped because the turn ended before it could be committed."
                 : error.Message,
             error.Code)
-        { ContextOverflow = error.ContextOverflow };
+        { ContextOverflow = error.ContextOverflow, FailureEvidence = error.FailureEvidence };
 
     /// <summary>
     /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
@@ -2183,6 +2183,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
             else if (!streaming)
             {
+                classification.PreparingAssistantEntry = true;
+
                 Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
                     .BeginBufferedAssistantReplyAsync(
                         request,
@@ -2192,6 +2194,8 @@ public sealed partial class WizardIntelligenceProvider(
                         inferenceToken,
                         claimLease: campaignTurn?.ClaimLease)
                     .ConfigureAwait(false);
+
+                classification.PreparingAssistantEntry = false;
 
                 if (begun.IsFailure)
                 {
@@ -2222,6 +2226,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
             else if (attachmentsEnabled && !InferenceContextBuilder.HasStatelessMessages(request))
             {
+                classification.PreparingAssistantEntry = true;
+
                 Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
                     .BeginStreamedAssistantReplyAsync(
                         request,
@@ -2231,6 +2237,8 @@ public sealed partial class WizardIntelligenceProvider(
                         inferenceToken,
                         claimLease: campaignTurn?.ClaimLease)
                     .ConfigureAwait(false);
+
+                classification.PreparingAssistantEntry = false;
 
                 if (begun.IsFailure)
                 {
@@ -2925,6 +2933,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
             {
+                classification.PreparingAssistantEntry = true;
+
                 Result<GrimoireTurnWriter.TurnHandle> lateBegun = await grimoireTurnWriter
                     .BeginStreamedAssistantReplyAsync(
                         request,
@@ -2934,6 +2944,8 @@ public sealed partial class WizardIntelligenceProvider(
                         inferenceToken,
                         claimLease: campaignTurn?.ClaimLease)
                     .ConfigureAwait(false);
+
+                classification.PreparingAssistantEntry = false;
 
                 if (lateBegun.IsFailure)
                 {
@@ -3718,6 +3730,9 @@ public sealed partial class WizardIntelligenceProvider(
                             inferenceError = invocationFailure
                                 ? BuildInferenceFailureMessage(lease, streamingMoveNextFailure) : PublicInferenceFailureMessage;
 
+                            if (failureObservation is not null && inferenceTypedError is null)
+                                inferenceTypedError = ObservedCallFailure(inferenceError, invocationFailure);
+
                             classification.IsConnectivityFailure = invocationFailure && roundProtection?.Revocation.IsCancellationRequested != true
                                 && (modelCall.Failure.IsConnectivityFailure || IsConnectivityFailure(streamingMoveNextFailure, callerToken));
                         }
@@ -3870,6 +3885,9 @@ public sealed partial class WizardIntelligenceProvider(
                                     else
                                     {
                                         inferenceError = invocationFailure ? BuildInferenceFailureMessage(lease, ex) : PublicInferenceFailureMessage;
+
+                                        if (failureObservation is not null && inferenceTypedError is null)
+                                            inferenceTypedError = ObservedCallFailure(inferenceError, invocationFailure);
                                     }
 
                                     // Only a genuine connectivity failure should trigger provider fallback.
@@ -4513,7 +4531,13 @@ public sealed partial class WizardIntelligenceProvider(
                                     processed.ResultText,
                                     null,
                                     new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex),
-                                    ToolDenied: processed.Denied) { ToolOutcome = processed.ToolOutcome };
+                                    ToolDenied: processed.Denied)
+                                {
+                                    ToolOutcome = processed.ToolOutcome,
+                                    FailureEvidence = processed.FailureEvidence is { } evidence
+                                        ? evidence with { ToolRound = streamToolRoundCount - 1, ToolIndex = toolCallIndex }
+                                        : TurnFailureEvidence.FromToolOutcome(processed.ToolOutcome, processed.ToolName, streamToolRoundCount - 1, toolCallIndex),
+                                };
 
                                 if (processed.AttachmentRefresh is { } refreshDetail)
                                 {
@@ -9382,6 +9406,13 @@ public sealed partial class WizardIntelligenceProvider(
             failure?.GetType().FullName ?? "None");
     }
 
+    private static Error ObservedCallFailure(string message, bool providerInvocation) => new(ErrorCodes.Hub.Error, message)
+    {
+        FailureEvidence = providerInvocation
+            ? new(TurnFailurePhase.ProviderRequest, TurnEffectState.Unknown, TurnRecoveryAction.CheckProvider)
+            : new(TurnFailurePhase.HostExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectSession),
+    };
+
     private static string BuildInferenceFailureMessage(ChatClientLease lease, Exception? ex = null) =>
         BuildInferenceFailureMessage(lease.Provider, ex);
 
@@ -9578,6 +9609,15 @@ public sealed partial class WizardIntelligenceProvider(
 
     private sealed class StreamFailureClassification
     {
+        internal bool PreparingAssistantEntry { get; set; }
+
+        internal Error LocalFailure(string message) => new(ErrorCodes.Hub.Error, message)
+        {
+            FailureEvidence = PreparingAssistantEntry
+                ? new(TurnFailurePhase.HostPreparation, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession)
+                : new(TurnFailurePhase.HostExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectSession),
+        };
+
         public bool IsConnectivityFailure { get; set; }
 
         public bool PartialReplyDropped { get; set; }

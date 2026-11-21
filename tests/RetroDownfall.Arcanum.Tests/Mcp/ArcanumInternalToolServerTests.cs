@@ -2637,6 +2637,15 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
             string handle = ExtractCompleteOutputHandle(output);
 
+            foreach (string stream in new[] { "stdout", "diagnostics" })
+            {
+                JsonElement foreignArtifact = JsonSerializer.SerializeToElement(
+                    new ReadCommandOutputParams { Handle = handle, Stream = stream, Offset = 0, MaxBytes = 1024 },
+                    McpJsonSerializerContext.Default.ReadCommandOutputParams);
+
+                Assert.True((await session.CallToolAsync("read_tool_output", foreignArtifact)).IsError);
+            }
+
             StringBuilder complete = new();
 
             long offset = 0L;
@@ -4631,9 +4640,9 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
             Assert.Contains("Guild.ToolBoundaryUnavailable", result.Content![0].Text!);
 
-            Assert.Equal(ToolOutcomeCode.NativePolicyDenied, result.Meta?.Outcome.Code);
+            Assert.Equal(ToolOutcomeCode.NativePolicyDenied, result.Meta?.Outcome?.Code);
 
-            Assert.True(result.Meta?.Outcome.Denied);
+            Assert.True(result.Meta?.Outcome?.Denied);
         }
     }
 
@@ -4968,7 +4977,8 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         ResourceLimits? resourceLimits = null,
         IUnseenServantPacer? suppliedPacer = null,
         ILexiconService? lexiconService = null,
-        ICovenantSensitiveArtifactPurger? sensitivePurger = null)
+        ICovenantSensitiveArtifactPurger? sensitivePurger = null,
+        bool allowHostProcessTools = true)
     {
         string? normalizedRoot = configureWorkspace
             ? Path.GetFullPath(_workspace.Root)
@@ -5045,7 +5055,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             attachmentsToolEnabled: attachmentsToolEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance,
-            allowHostProcessTools: true,
+            allowHostProcessTools: allowHostProcessTools,
             codingToolsSettings: codingToolsSettings,
             workspaceCheckRuntime: workspaceCheckRuntime);
 
@@ -5296,7 +5306,9 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     private static async Task<string> ReadCompleteCommandOutputAsync(
         TestMcpSession session,
         string handle,
-        string stream)
+        string stream,
+        int maxBytes = 4096,
+        string toolName = "read_command_output")
     {
         StringBuilder complete = new();
 
@@ -5310,12 +5322,12 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
                     Handle = handle,
                     Stream = stream,
                     Offset = offset,
-                    MaxBytes = 4096,
+                    MaxBytes = maxBytes,
                 },
                 McpJsonSerializerContext.Default.ReadCommandOutputParams);
 
             McpToolsCallResultWire result = await session.CallToolAsync(
-                "read_command_output",
+                toolName,
                 arguments);
 
             Assert.False(result.IsError);
@@ -5622,8 +5634,16 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         public int RunCount { get; private set; }
 
-        public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot) =>
-            Status;
+        public int StatusReadCount { get; private set; }
+
+        public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot)
+        {
+            StatusReadCount++;
+
+            return Status;
+        }
+
+        public bool CanReadRetainedOutput(string workspaceRoot) => Status.IsEligible;
 
         public Task<WorkspaceCheckToolResultEnvelope> RunAsync(
             WorkspaceCheckRuntimeRequest request,

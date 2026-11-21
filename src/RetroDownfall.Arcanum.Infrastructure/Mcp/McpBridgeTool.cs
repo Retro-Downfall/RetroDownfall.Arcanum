@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -197,10 +198,12 @@ internal sealed class McpBridgeTool : AIFunction
                 == TrustedStructuredToolResultKind.WorkspacePatch
             && ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true;
 
+        bool isHostTransport = client is SdkMcpClientWrapper { IsHostOwned: true }
+            or McpClientGeneration { IsGuildHostTransport: true };
+
         if (result.IsError == true)
         {
-            if (client is not (SdkMcpClientWrapper { IsHostOwned: true }
-                or McpClientGeneration { IsGuildHostTransport: true }))
+            if (!isHostTransport)
             {
                 return new McpToolFailure(new ToolOutcome(ToolOutcomeCode.ExternalToolError));
             }
@@ -230,7 +233,32 @@ internal sealed class McpBridgeTool : AIFunction
                 kind,
                 text,
                 ReceiptHandled: receiptHandled)
+            {
+                FailureEvidence = isHostTransport
+                    && kind is (TrustedStructuredToolResultKind.WorkspacePatch or TrustedStructuredToolResultKind.WorkspaceCheck)
+                    ? ReadOwnerFailureEvidence(result)
+                    : null,
+            }
             : text;
+    }
+
+    private static TurnFailureEvidence? ReadOwnerFailureEvidence(CallToolResult result)
+    {
+        if (result.Meta is not { } metadata
+            || !metadata.TryGetPropertyValue("arcanum/turnFailureEvidence", out var node)
+            || node is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return node.Deserialize(McpJsonSerializerContext.Default.TurnFailureEvidence);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     internal McpBridgeTool WithTrustedStructuredResult(
@@ -414,7 +442,7 @@ internal static class ReadOnlyToolProvenance
 
     internal static IReadOnlyList<string> InternalObservationNames { get; } = Array.AsReadOnly<string>(
     [
-        "read_file", "list_directory", "search_workspace", "read_command_output",
+        "read_file", "list_directory", "search_workspace", "read_command_output", "read_tool_output",
         "search_memory", "search_history", "ask_human",
     ]);
 

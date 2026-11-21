@@ -162,7 +162,7 @@ internal sealed class IntelligenceEventProjection
                         completed.CallId,
                         completed.ToolName,
                         completed.ArgumentsJson),
-                    ToolDenied: completed.Denied) { ToolOutcome = completed.ToolOutcome },
+                    ToolDenied: completed.Denied) { ToolOutcome = completed.ToolOutcome, FailureEvidence = completed.FailureEvidence },
             ],
 
             ToolInvocationCompleted completed =>
@@ -175,7 +175,7 @@ internal sealed class IntelligenceEventProjection
                         completed.CallId,
                         completed.ToolName,
                         completed.ArgumentsJson),
-                    ToolDenied: completed.Denied) { ToolOutcome = completed.ToolOutcome },
+                    ToolDenied: completed.Denied) { ToolOutcome = completed.ToolOutcome, FailureEvidence = completed.FailureEvidence },
             ],
 
             AttachmentRefreshed refreshed =>
@@ -193,7 +193,7 @@ internal sealed class IntelligenceEventProjection
                 new IntelligenceEvent(
                     IntelligenceEventType.Error,
                     failed.Error.Message,
-                    failed.Error.Code) { ContextOverflow = failed.Error.ContextOverflow },
+                    failed.Error.Code) { ContextOverflow = failed.Error.ContextOverflow, FailureEvidence = failed.Error.FailureEvidence },
             ],
 
             RunAbandoned abandoned =>
@@ -201,7 +201,7 @@ internal sealed class IntelligenceEventProjection
                 new IntelligenceEvent(
                     IntelligenceEventType.Error,
                     abandoned.Error?.Message ?? "Turn abandoned.",
-                    abandoned.Error?.Code ?? ErrorCodes.Hub.Error) { ContextOverflow = abandoned.Error?.ContextOverflow },
+                    abandoned.Error?.Code ?? ErrorCodes.Hub.Error) { ContextOverflow = abandoned.Error?.ContextOverflow, FailureEvidence = abandoned.Error?.FailureEvidence },
             ],
 
             _ => [],

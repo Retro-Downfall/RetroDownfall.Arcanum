@@ -22,7 +22,7 @@ public sealed partial class WizardIntelligenceProviderTests
 {
     private static readonly HashSet<string> AuditedInternalObservationNames = new(StringComparer.Ordinal)
     {
-        "read_file", "list_directory", "search_workspace", "read_command_output",
+        "read_file", "list_directory", "search_workspace", "read_command_output", "read_tool_output",
         "search_memory", "search_history", "ask_human",
     };
 
@@ -426,6 +426,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
+
     private sealed class ReadOnlyMemorySearchSurface : IMemorySearchService
     {
         public Task<Result<MemorySearchResponse>> SearchForInvocationAsync(

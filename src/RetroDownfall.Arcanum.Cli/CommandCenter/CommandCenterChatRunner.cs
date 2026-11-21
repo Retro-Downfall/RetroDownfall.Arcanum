@@ -64,6 +64,8 @@ internal sealed class CommandCenterChatRunner(
             state.Log.MaxReasoningChars,
             SessionLogBuffer.ReasoningTruncationMarker);
         bool cancelled = false;
+
+        bool streamingRequestStarted = false;
         bool sawError = false;
         bool sawResult = false;
         bool bindingAccepted = true;
@@ -154,6 +156,8 @@ internal sealed class CommandCenterChatRunner(
             // The coalescer holds back a chunk that arrives inside its flush interval; wrapping the stream
             // is what flushes that chunk when the model goes quiet instead of leaving it off the screen
             // until the next event.
+            streamingRequestStarted = true;
+
             await foreach (IntelligenceEvent evt in coalescer
                                .WithTrailingFlushAsync(
                                    apiClient.AskStreamAsync(ping, cancellationToken),
@@ -365,7 +369,7 @@ internal sealed class CommandCenterChatRunner(
                         _ = humanPromptCoordinator.TryCloseActive(
                             HumanPromptCloseReason.Expired,
                             "Turn ended with an error — human prompt closed.");
-                        state.Log.Append(SessionLogEntryKind.Error, evt.Message);
+                        state.Log.Append(SessionLogEntryKind.Error, TurnFailureDisplay.Append(evt.Message, evt.FailureEvidence));
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog),
                                 cancellationToken)
@@ -385,6 +389,12 @@ internal sealed class CommandCenterChatRunner(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             cancelled = true;
+
+            if (streamingRequestStarted)
+            {
+                state.Log.Append(SessionLogEntryKind.Status, TurnFailureDisplay.InterruptedRequest);
+            }
+
             _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
             await coalescer.FlushCancelledAsync().ConfigureAwait(false);
         }
@@ -591,7 +601,11 @@ internal sealed class CommandCenterChatRunner(
         string? result = evt.Data ?? evt.ToolCall?.ArgumentsJson;
         _ = state.Incantations.UpsertResult(callId, name, result);
 
-        if (evt.ToolOutcome is { Message.Length: > 0 } outcome)
+        if (evt.FailureEvidence is { } evidence)
+        {
+            _ = state.Incantations.UpsertError(callId, name, TurnFailureDisplay.Describe(evidence));
+        }
+        else if (evt.ToolOutcome is { Message.Length: > 0 } outcome)
         {
             _ = state.Incantations.UpsertError(callId, name, outcome.Message);
         }
@@ -603,7 +617,7 @@ internal sealed class CommandCenterChatRunner(
         string? name = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
         // toolCall.argumentsJson is the serialized call arguments, never failure text — the human
         // readable reason rides on Data, with Message (the tool name) as the last resort.
-        string? error = evt.Data ?? evt.Message;
+        string error = TurnFailureDisplay.Append(evt.Data ?? evt.Message, evt.FailureEvidence);
         _ = state.Incantations.UpsertError(callId, name, error);
     }
 

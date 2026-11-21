@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
@@ -10,7 +11,8 @@ using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed record ApplyPatchToolExecutionResponse(
-    string SerializedResult, bool WorkspaceChanged = false, bool RequiresReconciliation = false);
+    string SerializedResult, bool WorkspaceChanged = false, bool RequiresReconciliation = false,
+    TurnFailureEvidence? FailureEvidence = null, WorkspacePatchToolResultEnvelope? FailureDiagnostics = null);
 
 internal sealed class ApplyPatchToolExecutionService
 {
@@ -128,16 +130,16 @@ internal sealed class ApplyPatchToolExecutionService
             context.RecordHandoffOutcome(
                 MandatoryToolInteractionAppendOutcome.RecoveredCommitted);
 
-            return Normal(probe.SerializedResult);
+            return Recovered(probe.SerializedResult);
         }
 
         if (probe.Outcome == ApplyPatchReceiptProbeOutcome.Mismatched)
         {
-            return Normal(
-                SerializeBounded(
-                    ReceiptPreflightFailure(
-                        "receipt_mismatch",
-                        "This logical apply_patch invocation was already used with a different immutable payload.")));
+            return Failure(
+                ReceiptPreflightFailure(
+                    "receipt_mismatch",
+                    "This logical apply_patch invocation was already used with a different immutable payload."),
+                TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession);
         }
 
         if (probe.Outcome != ApplyPatchReceiptProbeOutcome.NotFound)
@@ -153,14 +155,14 @@ internal sealed class ApplyPatchToolExecutionService
 
         if (!parsed.Success)
         {
-            return Normal(
-                SerializeBounded(
-                    new WorkspacePatchToolResultEnvelope
-                    {
-                        Status = "invalid_patch",
-                        Code = parsed.Code,
-                        Message = parsed.Message,
-                    }));
+            return Failure(
+                new WorkspacePatchToolResultEnvelope
+                {
+                    Status = "invalid_patch",
+                    Code = parsed.Code,
+                    Message = parsed.Message,
+                },
+                TurnFailurePhase.ToolArguments, TurnEffectState.NotDispatched, TurnRecoveryAction.CorrectArguments);
         }
 
         WorkspacePatchPlanResult planning =
@@ -176,15 +178,19 @@ internal sealed class ApplyPatchToolExecutionService
 
         if (!planning.Success)
         {
-            return Normal(
-                SerializeBounded(
-                    new WorkspacePatchToolResultEnvelope
-                    {
-                        Status = "conflict",
-                        Code = planning.Code,
-                        Message = planning.Message,
-                        Diagnostic = planning.Diagnostic,
-                    }));
+            bool policyDenied = planning.Code is "protected_path" or "path_escape" or "symlink" or "hard_link";
+
+            return Failure(
+                new WorkspacePatchToolResultEnvelope
+                {
+                    Status = "conflict",
+                    Code = planning.Code,
+                    Message = planning.Message,
+                    Diagnostic = planning.Diagnostic,
+                },
+                policyDenied ? TurnFailurePhase.ToolAuthorization : TurnFailurePhase.ToolPrecondition,
+                TurnEffectState.NotDispatched,
+                policyDenied ? TurnRecoveryAction.UseAuthorizedScope : TurnRecoveryAction.InspectWorkspace);
         }
 
         WorkspacePatchPlan plan = planning.Plan!;
@@ -229,25 +235,25 @@ internal sealed class ApplyPatchToolExecutionService
             context.RecordHandoffOutcome(
                 MandatoryToolInteractionAppendOutcome.RecoveredCommitted);
 
-            return Normal(preflight.SerializedResult);
+            return Recovered(preflight.SerializedResult);
         }
 
         if (preflight.Outcome == ApplyPatchReceiptPreflightOutcome.Rejected)
         {
-            return Normal(
-                SerializeBounded(
-                    ReceiptPreflightFailure(
-                        "receipt_capacity",
-                        "The exact mandatory apply_patch receipt exceeds the current session entry capacity.")));
+            return Failure(
+                ReceiptPreflightFailure(
+                    "receipt_capacity",
+                    "The exact mandatory apply_patch receipt exceeds the current session entry capacity."),
+                TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession);
         }
 
         if (preflight.Outcome == ApplyPatchReceiptPreflightOutcome.Mismatched)
         {
-            return Normal(
-                SerializeBounded(
-                    ReceiptPreflightFailure(
-                        "receipt_mismatch",
-                        "This logical apply_patch invocation was already used with a different immutable payload.")));
+            return Failure(
+                ReceiptPreflightFailure(
+                    "receipt_mismatch",
+                    "This logical apply_patch invocation was already used with a different immutable payload."),
+                TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession);
         }
 
         if (preflight.Outcome != ApplyPatchReceiptPreflightOutcome.Admitted)
@@ -309,8 +315,7 @@ internal sealed class ApplyPatchToolExecutionService
                     commit.Recovery).ConfigureAwait(false);
             }
 
-            return new ApplyPatchToolExecutionResponse(failureResult,
-                RequiresReconciliation: commit.Status == WorkspaceCommitStatus.RollbackIncomplete);
+            return ExecutionFailure(failureResult, failure, commit.Status == WorkspaceCommitStatus.RollbackIncomplete);
         }
 
         if (commit.Transaction is null)
@@ -420,7 +425,7 @@ internal sealed class ApplyPatchToolExecutionService
                     .ConfigureAwait(false);
             }
 
-            return new ApplyPatchToolExecutionResponse(failureResult, RequiresReconciliation: !rollback.Complete);
+            return ExecutionFailure(failureResult, failure, !rollback.Complete);
         }
 
         throw new ApplyPatchReceiptHandoffException(
@@ -517,6 +522,50 @@ internal sealed class ApplyPatchToolExecutionService
 
     private static ApplyPatchToolExecutionResponse Normal(string result) =>
         new(result);
+
+    private ApplyPatchToolExecutionResponse Failure(
+        WorkspacePatchToolResultEnvelope result,
+        TurnFailurePhase phase,
+        TurnEffectState effect,
+        TurnRecoveryAction action) =>
+        new(SerializeBounded(result), FailureEvidence: new(phase, effect, action));
+
+    private static ApplyPatchToolExecutionResponse ExecutionFailure(
+        string serializedResult,
+        WorkspacePatchToolResultEnvelope result,
+        bool rollbackIncomplete) =>
+        new(serializedResult,
+            RequiresReconciliation: rollbackIncomplete,
+            FailureEvidence: new(
+                TurnFailurePhase.ToolExecution,
+                rollbackIncomplete ? TurnEffectState.Unknown : TurnEffectState.Completed,
+                TurnRecoveryAction.InspectWorkspace),
+            FailureDiagnostics: result);
+
+    private ApplyPatchToolExecutionResponse Recovered(string serializedResult)
+    {
+        // Replay is a host-owned receipt with exact persisted bytes. A retained recovery receipt
+        // can confirm uncertainty without admitting a new mutation or rewriting the receipt.
+        try
+        {
+            WorkspacePatchToolResultEnvelope? result = JsonSerializer.Deserialize(
+                serializedResult, _json.WorkspacePatchToolResultEnvelope);
+
+            if (result?.Status == "rollback_incomplete")
+            {
+                return Normal(serializedResult) with
+                {
+                    FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectWorkspace),
+                };
+            }
+        }
+        catch (JsonException)
+        {
+            // Historical entries need not have the current structured status.
+        }
+
+        return Normal(serializedResult);
+    }
 
     private static WorkspacePatchToolResultEnvelope ReceiptPreflightFailure(
         string code,
@@ -655,7 +704,7 @@ internal sealed class ApplyPatchToolExecutionService
             : null;
     }
 
-    private string SerializeBounded(
+    internal string SerializeBounded(
         WorkspacePatchToolResultEnvelope result)
     {
         string serialized = JsonSerializer.Serialize(

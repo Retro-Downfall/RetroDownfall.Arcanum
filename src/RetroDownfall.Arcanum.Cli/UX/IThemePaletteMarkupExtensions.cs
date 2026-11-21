@@ -7,7 +7,7 @@ public static class IThemePaletteMarkupExtensions
 {
 
     public static string FormatError(Error error) =>
-        string.IsNullOrEmpty(error.Code) ? error.Message : $"[{error.Code}] {error.Message}";
+        TurnFailureDisplay.Append(string.IsNullOrEmpty(error.Code) ? error.Message : $"[{error.Code}] {error.Message}", error.FailureEvidence);
 
     public static Style TextStyle(this IThemePalette palette) => new(foreground: palette.Text);
 
