@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -12,6 +13,9 @@ internal sealed partial class ArcanumInternalToolServer
 
     internal static string DescribeGuildTool(string name) => name switch
     {
+        "read_file" => "Read a range of lines from a file in the granted workspace. Follow the continuation to read the rest of the range.",
+        "list_directory" => "List entries within the Quest's granted workspace paths. Follow the continuation for additional entries.",
+        "search_workspace" => "Find literal or regex matches in UTF-8 files within the Quest's granted workspace paths. Pass the returned nextCursor as cursor to continue.",
         "create_agent_task" => "Admit an asynchronous child Guild Quest. Omit agent for local work; agent selects an exact configured remote URL. cardId selects a local Card and excludes agent. Returns the admitted Quest without waiting.",
         "send_agent_message" => "Send an informational message to one questId or broadcast to the current cohortId membership; these addresses are mutually exclusive. Only questId can continue input-required work with expectedRevision. Messages never widen authority.",
         "get_agent_task" => "Read the exact current Quest projection in the authorized task subtree.",
@@ -32,8 +36,14 @@ internal sealed partial class ArcanumInternalToolServer
         _ => throw new ArgumentException("Unknown Guild tool.", nameof(name)),
     };
 
-    internal static JsonElement BuildTaskToolSchema(string name)
+    internal static JsonElement BuildTaskToolSchema(string name, WorkspaceSearchSettings? searchSettings = null)
     {
+        if (name == "read_file") return BuildReadFileChunkSchema(includeContinuation: true);
+
+        if (name == "list_directory") return BuildListDirectorySchema();
+
+        if (name == "search_workspace") return BuildSearchWorkspaceSchema(searchSettings ?? ArcanumRuntimeDefaults.CodingTools.Search);
+
         if (GuildLocalToolRegistry.IsMarketTool(name)) return BuildMarketToolSchema(name);
 
         if (GuildLocalToolRegistry.IsCohortTool(name)) return BuildCohortToolSchema(name);

@@ -117,7 +117,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
             GuildSchemaFunction template = tool.Name == ArcanumBuiltInToolNames.DelegateTask
                 ? new(tool.Name, "Run a self-contained task in an isolated child and return its result. Optional token and cost caps narrow inherited authority.", ArcanumDelegateTaskTool.GuildSchema)
                 : new(tool.Name, ArcanumInternalToolServer.DescribeGuildTool(tool.Name), tool.Name == "search_memory" ? ArcanumInternalToolServer.BuildSearchMemorySchema()
-                    : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name));
+                    : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name, settings.Value.ResolveCodingTools().Search));
 
             if (await tools.AdvertiseAsync(template, tool, ct).ConfigureAwait(false) is { } advertised) functions.Add(advertised);
         }
@@ -148,7 +148,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
                 messages.Add(new(ChatRole.User, batch.Prompt));
             }
 
-            using GuildProviderCallBinding round = binding.CreateRound(messages, functions, circleInputs);
+            using GuildProviderCallBinding round = binding.CreateRound(messages, functions, circleInputs, registry.CaptureWorkspaceDisclosures());
 
             // The provider's external ceiling is a spend proof, not the requested answer size.
             // Reuse the existing resolved local reservation for an unspecified output limit.

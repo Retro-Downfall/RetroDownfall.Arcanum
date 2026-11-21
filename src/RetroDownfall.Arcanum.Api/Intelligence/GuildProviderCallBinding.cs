@@ -13,7 +13,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// <summary>One host-built turn and one physical call. Retained or copied request ids confer no authority.</summary>
 internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
     PingRequest request, BudgetReservationService daily, ModelPricingEntry pricing,
-    GuildProviderPayload? roundPayload = null, IReadOnlyList<GuildCircleInputBatch>? circleInputs = null) : IGuildInvocationBinding, IDisposable
+    GuildProviderPayload? roundPayload = null, IReadOnlyList<GuildCircleInputBatch>? circleInputs = null,
+    IReadOnlyList<GuildWorkspaceReadDisclosure>? workspaceDisclosures = null) : IGuildInvocationBinding, IDisposable
 {
     private int _closed;
 
@@ -36,8 +37,8 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
     internal Guid SourceId { get; } = Guid.NewGuid();
 
     internal GuildProviderCallBinding CreateRound(IReadOnlyList<ChatMessage> messages, IReadOnlyList<AIFunction> functions,
-        IReadOnlyList<GuildCircleInputBatch>? circle = null) =>
-        IsActive ? new(execution, input, request, daily, pricing, new(messages, functions), circle?.ToArray())
+        IReadOnlyList<GuildCircleInputBatch>? circle = null, GuildWorkspaceReadDisclosure[]? workspace = null) =>
+        IsActive ? new(execution, input, request, daily, pricing, new(messages, functions), circle?.ToArray(), workspace)
             : throw new InvalidOperationException("The Guild turn has ended.");
 
     internal bool Matches(PingRequest candidate) => IsActive && ReferenceEquals(request, candidate);
@@ -151,7 +152,7 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
                     observedInput is not null && observedOutput is not null
                         ? BillableOperationStatus.Completed : BillableOperationStatus.Failed, response.ResponseId);
             }, ct, input, circleInputs, prepared?.SpendSource,
-            prepared?.SpendSource is not null ? prepared.PricingSnapshotJson() : null).ConfigureAwait(false);
+            prepared?.SpendSource is not null ? prepared.PricingSnapshotJson() : null, workspaceDisclosures).ConfigureAwait(false);
     }
 
     public void Dispose() => Interlocked.Exchange(ref _closed, 1);

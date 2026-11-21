@@ -10,10 +10,12 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal enum GuildLocalChildToolKind { DelegateTask, CreateAgentTask, SendAgentMessage, GetAgentTask, CancelAgentTask, ListAgents, SearchMemory,
+    ReadFile, ListDirectory, SearchWorkspace,
     CreateCohort, AdmitCohortMember, CloseCohort, RemoveCohortMember, PostWorkOffer, SubmitBid, WithdrawBid, AwardWork, WithdrawWorkOffer, AppendSharedNote, ReadSharedNotes }
 
 /// <summary>Host output consumed before generic model-tool stringification.</summary>
-internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null, GuildAuthorityKind Authority = GuildAuthorityKind.Child);
+internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null,
+    GuildAuthorityKind Authority = GuildAuthorityKind.Child, GuildWorkspaceReadDisclosure? WorkspaceDisclosure = null);
 
 internal interface IGuildLocalChildToolDispatcher
 {
@@ -22,6 +24,8 @@ internal interface IGuildLocalChildToolDispatcher
     bool SupportsRemote => false;
 
     bool SupportsMemory => false;
+
+    bool SupportsWorkspaceReads => false;
 
     bool SupportsCohorts => false;
 
@@ -83,6 +87,9 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
             "cancel_agent_task" => GuildLocalChildToolKind.CancelAgentTask,
             "list_agents" => GuildLocalChildToolKind.ListAgents,
             "search_memory" => GuildLocalChildToolKind.SearchMemory,
+            "read_file" => GuildLocalChildToolKind.ReadFile,
+            "list_directory" => GuildLocalChildToolKind.ListDirectory,
+            "search_workspace" => GuildLocalChildToolKind.SearchWorkspace,
             "create_cohort" => GuildLocalChildToolKind.CreateCohort,
             "admit_cohort_member" => GuildLocalChildToolKind.AdmitCohortMember,
             "close_cohort" => GuildLocalChildToolKind.CloseCohort,
@@ -160,9 +167,13 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 {
     private static readonly AsyncLocal<Invocation?> Current = new();
 
+    private readonly ConditionalWeakTable<Invocation, object> _frames = new();
+
     private readonly ConditionalWeakTable<GuildChildToolAdmission, object> _issued = new();
 
     private readonly (CancellationTokenSource Source, CancellationToken Token) _lifetime = CreateLifetime();
+
+    private readonly List<GuildWorkspaceReadDisclosure> _workspaceDisclosures = [];
 
     private int _closed;
 
@@ -174,6 +185,9 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
             new(GuildToolSourceKind.InternalMcp, "arcanum", "cancel_agent_task"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "list_agents"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "search_memory"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "read_file"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "list_directory"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "search_workspace"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "create_cohort"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "admit_cohort_member"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "close_cohort"),
@@ -199,12 +213,20 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     internal bool Supports(GuildToolGrant tool) => IsActive && Parent?.Store is not null && Parent.Driver is not null
         && AcceptedInput is not null && ChildDispatcher is not null && AcceptedInput.Mode == GuildLocalExecutionMode.Apprentice && SupportedTools.Contains(tool)
         && (tool.Name != "search_memory" || ChildDispatcher.SupportsMemory)
+        && (!IsWorkspaceReadTool(tool.Name) || ChildDispatcher.SupportsWorkspaceReads)
         && (!IsCohortTool(tool.Name) || ChildDispatcher.SupportsCohorts)
         && (tool.Name is not ("create_agent_task" or "admit_cohort_member") || ChildDispatcher.SupportsLocal || ChildDispatcher.SupportsRemote);
 
     internal static bool IsCohortTool(string name) => name is "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member" || IsMarketTool(name);
 
     internal static bool IsMarketTool(string name) => name is "post_work_offer" or "submit_bid" or "withdraw_bid" or "award_work" or "withdraw_work_offer" or "append_shared_note" or "read_shared_notes";
+
+    internal static bool IsWorkspaceReadTool(string name) => name is "read_file" or "list_directory" or "search_workspace";
+
+    internal GuildWorkspaceReadDisclosure[] CaptureWorkspaceDisclosures()
+    {
+        lock (_workspaceDisclosures) return [.. _workspaceDisclosures];
+    }
 
     internal bool Matches(GuildExecutionHandle execution, IGuildToolAuthority authority) =>
         Parent?.Driver is { } driver && Parent.Store is not null && ReferenceEquals(driver.Execution, execution)
@@ -219,6 +241,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         Invocation frame = new(this, issuingStepId, logicalCallId, tool);
 
         if (issuingStepId == Guid.Empty || logicalCallId == Guid.Empty || !Supports(tool)) frame.Close();
+
+        else _frames.Add(frame, new());
 
         Invocation? previous = Current.Value;
 
@@ -313,7 +337,19 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
         Result<GuildQuestStored> current = await Parent.Store.AuthorizeLocalToolAsync(this, tool, eligibility, linked.Token).ConfigureAwait(false);
 
-        return current.IsFailure ? Format(current.Error) : result.Value;
+        if (current.IsFailure) return Format(current.Error);
+
+        if (!Owns(admission)) return Format(Unavailable);
+
+        if (IsWorkspaceReadTool(tool.Name))
+        {
+            if (result.Value.WorkspaceDisclosure is not { } proof || !ReferenceEquals(proof.Registry, this)
+                || proof.Tool != tool || !admission.MatchesCommittedProjection(result.Value.Projection)) return Format(Unavailable);
+
+            lock (_workspaceDisclosures) _workspaceDisclosures.Add(proof);
+        }
+
+        return result.Value;
     }
 
     public void Dispose()
@@ -356,7 +392,7 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
             lock (Sync) OutputAllocationBytes = Math.Min(OutputAllocationBytes, Math.Max(0, allocationBytes));
         }
 
-        internal bool IsActive => Volatile.Read(ref _closed) == 0 && Registry.IsActive;
+        internal bool IsActive => Volatile.Read(ref _closed) == 0 && Registry.IsActive && Registry._frames.TryGetValue(this, out _);
 
         internal void Close() => Interlocked.Exchange(ref _closed, 1);
     }

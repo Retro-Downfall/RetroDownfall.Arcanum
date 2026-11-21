@@ -787,6 +787,8 @@ internal static class GuildAotSmoke
 
             Require(host.Validate().IsSuccess, "Native workspace host lock could not prove its identity.");
 
+            await GuildWorkspaceReadSmoke.VerifyAsync(root);
+
             WorkspaceLeaseIdentityResolver resolver = new();
 
             var before = await resolver.ResolveAsync(root, [new("child", GuildPathScopeKind.Subtree)], default);

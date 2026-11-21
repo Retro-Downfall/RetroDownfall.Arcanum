@@ -119,6 +119,16 @@ internal sealed partial class GuildLocalHostPolicy
         return new GuildWorkspaceRegistration(workspace, root, (uint)reader.GetInt64(1), reader.GetInt64(2), identity);
     }
 
+    internal async Task<Result<GuildWorkspaceAuthority>> ResolveWorkspaceAuthorityWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid workspaceId, CancellationToken ct)
+    {
+        Result<GuildWorkspaceRegistration> registration = await RegistrationAsync(connection, transaction, workspaceId, ct).ConfigureAwait(false);
+
+        return registration.IsFailure ? registration.Error : new GuildWorkspaceAuthority(registration.Value, opener,
+            token => ExecuteAsync(false, (currentConnection, currentTransaction, admitted) =>
+                RegistrationAsync(currentConnection, currentTransaction, workspaceId, admitted), token));
+    }
+
     private async Task<Result<GuildGrantScopeEvidence>> ScopeAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildGrant parent, GuildGrant child, CancellationToken ct)
     {

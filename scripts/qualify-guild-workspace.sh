@@ -26,12 +26,16 @@ esac
 python3 scripts/validate_guild_workspace_evidence.py "$results/guild-workspace.trx" \
   --summary-json "$results/evidence-summary.json" \
   RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseStoreTests \
+  RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceReadToolsTests \
+  RetroDownfall.Arcanum.Tests.Mcp.GuildWorkspaceReadSchemaTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseBrokerTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseIdentityTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseSignetPolicyTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_reads_lists_and_searches_only_its_physical_workspace_with_financial_controls_off \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Retained_workspace_function_refuses_disclosure_after_loss_of_authority \
   --required-case "$host_lock_case" \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Guild_workspace_native_imports_have_exact_physical_effect_kinds \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Guild_workspace_boundary_names_on_unreviewed_declaring_types_stay_unclassified \

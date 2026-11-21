@@ -18,7 +18,7 @@ internal sealed partial class GuildQuestStore
         BudgetReservationService daily, GuildBudgetEffectRequest effect,
         Func<CancellationToken, Task<Result<T>>> send, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
         IReadOnlyList<GuildCircleInputBatch>? circleInputs = null, GuildSpendSourceCredential? spendSource = null,
-        string? spendPricing = null)
+        string? spendPricing = null, IReadOnlyList<GuildWorkspaceReadDisclosure>? workspaceDisclosures = null)
     {
         if (!ProviderIdentityMatches(execution, effect) || daily is null || send is null || allocations is not GuildBudgetLedger ledger)
             return Task.FromResult(Result<T>.Failure(InvalidReceipt));
@@ -59,6 +59,11 @@ internal sealed partial class GuildQuestStore
                 Result circle = await ValidateCircleInputWithinAsync(connection, transaction, signets, execution, circleInputs, token).ConfigureAwait(false);
 
                 if (circle.IsFailure) return circle.Error;
+
+                Result workspace = await ValidateWorkspaceToolDisclosuresWithinAsync(connection, transaction, signets,
+                    execution, workspaceDisclosures, token).ConfigureAwait(false);
+
+                if (workspace.IsFailure) return workspace.Error;
 
                 Result<GuildBudgetEffect> prior = await ledger.ReadEffectWithinAsync(connection, transaction, effect.EffectId, token).ConfigureAwait(false);
 
@@ -136,10 +141,10 @@ internal sealed partial class GuildQuestStore
         BudgetReservationService daily, GuildBudgetEffectRequest effect, Func<CancellationToken, Task<Result<T>>> send,
         Func<T, Result<BillableOperationRecord>> project, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
         IReadOnlyList<GuildCircleInputBatch>? circleInputs = null, GuildSpendSourceCredential? spendSource = null,
-        string? spendPricing = null) where T : class
+        string? spendPricing = null, IReadOnlyList<GuildWorkspaceReadDisclosure>? workspaceDisclosures = null) where T : class
     {
         Result<T> received = await ExecuteProviderEffectAsync(execution, daily, effect, send, ct, expectedInput,
-            circleInputs, spendSource, spendPricing).ConfigureAwait(false);
+            circleInputs, spendSource, spendPricing, workspaceDisclosures).ConfigureAwait(false);
 
         if (received.IsFailure) return received.Error;
 

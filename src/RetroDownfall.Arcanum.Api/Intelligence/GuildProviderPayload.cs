@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -74,9 +75,7 @@ internal sealed class GuildProviderPayload
 
             foreach (AIFunction function in functions)
             {
-                if (function.Name is not ("delegate_task" or "create_agent_task" or "send_agent_message" or "get_agent_task" or "cancel_agent_task" or "list_agents" or "search_memory"
-                    or "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member"
-                    or "post_work_offer" or "submit_bid" or "withdraw_bid" or "award_work" or "withdraw_work_offer" or "append_shared_note" or "read_shared_notes") || !names.Add(function.Name)) throw Invalid();
+                if (!GuildLocalToolRegistry.SupportedTools.Any(tool => tool.Name == function.Name) || !names.Add(function.Name)) throw Invalid();
 
                 writer.WriteStartObject();
 

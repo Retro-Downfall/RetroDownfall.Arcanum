@@ -45,7 +45,7 @@ internal static class WorkspaceSearchContinuationCursor
 
     private const int TokenLength = 1 + (HashLength * 3) + (sizeof(int) * 2);
 
-    private const int EncodedTokenLength = 140;
+    internal const int EncodedTokenLength = 140;
 
     internal static byte[] CreateQueryFingerprint(
         WorkspaceSearchRequest request,

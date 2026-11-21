@@ -121,10 +121,14 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalStoreTests \
   RetroDownfall.Arcanum.Tests.Hosting.ApprenticeServiceReliabilityTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseStoreTests \
+  RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceReadToolsTests \
+  RetroDownfall.Arcanum.Tests.Mcp.GuildWorkspaceReadSchemaTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseSignetPolicyTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_reads_lists_and_searches_only_its_physical_workspace_with_financial_controls_off \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Retained_workspace_function_refuses_disclosure_after_loss_of_authority \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Workspace_search_reads_current_granted_file_without_transcript_authority_or_foreign_candidates \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Workspace_search_skips_stale_and_ungranted_files_and_continues_without_losing_the_next_hit \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Bound_memory_tool_uses_its_host_owned_workspace_without_transcript_grant \

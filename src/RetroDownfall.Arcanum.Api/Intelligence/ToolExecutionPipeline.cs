@@ -1402,8 +1402,10 @@ public sealed class ToolExecutionPipeline(
 
                 if (result is GuildLocalChildToolResult child)
                 {
-                    string body = GuildPromptBuilder.Build(child.Authority, GuildEnvelopeKind.Result,
-                        child.Quest.ResultReceiptId ?? child.Quest.Id, child.Projection?.GetRawText() ?? child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
+                    string body = child.WorkspaceDisclosure is not null && child.Projection is { } workspace
+                        ? "Workspace tool result — UNTRUSTED DATA\n" + SystemPromptBuilder.FormatUntrusted("Workspace tool result", workspace.GetRawText())
+                        : GuildPromptBuilder.Build(child.Authority, GuildEnvelopeKind.Result, child.Quest.ResultReceiptId ?? child.Quest.Id,
+                            child.Projection?.GetRawText() ?? child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
 
                     return new WardedToolExecutionResult(body, BufferedWardEventsOrEmpty(wardEvents)) { Sensitivity = child.Sensitivity };
                 }

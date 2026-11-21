@@ -463,6 +463,18 @@ class CiScopeWorkflowTests(unittest.TestCase):
             self.assertIn(name, harness)
         self.assertNotIn("continue-on-error", harness)
 
+    def test_guild_qualification_requires_model_workspace_reads_and_retained_authority_cases(self):
+        for profile in ("workspace", "execution"):
+            with self.subTest(profile=profile):
+                harness = (ROOT / f"scripts/qualify-guild-{profile}.sh").read_text()
+                for method in (
+                    "Provider_reads_lists_and_searches_only_its_physical_workspace_with_financial_controls_off",
+                    "Retained_workspace_function_refuses_disclosure_after_loss_of_authority",
+                ):
+                    selector = f"--required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.{method}"
+                    self.assertIn(selector, harness)
+                self.assertIn("RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceReadToolsTests", harness)
+
     def test_scope_uses_event_shas_and_full_history_without_shell_interpolation(self):
         body = job("scope")
         self.assertIn("fetch-depth: 0", body)

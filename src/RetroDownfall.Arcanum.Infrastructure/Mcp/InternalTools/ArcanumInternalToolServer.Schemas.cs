@@ -8,9 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-    private static JsonElement BuildReadFileChunkSchema()
+    private static JsonElement BuildReadFileChunkSchema(bool includeContinuation = false)
     {
-        return BuildSchema(static w =>
+        return BuildSchema(w =>
         {
             w.WriteString("type", "object");
 
@@ -24,6 +24,11 @@ internal sealed partial class ArcanumInternalToolServer
             WriteIntegerProperty(w, "startLine", "1-based inclusive starting line number.");
 
             WriteIntegerProperty(w, "endLine", "1-based inclusive ending line number.");
+
+            if (includeContinuation)
+            {
+                WriteStringProperty(w, "continuation", "To read the next page, pass the continuation returned for the same file and line range.");
+            }
 
             w.WriteEndObject();
 

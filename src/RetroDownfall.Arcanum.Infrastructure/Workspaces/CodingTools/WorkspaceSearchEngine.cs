@@ -49,6 +49,17 @@ internal sealed record WorkspaceSearchRequest
 
 }
 
+// Physical authority for callers which must admit every filesystem observation before matching.
+internal interface IWorkspaceSearchReadSource
+{
+    IEnumerable<WorkspaceTraversalFile> EnumerateFiles(string requestedRoot,
+        Func<string, bool> includeFile, Func<string, bool> traverseDirectory, CancellationToken cancellationToken);
+
+    WorkspaceSearchOpenedFile? OpenFile(string modelPath);
+}
+
+internal sealed record WorkspaceSearchOpenedFile(FileStream Stream, string Identity, Func<bool> Validate, Action? RecordMatch = null);
+
 /// <summary>
 /// Exact, cancellable, in-process workspace text search. Files stream through deterministic
 /// traversal and results use continuation pages; each logical line is matched independently.
@@ -100,7 +111,8 @@ internal sealed class WorkspaceSearchEngine
     internal async Task<WorkspaceSearchToolResultEnvelope> SearchAsync(
         string workspaceRoot,
         WorkspaceSearchRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IWorkspaceSearchReadSource? physicalSource = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
 
@@ -174,11 +186,15 @@ internal sealed class WorkspaceSearchEngine
 
         Checkpoint();
 
-        if (!TryResolveSearchRoot(
+        string? searchRoot = root;
+
+        string? rootPrefix = request.Root is null or "." ? "" : request.Root;
+
+        if (physicalSource is null && !TryResolveSearchRoot(
                 root,
                 request.Root,
-                out string? searchRoot,
-                out string? rootPrefix,
+                out searchRoot,
+                out rootPrefix,
                 Checkpoint))
         {
 
@@ -279,15 +295,21 @@ internal sealed class WorkspaceSearchEngine
                     relativePath,
                     FilterCheckpoint));
 
-        WorkspaceTraversalStream traversal = DeterministicWorkspaceTraversal.Stream(
-            searchRoot,
-            cancellationToken: cancellationToken,
-            shouldStop: TraversalShouldStop,
-            includeFile: IncludeTraversalFile,
-            traverseDirectory: TraverseFilteredDirectory);
+        WorkspaceTraversalStream? traversal = physicalSource is null
+            ? DeterministicWorkspaceTraversal.Stream(
+                searchRoot!,
+                cancellationToken: cancellationToken,
+                shouldStop: TraversalShouldStop,
+                includeFile: IncludeTraversalFile,
+                traverseDirectory: TraverseFilteredDirectory)
+            : null;
 
         void CaptureTraversalState()
         {
+            if (traversal is null)
+            {
+                return;
+            }
 
             state.TraversalSteps = traversal.Steps;
 
@@ -310,7 +332,11 @@ internal sealed class WorkspaceSearchEngine
 
         HashSet<FileHandleIdentity> seenIdentities = [];
 
-        foreach (WorkspaceTraversalFile file in traversal.EnumerateFiles())
+        IEnumerable<WorkspaceTraversalFile> files = physicalSource?.EnumerateFiles(
+            request.Root ?? ".", IncludeTraversalFile, TraverseFilteredDirectory, cancellationToken)
+            ?? traversal!.EnumerateFiles();
+
+        foreach (WorkspaceTraversalFile file in files)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -319,110 +345,20 @@ internal sealed class WorkspaceSearchEngine
 
             string relativeToSearchRoot = file.RelativePath;
 
-            string modelPath = rootPrefix.Length == 0
+            string modelPath = rootPrefix!.Length == 0
                 ? relativeToSearchRoot
                 : $"{rootPrefix}/{relativeToSearchRoot}";
 
-            string absolutePath = Path.GetFullPath(
-                Path.Combine(
-                    searchRoot,
-                    relativeToSearchRoot.Replace(
-                        '/',
-                        Path.DirectorySeparatorChar)));
+            WorkspaceSearchOpenedFile? opened = physicalSource is not null
+                ? physicalSource.OpenFile(modelPath)
+                : TryOpenOrdinaryFile(root, searchRoot!, file, seenIdentities, state, Checkpoint);
 
-            Checkpoint();
-
-            if (file.IsSymbolicLink
-                && !IsContainedFileSymlink(
-                    root,
-                    absolutePath,
-                    Checkpoint))
+            if (opened is null)
             {
-
-                state.SkippedEscapingSymlinkCount++;
-
                 continue;
-
             }
 
-            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                    root,
-                    absolutePath,
-                    out string? resolvedPath))
-            {
-
-                if (file.IsSymbolicLink)
-                {
-
-                    state.SkippedEscapingSymlinkCount++;
-
-                }
-                else
-                {
-
-                    state.SkippedUnreadableFileCount++;
-
-                }
-
-                continue;
-
-            }
-
-            Checkpoint();
-
-            string identityPath = Path.GetFullPath(resolvedPath ?? absolutePath);
-
-            if (!FileHandleIdentityInterop.TryGetPathMetadata(
-                    identityPath,
-                    out FileHandleMetadata pathMetadata)
-                || pathMetadata.Kind != FileSystemObjectKind.RegularFile
-                || pathMetadata.HardLinkCount != 1)
-            {
-
-                state.SkippedUnreadableFileCount++;
-
-                continue;
-
-            }
-
-            Checkpoint();
-
-            if (!seenIdentities.Add(pathMetadata.Identity))
-            {
-
-                state.SkippedDuplicateFileCount++;
-
-                continue;
-
-            }
-
-            if (!SandboxedFileIo.TryOpenForRead(
-                    root,
-                    identityPath,
-                    out FileStream? stream,
-                    out _))
-            {
-
-                if (file.IsSymbolicLink
-                    && !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                        root,
-                        absolutePath,
-                        out _))
-                {
-
-                    state.SkippedEscapingSymlinkCount++;
-
-                }
-                else
-                {
-
-                    state.SkippedUnreadableFileCount++;
-
-                }
-
-                continue;
-
-            }
+            FileStream stream = opened.Stream;
 
             SearchState.MatchCheckpoint matchCheckpoint =
                 state.CreateMatchCheckpoint();
@@ -435,11 +371,7 @@ internal sealed class WorkspaceSearchEngine
 
                     Checkpoint();
 
-                    if (!TryValidateSearchFile(
-                            root,
-                            absolutePath,
-                            stream,
-                            pathMetadata.Identity))
+                    if (!opened.Validate())
                     {
 
                         throw new IOException(
@@ -463,7 +395,8 @@ internal sealed class WorkspaceSearchEngine
                         leaveOpen: true);
 
                     byte[] pathHash =
-                        WorkspaceSearchContinuationCursor.CreatePathHash(modelPath);
+                        WorkspaceSearchContinuationCursor.CreatePathHash(
+                            physicalSource is null ? modelPath : modelPath + "\0" + opened.Identity);
 
                     bool pageReady = await SearchDecodedLinesAsync(
                             reader,
@@ -477,11 +410,7 @@ internal sealed class WorkspaceSearchEngine
 
                     long bytesReadForFile = Math.Min(stream.Position, openedLength);
 
-                    if (!TryValidateSearchFile(
-                            root,
-                            absolutePath,
-                            stream,
-                            pathMetadata.Identity))
+                    if (!opened.Validate())
                     {
 
                         throw new IOException(
@@ -492,6 +421,11 @@ internal sealed class WorkspaceSearchEngine
                     state.BytesSearched += bytesReadForFile;
 
                     state.FilesSearched++;
+
+                    if (state.Matches.Count > matchCheckpoint.MatchCount)
+                    {
+                        opened.RecordMatch?.Invoke();
+                    }
 
                     if (pageReady)
                     {
@@ -590,6 +524,116 @@ internal sealed class WorkspaceSearchEngine
             code: null,
             message: null);
 
+    }
+
+    private static WorkspaceSearchOpenedFile? TryOpenOrdinaryFile(
+        string root, string searchRoot, WorkspaceTraversalFile file,
+        HashSet<FileHandleIdentity> seenIdentities, SearchState state, Action checkpoint)
+    {
+        string relativeToSearchRoot = file.RelativePath;
+
+        string absolutePath = Path.GetFullPath(
+            Path.Combine(
+                searchRoot,
+                relativeToSearchRoot.Replace(
+                    '/',
+                    Path.DirectorySeparatorChar)));
+
+        checkpoint();
+
+        if (file.IsSymbolicLink
+            && !IsContainedFileSymlink(
+                root,
+                absolutePath,
+                checkpoint))
+        {
+
+            state.SkippedEscapingSymlinkCount++;
+
+            return null;
+
+        }
+
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                root,
+                absolutePath,
+                out string? resolvedPath))
+        {
+
+            if (file.IsSymbolicLink)
+            {
+
+                state.SkippedEscapingSymlinkCount++;
+
+            }
+            else
+            {
+
+                state.SkippedUnreadableFileCount++;
+
+            }
+
+            return null;
+
+        }
+
+        checkpoint();
+
+        string identityPath = Path.GetFullPath(resolvedPath ?? absolutePath);
+
+        if (!FileHandleIdentityInterop.TryGetPathMetadata(
+                identityPath,
+                out FileHandleMetadata pathMetadata)
+            || pathMetadata.Kind != FileSystemObjectKind.RegularFile
+            || pathMetadata.HardLinkCount != 1)
+        {
+
+            state.SkippedUnreadableFileCount++;
+
+            return null;
+
+        }
+
+        checkpoint();
+
+        if (!seenIdentities.Add(pathMetadata.Identity))
+        {
+
+            state.SkippedDuplicateFileCount++;
+
+            return null;
+
+        }
+
+        if (!SandboxedFileIo.TryOpenForRead(
+                root,
+                identityPath,
+                out FileStream? stream,
+                out _))
+        {
+
+            if (file.IsSymbolicLink
+                && !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    root,
+                    absolutePath,
+                    out _))
+            {
+
+                state.SkippedEscapingSymlinkCount++;
+
+            }
+            else
+            {
+
+                state.SkippedUnreadableFileCount++;
+
+            }
+
+            return null;
+
+        }
+
+        return new(stream, string.Empty, () => TryValidateSearchFile(root, absolutePath, stream, pathMetadata.Identity));
     }
 
     private async Task<bool> SearchDecodedLinesAsync(

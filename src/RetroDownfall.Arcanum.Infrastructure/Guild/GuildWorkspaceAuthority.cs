@@ -16,7 +16,7 @@ internal sealed record GuildWorkspaceRegistration(Guid WorkspaceId, string RootP
     long Revision, CovenantDigest RootIdentity);
 
 /// <summary>Physical scope evidence only; callers must separately hold live Signet admission.</summary>
-internal sealed class GuildWorkspaceAuthority(GuildWorkspaceRegistration registration, PhysicalCampaignRootOpener opener,
+internal sealed partial class GuildWorkspaceAuthority(GuildWorkspaceRegistration registration, PhysicalCampaignRootOpener opener,
     Func<CancellationToken, Task<Result<GuildWorkspaceRegistration>>> resolveCurrent)
 {
     private GuildWorkspaceRegistration Registration => registration;

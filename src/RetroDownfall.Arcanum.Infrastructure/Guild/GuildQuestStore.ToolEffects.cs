@@ -118,6 +118,15 @@ internal sealed partial class GuildQuestStore
         SignetAuthority.QuestTransaction signets, GuildLocalToolRegistry registry, GuildToolGrant tool,
         Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
     {
+        var admitted = await RequireLocalToolGrantWithinAsync(connection, transaction, signets, registry, tool, eligibility, ct).ConfigureAwait(false);
+
+        return admitted.IsFailure ? admitted.Error : admitted.Value.Quest;
+    }
+
+    private async Task<Result<(GuildQuestStored Quest, GuildGrant Grant)>> RequireLocalToolGrantWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, SignetAuthority.QuestTransaction signets, GuildLocalToolRegistry registry, GuildToolGrant tool,
+        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+    {
         if (policy is not GuildLocalHostPolicy { IsExecutionEnabled: true } || allocations is not GuildBudgetLedger
             || RequireLocalExecutionReady().IsFailure || !ReferenceEquals(registry.Parent.Store, this)
             || !registry.Supports(tool) || !eligibility(tool)) return GuildLocalToolRegistry.Unavailable;
@@ -151,6 +160,9 @@ internal sealed partial class GuildQuestStore
             || GuildLocalToolRegistry.IsCohortTool(tool.Name) && !live.Value.Delegation.Contains(GuildDelegationKind.Cohort))
             return new Error(ErrorCodes.Guild.ToolNotGranted, "The exact local tool and delegation rights are not granted.");
 
+        if (GuildLocalToolRegistry.IsWorkspaceReadTool(tool.Name) && (admitted.Value.Row.Quest.WorkspaceId is not { } workspaceId
+            || !live.Value.Workspaces.Any(scope => scope.WorkspaceId == workspaceId))) return WorkspaceReadNotGranted;
+
         if (tool.Name is "create_agent_task" or "admit_cohort_member" && arguments is not null
             && (remoteTool ? registry.ChildDispatcher?.SupportsRemote != true : registry.ChildDispatcher?.SupportsLocal != true))
             return new Error(ErrorCodes.Guild.Unavailable, "The selected task destination capability is unavailable.");
@@ -179,7 +191,7 @@ internal sealed partial class GuildQuestStore
             || !eligibility(tool) || policy is not GuildLocalHostPolicy { IsExecutionEnabled: true }
             || RequireLocalExecutionReady().IsFailure) return GuildLocalToolRegistry.Unavailable;
 
-        return admitted.Value.Row;
+        return (admitted.Value.Row, live.Value);
     }
 
     private async Task<Result> ValidateToolIssueWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
