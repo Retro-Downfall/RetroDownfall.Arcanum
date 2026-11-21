@@ -2342,7 +2342,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             ward,
             new PermissiveSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
         Guid sessionId = Guid.NewGuid();
 
         return await pipeline.ProcessSingleToolCallAsync(

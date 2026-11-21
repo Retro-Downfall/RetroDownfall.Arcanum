@@ -29,12 +29,12 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
 
             await using SqliteCommand insert = KeyCommand(connection, tx, key, """
                 INSERT INTO session_tool_invocations(ReceiptId,SessionId,AssistantEntryId,ClaimId,RoundOrdinal,CallOrdinal,ArgumentsDigest,CreatedAtUtcTicks,StateCode)
-                VALUES($receipt,$session,$assistant,$claim,$round,$call,$digest,$now,1)
+                VALUES($receipt,$session,$assistant,$claim,$round,$call,$digest,$createdAtUtcTicks,1)
                 """);
 
             Add(insert, "$claim", claim is { } id ? Id(id) : null);
 
-            Add(insert, "$now", now.UtcTicks);
+            Add(insert, "$createdAtUtcTicks", now.UtcTicks);
 
             if (await insert.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return Unavailable;
 

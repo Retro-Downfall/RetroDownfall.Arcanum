@@ -54,6 +54,7 @@ internal sealed class CovenantRetirementHarness
             new PermissiveSanctumGuard(),
             new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance,
+            toolInvocationStore: null,
             covenantEgressGuard: new CovenantToolEgressGuard(_journal),
             covenantAuthority: new StubAuthority());
 

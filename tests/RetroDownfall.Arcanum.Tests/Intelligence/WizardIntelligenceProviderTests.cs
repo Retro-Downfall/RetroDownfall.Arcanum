@@ -9576,7 +9576,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             new FakeWard(),
             new ConfigurableSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         FunctionCallContent fcc = new(callId: string.Empty, name: "test_tool", arguments: null);
 
@@ -9601,7 +9601,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             new FakeWard(),
             new ConfigurableSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         FunctionCallContent fcc = new(callId: "call_abc123", name: "test_tool", arguments: null);
 
@@ -10056,6 +10056,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 sanctumGuard,
                 sessionAttachmentStore,
                 toolLogger ?? NullLogger<ToolExecutionPipeline>.Instance,
+                toolInvocationStore: null,
                 grimoireTurnWriter: grimoireTurnWriter),
             grimoireTurnWriter,
             CreateInferenceContextBuilder(grimoire, settings),

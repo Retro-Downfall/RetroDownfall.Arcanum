@@ -72,12 +72,12 @@ public sealed class ToolExecutionPipeline(
     ISanctumGuard sanctumGuard,
     ISessionAttachmentStore sessionAttachmentStore,
     ILogger<ToolExecutionPipeline> logger,
+    IToolInvocationStore? toolInvocationStore,
     IToolResultMaterializer? toolResultMaterializer = null,
     GrimoireTurnWriter? grimoireTurnWriter = null,
     IAttachmentSourceResolver? attachmentSourceResolver = null,
     CovenantToolEgressGuard? covenantEgressGuard = null,
-    ICovenantAuthoritySnapshotProvider? covenantAuthority = null,
-    IToolInvocationStore? toolInvocationStore = null)
+    ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
 {
     /// <summary>
     /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated

@@ -355,7 +355,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         var rejection = await rejected.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponsePromptResponseDto, timeout.Token);
 
-        Assert.Equal(ToolInvocationRecovery.ReconciliationRequired, rejection?.Error?.Code);
+        Assert.Equal(ErrorCodes.Hub.ToolReconciliationRequired, rejection?.Error?.Code);
 
         Assert.Equal(1, chat.StreamingCallCount);
 

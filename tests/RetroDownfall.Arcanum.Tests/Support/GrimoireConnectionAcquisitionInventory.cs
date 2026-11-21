@@ -2169,6 +2169,41 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SqliteToolInvocationStore.cs", "SqliteToolInvocationStore", "ReadAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SqliteToolInvocationStore.cs", "SqliteToolInvocationStore", "ReadTurnProgressAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SqliteToolInvocationStore.cs", "SqliteToolInvocationStore", "WriteAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRecoveryCheckpointStore.cs", "SessionRecoveryCheckpointStore", "FindAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRecoveryCheckpointStore.cs", "SessionRecoveryCheckpointStore", "SaveAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "_connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,

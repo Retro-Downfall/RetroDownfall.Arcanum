@@ -40,7 +40,9 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output) : IClassF
     /// The request lease, the closing owner and the exclusive closed lease are kept where the request and the erasure close
     /// have to carry them across their own lifetime: the request scope holds the lease it admitted until the container
     /// disposes the scope, and the erasure closure and the closed-period authority hold the closing owner and the closed
-    /// lease the whole closed period. None of them is a work lease or an external-effect group.
+    /// lease the whole closed period. The repair activation singleton holds its exclusive closed lease
+    /// until this exact host exits so a successful local drain receipt stays valid. None of these
+    /// handles is a work lease or an external-effect group.
     ///
     /// <para>A work lease and an external-effect group appear nowhere in this census, and no entry may ever name one: they are passed
     /// by value from where they are acquired to every use. The busy retry of the two Long Rest store methods that attest a lease on every
@@ -49,6 +51,7 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output) : IClassF
     /// </remarks>
     internal static readonly string[] ReviewedCensus =
     [
+        "field|RetroDownfall.Arcanum.Api.Hosting.RepairActivationDrain._closed|IGrimoireExclusiveClosedLease",
         "field|" + Data + ".Covenant.CovenantClosedPeriodAuthority._closed|IGrimoireExclusiveClosedLease",
         "field|" + Data + ".GrimoireRequestAdmissionScope._lease|IGrimoireRequestLease",
         "primary-constructor|" + Coordinator + ".CovenantGrimoireClosure(closed)|IGrimoireExclusiveClosedLease",
@@ -92,7 +95,7 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output) : IClassF
             Assert.Contains(authority, AuthorityCarrierScanner.ReviewedAuthorities);
         }
 
-        Assert.Equal(8, ReviewedCensus.Length);
+        Assert.Equal(9, ReviewedCensus.Length);
 
         Assert.DoesNotContain(ReviewedCensus, static entry => entry.StartsWith("closure|", StringComparison.Ordinal));
 

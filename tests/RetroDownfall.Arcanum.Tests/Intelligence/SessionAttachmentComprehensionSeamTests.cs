@@ -797,7 +797,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
                 new AllowingWard(),
                 new AllowAllSanctumGuard(),
                 store,
-                NullLogger<ToolExecutionPipeline>.Instance);
+                NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
             return new AttachToolHarness(transport, serverTask, lifetime, pipeline);
         }

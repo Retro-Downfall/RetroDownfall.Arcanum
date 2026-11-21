@@ -77,7 +77,7 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             new FakeWard(),
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         FunctionCallContent fcc = new(toolMarker, toolMarker, new Dictionary<string, object?>());
 
@@ -150,7 +150,7 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             new FakeWard(),
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         FunctionCallContent fcc = new("call_1", "send_notification", new Dictionary<string, object?>());
 
@@ -235,7 +235,7 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             new FakeWard(),
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         string hallucinated = $"totally_made_up_{Guid.NewGuid():N}";
 

@@ -162,6 +162,7 @@ public sealed class ToolExecutionPipelinePatchDiagnosisTests : IDisposable
 
         ToolExecutionPipeline pipeline = new(new TestOptionsSnapshot<ArcanumSettings>(settings), new RecordOnlyWard(),
             harness.Guard, new NoOpSessionAttachmentStore(), NullLogger<ToolExecutionPipeline>.Instance,
+            toolInvocationStore: null,
             grimoireTurnWriter: writer);
 
         bool invoked = false;

@@ -393,6 +393,8 @@ public static class ErrorCodes
         /// </summary>
         public const string SessionTurnRestoredInterrupted = "Hub.SessionTurnRestoredInterrupted";
 
+        public const string ToolReconciliationRequired = "Hub.ToolReconciliationRequired";
+
         public const string SessionRecoveryCancelled = "Hub.SessionRecoveryCancelled";
 
         public const string SessionRecoveryConflict = "Hub.SessionRecoveryConflict";
@@ -931,6 +933,8 @@ public static class ErrorCodes
 
         /// <summary>The accounting chain cannot be safely removed by this Session selection.</summary>
         public const string SessionAccountingAuthority = "Data.SessionAccountingAuthority";
+
+        public const string RepairActivationLocalOperatorRequired = "Data.RepairActivationLocalOperatorRequired";
 
         /// <summary>The configured Session hold protects this Session.</summary>
         public const string SessionHold = "Data.SessionHold";

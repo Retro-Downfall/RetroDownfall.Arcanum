@@ -89,11 +89,9 @@ internal sealed class ToolInvocationRecovery(IToolInvocationStore store, Grimoir
         return true;
     }
 
-    internal const string ReconciliationRequired = "Hub.ToolReconciliationRequired";
+    private static Error Unresolved => new(ErrorCodes.Hub.ToolReconciliationRequired, "The tool effect is awaiting reconciliation. Preserve the invocation ID and inspect its owning Session or tool receipt before retrying.");
 
-    private static Error Unresolved => new(ReconciliationRequired, "The tool effect is awaiting reconciliation. Preserve the invocation ID and inspect its owning Session or tool receipt before retrying.");
-
-    private static Error RecordedResultUnavailable => new(ReconciliationRequired, "The tool invocation completed. Its saved result is unavailable through the current Session.");
+    private static Error RecordedResultUnavailable => new(ErrorCodes.Hub.ToolReconciliationRequired, "The tool invocation completed. Its saved result is unavailable through the current Session.");
 
     private static Error PreDispatchUnavailable => new(ErrorCodes.Hub.Error, "The Session tool invocation could not be prepared for dispatch.");
 }

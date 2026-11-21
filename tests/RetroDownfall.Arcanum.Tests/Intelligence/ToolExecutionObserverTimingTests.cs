@@ -35,7 +35,7 @@ public sealed class ToolExecutionObserverTimingTests
             ward,
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         FunctionCallContent call = new(
             "call-check-empty",
@@ -97,7 +97,7 @@ public sealed class ToolExecutionObserverTimingTests
             ward,
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         FunctionCallContent call = new(
             "call-check-replacement",
@@ -153,7 +153,7 @@ public sealed class ToolExecutionObserverTimingTests
             ward,
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
         FunctionCallContent call = new(
             "call-check",
             ToolRiskClassifier.WorkspaceCheckToolName,

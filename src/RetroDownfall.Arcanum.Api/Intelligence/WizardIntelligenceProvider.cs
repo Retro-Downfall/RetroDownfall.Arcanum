@@ -4895,7 +4895,7 @@ public sealed partial class WizardIntelligenceProvider(
                 Error terminalInferenceError = inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError);
 
                 if (CanSaveRecovery()
-                    && terminalInferenceError.Code is ToolInvocationRecovery.ReconciliationRequired or ErrorCodes.Hub.NoProgressDetected)
+                    && terminalInferenceError.Code is ErrorCodes.Hub.ToolReconciliationRequired or ErrorCodes.Hub.NoProgressDetected)
                 {
                     TurnFailureEvidence failureEvidence = terminalInferenceError.FailureEvidence
                         ?? new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectSession);
@@ -4906,7 +4906,7 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         Guid? pending = recovery.Value.OutstandingInvocationId ?? failureEvidence.InvocationId;
 
-                        if (terminalInferenceError.Code != ToolInvocationRecovery.ReconciliationRequired || pending is not null)
+                        if (terminalInferenceError.Code != ErrorCodes.Hub.ToolReconciliationRequired || pending is not null)
                         {
                             var saved = await SaveSessionRecoveryAsync(recoveryStore!, grimoireTurn.ClaimLease!, lease,
                                 invocationContext, recoveryWorkspace,

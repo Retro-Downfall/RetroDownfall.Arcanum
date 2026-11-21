@@ -1741,6 +1741,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 sanctumGuard,
                 new NoOpSessionAttachmentStore(),
                 NullLogger<ToolExecutionPipeline>.Instance,
+                toolInvocationStore: null,
                 covenantEgressGuard: covenantEgressGuard,
                 covenantAuthority: covenantAuthority,
                 grimoireTurnWriter: stagingTurn is null ? null : writer),

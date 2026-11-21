@@ -76,7 +76,7 @@ public sealed partial class ToolExecutionPipelineTests
             new FakeWard(),
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         ChatOptions chatOptions = new()
         {
@@ -121,7 +121,7 @@ public sealed partial class ToolExecutionPipelineTests
             new FakeWard(),
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
         ChatOptions chatOptions = new()
         {
@@ -348,6 +348,7 @@ public sealed partial class ToolExecutionPipelineTests
             new AllowAllSanctumGuard(),
             store ?? new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance,
+            toolInvocationStore: null,
             attachmentSourceResolver: attachmentSourceResolver, toolResultMaterializer: materializer);
 
     /// <summary>A Session tool that returns successfully, so its post-processing runs.</summary>

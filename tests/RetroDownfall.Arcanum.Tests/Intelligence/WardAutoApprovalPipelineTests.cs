@@ -798,7 +798,7 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             ward,
             sanctumGuard,
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
     private static ToolExecutionPipeline CreatePipeline(
         IWard ward,
@@ -809,7 +809,7 @@ public sealed class WardRecordPipelineTests(ITestOutputHelper output)
             ward,
             sanctumGuard,
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
     private static ToolExecutionPipeline.TurnContext SanctumStrictTurnContext() =>
         new()

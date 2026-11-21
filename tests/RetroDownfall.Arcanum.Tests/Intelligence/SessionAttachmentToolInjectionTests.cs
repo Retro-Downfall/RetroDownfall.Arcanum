@@ -2025,6 +2025,7 @@ public sealed partial class SessionAttachmentToolInjectionTests
             guard ?? new AllowAllSanctumGuard(),
             store,
             NullLogger<ToolExecutionPipeline>.Instance,
+            toolInvocationStore: null,
             attachmentSourceResolver: resolver);
 
     private sealed class FakeWard : IWard

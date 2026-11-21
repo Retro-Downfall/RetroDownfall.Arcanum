@@ -112,7 +112,7 @@ internal sealed class SanctumPipelineHarness
             new RecordOnlyWard(),
             Guard,
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
 
     public Task<ToolExecutionPipeline.ProcessedToolCall> ProcessAsync(
         AITool tool,

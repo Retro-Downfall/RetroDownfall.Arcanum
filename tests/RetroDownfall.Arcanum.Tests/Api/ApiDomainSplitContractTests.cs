@@ -137,6 +137,7 @@ public sealed class ApiDomainSplitContractTests
             "GET /api/sessions/{id:guid}/entries GetSessionEntries",
             "GET /api/sessions/{id:guid}/export ExportSession",
             "GET /api/sessions/{id:guid}/stream StreamSession",
+            "GET /api/sessions/{id:guid}/tool-invocations/{invocationId:guid} GetSessionToolInvocation",
             "GET /api/spells/search SearchSpells",
             "GET /api/spells/{name}/versions Spell_ListVersions",
             "GET /api/spells/{name}/versions/{version} Spell_GetVersionDetail",

@@ -99,7 +99,7 @@ public sealed partial class WizardIntelligenceProvider
             if (result.IsFailure) return result.Error;
 
             if (!IsProvenRecoveryBoundary(checkpoint, result.Value))
-                return new Error(ToolInvocationRecovery.ReconciliationRequired, "The previous tool effect must be reconciled before continuing this repair.")
+                return new Error(ErrorCodes.Hub.ToolReconciliationRequired, "The previous tool effect must be reconciled before continuing this repair.")
                 {
                     FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool)
                     { InvocationId = receipt, RecoveryCheckpoint = checkpoint.ToPublic() },

@@ -24,7 +24,7 @@ public sealed partial class WizardIntelligenceProvider
 
             if (dependency is not null)
             {
-                return new Error(ToolInvocationRecovery.ReconciliationRequired,
+                return new Error(ErrorCodes.Hub.ToolReconciliationRequired,
                     "Inspect the recorded tool invocation disposition in the current Session before continuing.")
                 { FailureEvidence = dependency };
             }
@@ -38,7 +38,7 @@ public sealed partial class WizardIntelligenceProvider
                 ? "Tool completion is unresolved. Inspect the current workspace or Session before continuing."
                 : "Tool completion is unresolved. Inspect the retained diagnostics and reconcile the current workspace before continuing.";
 
-            return new Error(ToolInvocationRecovery.ReconciliationRequired, message) { FailureEvidence = dependency };
+            return new Error(ErrorCodes.Hub.ToolReconciliationRequired, message) { FailureEvidence = dependency };
         }
 
         internal bool Offer(

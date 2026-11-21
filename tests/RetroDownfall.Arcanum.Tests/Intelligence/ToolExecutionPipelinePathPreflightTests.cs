@@ -246,7 +246,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             ward,
             new AllowAllSanctumGuard(),
             new NoOpSessionAttachmentStore(),
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance, toolInvocationStore: null);
         FunctionCallContent call = new(
             "patch-call",
             ToolRiskClassifier.ApplyPatchToolName,

@@ -106,7 +106,7 @@ internal static class RepairActivationDrainEndpoint
 
             Result<RepairActivationDrainReceipt> result = local
                 ? await drain.DrainAsync(request, ct).ConfigureAwait(false)
-                : new Error("Data.RepairActivationLocalOperatorRequired", "Repair activation requires an authenticated loopback operator.");
+                : new Error(ErrorCodes.Data.RepairActivationLocalOperatorRequired, "Repair activation requires an authenticated loopback operator.");
 
             int status = result.IsSuccess ? StatusCodes.Status200OK
                 : local ? StatusCodes.Status409Conflict : StatusCodes.Status403Forbidden;
