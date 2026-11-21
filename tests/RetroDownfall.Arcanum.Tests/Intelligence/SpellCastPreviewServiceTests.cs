@@ -108,6 +108,32 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CastAsync_recognizes_registered_internal_tools_when_discovery_omits_them()
+    {
+        SpellCastPreviewService service = new(
+            new FakeMcpConnectionManager(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLogger<SpellCastPreviewService>.Instance);
+
+        foreach (string name in InternalToolHandlerNames.Registered())
+        {
+            string spellName = $"preview-{name.Replace('_', '-')}";
+
+            WriteSpell(spellName, name);
+
+            Result<SpellCastResult> preview = await service.CastAsync(spellName, _workspace.Root, default);
+
+            Assert.True(preview.IsSuccess, preview.Error.Message);
+
+            Assert.DoesNotContain(name, preview.Value.AvailableTools);
+
+            ToolNameDiagnostic diagnostic = Assert.Single(preview.Value.ToolDiagnostics!);
+
+            Assert.Equal((name, ToolNameDiagnosticKind.Unavailable), (diagnostic.ToolName, diagnostic.Kind));
+        }
+    }
+
+    [Fact]
     public async Task CastAsync_resolves_dependencies_beyond_the_former_total_count_ceiling()
     {
         const int dependencyCount = 11;

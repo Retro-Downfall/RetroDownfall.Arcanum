@@ -26,7 +26,8 @@ public static class ArcanumToolNameCatalog
     private static readonly HashSet<string> KnownNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "read_file", "edit_file", "write_file", "list_directory", "search_workspace", "apply_patch",
-        "workspace_check", "execute_command", "read_command_output", "ask_human", "save_memory", "delete_memory",
+        "workspace_check", "execute_command", "read_command_output", ToolRiskClassifier.ReadToolOutputToolName,
+        "ask_human", "save_memory", "delete_memory",
         "search_memory", "search_history", "set_task_priority", "send_notification", "request_intervention",
         "create_agent_task", "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents",
         "attach_session_file", "refresh_session_file", "propose_covenant", "retire_covenant", "run_script",

@@ -336,6 +336,7 @@ public sealed class ToolExecutionPipelinePathPreflightTests
     [
         ToolRiskClassifier.WorkspaceCheckToolName,
         "read_command_output",
+        ToolRiskClassifier.ReadToolOutputToolName,
         "set_task_priority",
         "send_notification",
         "request_intervention",
