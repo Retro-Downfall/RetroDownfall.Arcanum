@@ -4384,42 +4384,49 @@ public sealed partial class WizardIntelligenceProvider(
 
                             try
                             {
-                                inferenceToken.ThrowIfCancellationRequested();
+                                bool asksHuman = IsAskHumanTool(fcc);
 
-                                if (IsAskHumanTool(fcc))
+                                // A returned no-channel proposal can still record its synthetic denial.
+                                if (!asksHuman || humanInteractionAvailable) inferenceToken.ThrowIfCancellationRequested();
+
+                                if (asksHuman)
                                 {
                                     if (!humanInteractionAvailable)
                                     {
-                                        if (CanSaveRecovery()
+                                        if (!inferenceToken.IsCancellationRequested
+                                            && CanSaveRecovery()
                                             && streamTurnContext.InferenceTools.OfType<AIFunction>().Any(static tool => tool.Name == "ask_human")
                                             && TryGetRecoveryQuestion(fcc) is { } bufferedQuestion)
                                         {
                                             var progress = await ReadSessionRecoveryProgressAsync(grimoireTurn.ClaimLease!).ConfigureAwait(false);
 
-                                            Result<SessionRecoveryCheckpoint> saved = progress.IsFailure ? progress.Error
-                                                : await SaveSessionRecoveryAsync(recoveryStore!, grimoireTurn.ClaimLease!, lease,
-                                                    invocationContext, recoveryWorkspace, SessionRecoveryKind.AwaitingInput,
-                                                    fcc, bufferedQuestion, streamToolRoundCount - 1, toolCallIndex, progress.Value.OutstandingInvocationId,
-                                                    progress.Value.LastVerifiedInvocationId).ConfigureAwait(false);
+                                            if (!inferenceToken.IsCancellationRequested)
+                                            {
+                                                Result<SessionRecoveryCheckpoint> saved = progress.IsFailure ? progress.Error
+                                                    : await SaveSessionRecoveryAsync(recoveryStore!, grimoireTurn.ClaimLease!, lease,
+                                                        invocationContext, recoveryWorkspace, SessionRecoveryKind.AwaitingInput,
+                                                        fcc, bufferedQuestion, streamToolRoundCount - 1, toolCallIndex, progress.Value.OutstandingInvocationId,
+                                                        progress.Value.LastVerifiedInvocationId).ConfigureAwait(false);
 
-                                            Error paused = saved.IsSuccess
-                                                ? new Error(ErrorCodes.Hub.SessionRecoveryInputRequired, "This Session needs your input before it can continue.")
-                                                {
-                                                    FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.NotDispatched,
-                                                        TurnRecoveryAction.ProvideInput, toolCallIndex, streamToolRoundCount - 1, "ask_human")
-                                                    { RecoveryCheckpoint = saved.Value },
-                                                }
-                                                : saved.Error;
+                                                Error paused = saved.IsSuccess
+                                                    ? new Error(ErrorCodes.Hub.SessionRecoveryInputRequired, "This Session needs your input before it can continue.")
+                                                    {
+                                                        FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.NotDispatched,
+                                                            TurnRecoveryAction.ProvideInput, toolCallIndex, streamToolRoundCount - 1, "ask_human")
+                                                        { RecoveryCheckpoint = saved.Value },
+                                                    }
+                                                    : saved.Error;
 
-                                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(paused);
+                                                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(paused);
 
-                                            await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn,
-                                                streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null, CancellationToken.None,
-                                                interruptionOutcome: RecordTerminal(paused)).ConfigureAwait(false);
+                                                await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn,
+                                                    streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null, CancellationToken.None,
+                                                    interruptionOutcome: RecordTerminal(paused)).ConfigureAwait(false);
 
-                                            yield return await FailureFrameAsync(paused);
+                                                yield return await FailureFrameAsync(paused);
 
-                                            yield break;
+                                                yield break;
+                                            }
                                         }
 
                                         ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
@@ -4478,6 +4485,8 @@ public sealed partial class WizardIntelligenceProvider(
                                                 yield return denialEvent;
                                             }
                                         }
+
+                                        inferenceToken.ThrowIfCancellationRequested();
 
                                         toolCallIndex++;
 

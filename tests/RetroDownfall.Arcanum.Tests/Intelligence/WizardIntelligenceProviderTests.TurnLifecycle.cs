@@ -502,12 +502,12 @@ public sealed partial class WizardIntelligenceProviderTests
     }
 
     /// <summary>
-    /// R-271: a streamed <c>ask_human</c> call with no live channel is denied, and the model has been
-    /// handed that denial, so recording it is bookkeeping that outlives the caller: a caller that
-    /// disconnects right after the model asked still leaves the denied call recorded.
+    /// R-271: the denial of a returned <c>ask_human</c> request outlives cancellation and stream disposal.
     /// </summary>
-    [Fact]
-    public async Task StreamPromptAsync_ClientCancelsAfterAskHumanIsDenied_StillRecordsTheDenial()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StreamPromptAsync_ClientCancelsAfterAskHumanIsDenied_StillRecordsTheDenial(bool disposeAfterDenial)
     {
         Guid sessionId = Guid.Parse("27100000-0000-0000-0000-000000000004");
 
@@ -520,14 +520,35 @@ public sealed partial class WizardIntelligenceProviderTests
         };
         ScriptingChatClient chat = new();
 
-        chat.EnqueueStreamResponder(_ => AskHumanThenCallerCancels("call-271-denied", caller));
+        if (disposeAfterDenial) chat.EnqueueStreamToolCallOnly("ask_human", "call-271-denied");
+        else chat.EnqueueStreamResponder(_ => AskHumanThenCallerCancels("call-271-denied", caller));
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, grimoire: grimoire);
 
-        await DrainExpectingCancellationAsync(wizard.StreamPromptAsync(
+        var stream = wizard.StreamPromptAsync(
             BaseRequest() with { Prompt = "ask me", SkipSpellRouting = true, UnattendedMode = true },
             InvocationContexts.AttendedSession(),
-            caller.Token));
+            caller.Token);
+
+        if (disposeAfterDenial)
+        {
+            await using var events = stream.GetAsyncEnumerator();
+
+            while (await events.MoveNextAsync() && events.Current.Type != IntelligenceEventType.ToolError)
+            {
+                Assert.NotEqual(IntelligenceEventType.ToolCall, events.Current.Type);
+            }
+
+            Assert.Equal(IntelligenceEventType.ToolError, events.Current?.Type);
+
+            await caller.CancelAsync();
+        }
+        else
+        {
+            await DrainExpectingCancellationAsync(stream);
+
+            Assert.Equal(1, chat.StreamingCallCount);
+        }
 
         FakeGrimoireRepository.RecordedToolInteraction recorded = Assert.Single(grimoire.ToolInteractions);
 
@@ -583,6 +604,8 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal(sessionId, recorded.SessionId);
 
         Assert.Equal("ask_human", recorded.ToolName);
+
+        Assert.Equal(1, chat.BufferedCallCount);
     }
 
     /// <summary>

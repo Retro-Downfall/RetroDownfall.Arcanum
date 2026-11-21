@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -60,6 +61,122 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal(sessionId, checkpoint.SessionId);
 
         Assert.Equal(checkpoint, await ReadRecoveryCheckpointAsync(client, sessionId));
+    }
+
+    [SkippableTheory]
+    [InlineData("ask_human", false)]
+    [InlineData("ask_human", true)]
+    [InlineData("recovery_effect", false)]
+    public async Task Canceled_proposal_preserves_denial_without_admitting_new_work(string toolName, bool streaming)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using CancellationTokenSource caller = new();
+
+        ScriptingChatClient chat = new();
+
+        FunctionCallContent proposal = new("returned-proposal", toolName, new Dictionary<string, object?>
+        {
+            ["question"] = "Which branch should the repair preserve?",
+        });
+
+        async IAsyncEnumerable<ChatResponseUpdate> ReturnStreamingProposalAsync()
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [proposal]);
+
+            await caller.CancelAsync();
+        }
+
+        chat.EnqueueStreamResponder(_ => ReturnStreamingProposalAsync());
+
+        chat.EnqueueBufferedResponder(async _ =>
+        {
+            await caller.CancelAsync();
+
+            return new ChatResponse(new Microsoft.Extensions.AI.ChatMessage(ChatRole.Assistant, [proposal]));
+        });
+
+        bool dispatched = false;
+
+        AIFunction effect = AIFunctionFactory.Create(() =>
+        {
+            dispatched = true;
+
+            return "dispatched";
+        }, "recovery_effect", "Test recoverable work.");
+
+        await using var host = RecoveryHost(chat, DefaultProvider(), new InMemoryOsCredentialStore(),
+            liveQuestion: streaming, otherTool: effect);
+
+        using HttpClient client = host.CreateAuthenticatedClient();
+
+        Guid session = await CreateRecoverySessionAsync(client);
+
+        await using var services = host.Services.CreateAsyncScope();
+
+        var provider = services.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
+
+        PingRequest request = RepairRequest(session);
+
+        ArcanumInvocationContext invocation = ArcanumInvocationContexts.ForSessionTurn(
+            new DefaultHttpContext { RequestServices = services.ServiceProvider }, request, CanonicalCampaignContext.GlobalOnly);
+
+        TurnIdempotencyAmbient.PublishIdentity(new string('A', 64), new string('B', 64));
+
+        string? failureCode = null;
+
+        try
+        {
+            if (streaming)
+            {
+                await foreach (IntelligenceEvent frame in provider.StreamPromptAsync(request, invocation, caller.Token))
+                {
+                    Assert.NotEqual(IntelligenceEventType.ToolCall, frame.Type);
+                }
+            }
+            else
+            {
+                var outcome = await provider.ExecutePromptAsync(request, invocation, caller.Token);
+
+                Assert.True(outcome.IsFailure);
+
+                failureCode = outcome.Error.Code;
+            }
+        }
+        catch (OperationCanceledException) when (caller.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            TurnIdempotencyAmbient.Clear();
+        }
+
+        Assert.True(caller.IsCancellationRequested, failureCode);
+
+        Assert.Equal(streaming ? 1 : 0, chat.StreamingCallCount);
+
+        Assert.Equal(streaming ? 0 : 1, chat.BufferedCallCount);
+
+        Assert.Contains(chat.LastChatOptions!.Tools!, tool => tool is AIFunction function && function.Name == toolName);
+
+        Assert.False(dispatched);
+
+        var checkpoint = Assert.IsType<SessionRecoveryCheckpoint>(await ReadRecoveryCheckpointAsync(client, session));
+
+        Assert.Equal(SessionRecoveryKind.Interrupted, checkpoint.Kind);
+
+        Assert.Equal(TurnRecoveryAction.ResumeSession, checkpoint.NextAction);
+
+        Assert.Null(checkpoint.Question);
+
+        Assert.Null(checkpoint.InvocationId);
+
+        var entries = await services.ServiceProvider.GetRequiredService<IGrimoireRepository>().GetSessionEntriesAsync(session);
+
+        Assert.NotNull(entries);
+
+        Assert.Equal(toolName == "ask_human" && !streaming ? 1 : 0, entries.Count(entry =>
+            entry.Content.Contains("ask_human is only available", StringComparison.Ordinal)));
     }
 
     [SkippableFact]
