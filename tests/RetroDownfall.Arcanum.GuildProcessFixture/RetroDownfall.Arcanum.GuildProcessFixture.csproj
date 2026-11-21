@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    <DefineConstants>$(DefineConstants);ARCANUM_GUILD_PROCESS_FIXTURE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../src/RetroDownfall.Arcanum.Api.DevHost/Program.cs" Link="Program.cs" />
+    <Compile Include="../../src/RetroDownfall.Arcanum.Api.DevHost/ProgramShim.cs" Link="ProgramShim.cs" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj" />
+  </ItemGroup>
+</Project>

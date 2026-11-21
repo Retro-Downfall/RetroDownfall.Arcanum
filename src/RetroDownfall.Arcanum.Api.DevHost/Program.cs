@@ -13,6 +13,9 @@ using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 using Serilog;
 
+#if ARCANUM_GUILD_PROCESS_FIXTURE
+Program.RequireIsolatedProcessFixture();
+#else
 if (SandboxExecHelper.TryHandle(args, typeof(Program)))
 {
     return 0;
@@ -23,6 +26,7 @@ if (ComprehensionWorkerEntry.TryHandle(args, typeof(Program), out int workerExit
 {
     return workerExitCode;
 }
+#endif
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
@@ -70,6 +74,8 @@ builder.Services.AddArcanumApiServices(builder.Configuration);
 // This host binds loopback above whatever Arcanum:Host:ListenAny and ARCANUM_HOST_ANY say, so it keeps the
 // loopback Host-header allow-list whatever they say too.
 builder.Services.AddArcanumLoopbackHostFiltering();
+
+Program.ConfigureProcessFixture(builder);
 
 builder.Services.AddSingleton<DevHostShutdownCompletion>();
 

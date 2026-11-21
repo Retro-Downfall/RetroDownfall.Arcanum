@@ -17,7 +17,7 @@ internal sealed partial class GuildStore
 
             int phase = after?.Phase ?? 1;
 
-            if (phase is < 1 or > 4 || after?.LastId == Guid.Empty || after?.LastFrontierId == Guid.Empty
+            if (phase is < 1 or > 7 || after?.LastId == Guid.Empty || after?.LastFrontierId == Guid.Empty
                 || phase != 4 && after?.LastFrontierId is not null
                 || phase == 4 && (after?.LastId is null) != (after?.LastFrontierId is null)) return Invalid();
 
@@ -26,16 +26,25 @@ internal sealed partial class GuildStore
                 JOIN guild_signets s ON s.QuestId=c.IssuerQuestId
                 WHERE c.StateCode=$phase AND c.Id>$after COLLATE BINARY AND s.OriginPrincipalId=$principal
                 ORDER BY c.Id COLLATE BINARY LIMIT 100
-                """ : """
+                """ : phase == 4 ? """
                 SELECT f.CohortId,f.Id FROM guild_cohort_stop_frontiers f INDEXED BY idx_guild_cohort_stop_frontiers_pending
                 JOIN guild_cohorts c ON c.Id=f.CohortId JOIN guild_signets s ON s.QuestId=c.IssuerQuestId
                 WHERE f.Completed=0 AND (f.CohortId>$after COLLATE BINARY
                     OR (f.CohortId=$after AND f.Id>$frontier COLLATE BINARY)) AND s.OriginPrincipalId=$principal
                 ORDER BY f.CohortId COLLATE BINARY,f.Id COLLATE BINARY LIMIT 100
+                """ : """
+                SELECT c.Id,NULL FROM guild_cohorts c INDEXED BY idx_guild_cohorts_state
+                JOIN guild_signets s ON s.QuestId=c.IssuerQuestId
+                JOIN guild_cohort_settlement_state settled ON settled.CohortId=c.Id
+                JOIN guild_budget_accounts account ON account.AccountId=c.AllocationAccountId
+                LEFT JOIN guild_cohort_settlement_clock clock ON clock.RootAccountId=account.RootAccountId
+                WHERE c.StateCode=$phase AND c.Id>$after COLLATE BINARY AND s.OriginPrincipalId=$principal
+                    AND (settled.Complete=0 OR settled.Epoch IS NOT COALESCE(clock.Revision,0))
+                ORDER BY c.Id COLLATE BINARY LIMIT 100
                 """);
 
             Add(command, "$principal", Format(caller.PrincipalId!.Value));
-            Add(command, "$phase", phase);
+            Add(command, "$phase", phase > 4 ? phase - 1 : phase);
             Add(command, "$after", after?.LastId is { } value ? Format(value) : "");
             Add(command, "$frontier", after?.LastFrontierId is { } frontier ? Format(frontier) : "");
 
@@ -61,7 +70,7 @@ internal sealed partial class GuildStore
 
             GuildCohortWorkCursor? next = items.Count == 100
                 ? new(phase, items[^1], lastFrontier)
-                : phase < 4 ? new(phase + 1, null, null) : null;
+                : phase < 7 ? new(phase + 1, null, null) : null;
 
             return new GuildCohortWorkPage(items.ToImmutable(), next);
         }, ct);

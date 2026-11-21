@@ -477,6 +477,12 @@ class CiScopeWorkflowTests(unittest.TestCase):
                     self.assertIn(selector, harness)
                 self.assertIn("RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceReadToolsTests", harness)
 
+    def test_guild_final_requires_the_independent_host_journey_to_pass(self):
+        method = ("RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests."
+                  "Financial_off_mixed_cohort_uses_two_running_Arcanum_hosts_and_replays_after_restart")
+        harness = (ROOT / "scripts/qualify-guild-execution.sh").read_text()
+        self.assertIn(f"--required-case {method} ", harness)
+
     def test_guild_execution_requires_authenticated_portal_delivery_and_recovery(self):
         harness = (ROOT / "scripts/qualify-guild-execution.sh").read_text()
         for method in (

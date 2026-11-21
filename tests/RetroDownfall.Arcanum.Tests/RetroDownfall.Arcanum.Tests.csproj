@@ -104,6 +104,8 @@
 
     <ProjectReference Include="../RetroDownfall.Arcanum.SqliteReaderSmoke/RetroDownfall.Arcanum.SqliteReaderSmoke.csproj" />
 
+    <ProjectReference Include="../RetroDownfall.Arcanum.GuildProcessFixture/RetroDownfall.Arcanum.GuildProcessFixture.csproj" Aliases="GuildProcessFixture" />
+
   </ItemGroup>
 
   <ItemGroup>

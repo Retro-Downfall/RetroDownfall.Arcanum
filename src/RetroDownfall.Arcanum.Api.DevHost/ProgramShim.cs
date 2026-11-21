@@ -1,6 +1,8 @@
 // Enables WebApplicationFactory<Program> in the test project without duplicating DevHost wiring.
 public partial class Program
 {
+    static partial void ConfigureProcessFixture(Microsoft.AspNetCore.Builder.WebApplicationBuilder builder);
+
     /// <summary>
     /// Why the DevHost will not start in <paramref name="environmentName"/>, or <see langword="null"/> when it
     /// may: only Development and Testing are allowed.

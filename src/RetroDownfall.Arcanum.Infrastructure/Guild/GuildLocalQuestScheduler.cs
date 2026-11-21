@@ -333,6 +333,11 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
                          OR (quest.Retired=1 AND EXISTS(SELECT 1 FROM guild_local_executions binding WHERE binding.QuestId=quest.Id))))
                 OR EXISTS(SELECT 1 FROM guild_cohorts WHERE typeof(StateCode) <> 'integer' OR StateCode NOT IN(4,5,6))
                 OR EXISTS(SELECT 1 FROM guild_cohort_stop_frontiers WHERE Completed IS NOT 1)
+                OR EXISTS(SELECT 1 FROM guild_cohort_settlement_state settled
+                    JOIN guild_cohorts cohort ON cohort.Id=settled.CohortId
+                    JOIN guild_budget_accounts account ON account.AccountId=cohort.AllocationAccountId
+                    LEFT JOIN guild_cohort_settlement_clock clock ON clock.RootAccountId=account.RootAccountId
+                    WHERE cohort.StateCode IN(4,5,6) AND (settled.Complete=0 OR settled.Epoch IS NOT COALESCE(clock.Revision,0)))
             THEN 0 ELSE 1 END
             """;
 
@@ -936,6 +941,14 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         if (pending.IsFailure) return;
 
+        if (pending.Value.Quest.Quest.ResultReceiptId is not null
+            && scope.ServiceProvider.GetService<GuildPortalStore>() is { } portal)
+        {
+            // A terminal execution cannot be replayed. Its immutable source notices still
+            // need the ordinary Portal publication transaction after completion or restart.
+            _ = await portal.DrainOutboxAsync(caller.Value, pending.Value.Quest.Quest.RootQuestId, ct).ConfigureAwait(false);
+        }
+
         if (pending.Value.IsRemote)
         {
             await RunRemoteAdmittedAsync(work, scope.ServiceProvider, caller.Value, pending.Value, ct).ConfigureAwait(false);
@@ -1232,8 +1245,12 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             FROM guild_quest_start_intents intent JOIN guild_quests quest ON quest.Id=intent.QuestId
                 LEFT JOIN guild_local_executions binding ON binding.QuestId=quest.Id
             LEFT JOIN guild_remote_executions remote ON remote.QuestId=quest.Id
+            LEFT JOIN guild_result_receipts receipt ON receipt.QuestId=quest.Id
             WHERE (binding.QuestId IS NOT NULL OR remote.QuestId IS NOT NULL)
-                AND (NOT EXISTS(SELECT 1 FROM guild_result_receipts receipt WHERE receipt.QuestId=quest.Id)
+                AND (receipt.QuestId IS NULL
+                    OR EXISTS(SELECT 1 FROM guild_portal_outbox notice
+                        WHERE notice.SourceKindCode IN (1,2) AND notice.ReceiptId=receipt.ResultId
+                            AND notice.QuestId=quest.Id AND notice.DeliveryStateCode=1)
                     OR remote.QuestId IS NOT NULL AND EXISTS(
                         SELECT 1 FROM guild_remote_portal_deliveries delivery JOIN guild_inbox item ON item.Id=delivery.InboxId
                         WHERE delivery.RecipientQuestId=quest.Id AND delivery.TransportStateCode IN (1,2)

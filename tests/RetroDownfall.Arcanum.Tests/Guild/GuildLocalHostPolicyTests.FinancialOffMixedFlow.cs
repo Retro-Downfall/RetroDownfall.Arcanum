@@ -555,11 +555,19 @@ public sealed partial class GuildLocalHostPolicyTests
         return string.Join(";", reader.GetString(0), reader.GetString(1), reader.GetString(2));
     }
 
-    private sealed class MixedParentTransport : HttpMessageHandler, IHttpClientFactory
+    private sealed class MixedParentTransport(string remoteDestination = RemoteDiscovery) : HttpMessageHandler, IHttpClientFactory
     {
         internal readonly TaskCompletionSource AdmissionsComplete = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task? BeforeFirstRound;
+
+        internal TaskCompletionSource<long>? CloseRevision;
+
+        internal TaskCompletionSource? FinalProviderRound;
+
+        internal readonly TaskCompletionSource ReleaseFinal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal readonly List<string> Bodies = [];
 
@@ -597,6 +605,8 @@ public sealed partial class GuildLocalHostPolicyTests
                 return new(HttpStatusCode.OK) { Content = new StringContent(planner, Encoding.UTF8, "application/json") };
             }
 
+            if (ordinal == 1 && BeforeFirstRound is { } ready) await ready.WaitAsync(ct);
+
             if (ordinal == 2)
             {
                 using JsonDocument payload = JsonDocument.Parse(body);
@@ -618,14 +628,23 @@ public sealed partial class GuildLocalHostPolicyTests
                 await Release.Task.WaitAsync(ct);
             }
 
+            long closingRevision = 3;
+
+            if (ordinal == 4 && CloseRevision is { } latest)
+            {
+                AdmissionsComplete.TrySetResult();
+
+                closingRevision = await latest.Task.WaitAsync(ct);
+            }
+
             string? tool = ordinal switch { 1 => "create_cohort", 2 or 3 => "admit_cohort_member", 4 => "close_cohort", 5 => "get_agent_task", _ => null };
 
             string arguments = ordinal switch
             {
                 1 => "{\"name\":\"Mixed panel\",\"policy\":\"all\",\"resultType\":\"text/plain\"}",
                 2 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":1,\"goal\":\"local contribution\"}}",
-                3 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":2,\"goal\":\"remote contribution\",\"agent\":\"{RemoteDiscovery}\"}}",
-                4 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":3}}",
+                3 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":2,\"goal\":\"remote contribution\",\"agent\":\"{remoteDestination}\"}}",
+                4 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":{closingRevision}}}",
                 5 => $"{{\"questId\":\"{MemberId:D}\"}}",
                 _ => "",
             };
@@ -640,11 +659,16 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 if (ordinal == 6)
                 {
-                    Assert.Contains("actual cohort member answer", body, StringComparison.Ordinal);
+                    SawBothAnswers = body.Contains("actual cohort member answer", StringComparison.Ordinal)
+                        && body.Contains("remote actual answer", StringComparison.Ordinal);
 
-                    Assert.Contains("remote actual answer", body, StringComparison.Ordinal);
+                    if (FinalProviderRound is { } final)
+                    {
+                        final.TrySetResult();
 
-                    SawBothAnswers = true;
+                        await ReleaseFinal.Task.WaitAsync(ct);
+                    }
+                    else Assert.True(SawBothAnswers, "The parent provider did not receive both Cohort answers.");
                 }
 
                 message = """{"role":"assistant","content":"both answers received"}""";
@@ -795,13 +819,19 @@ public sealed partial class GuildLocalHostPolicyTests
     private sealed record PeerPersistedSnapshot(string Installation, string CurrentInstallation, string PeerId, string GrantRevision, string AuthorityEpoch,
         string TaskId, string ContextId, string QuestId, string ResultId, long Reservations, long Effects, long UnknownEffects, long Results, long Settlements);
 
-    private sealed class MixedPeer(IHost provider, System.Diagnostics.Process? process, string home, int port, string modelUrl, string masterKey) : IAsyncDisposable
+    private sealed class MixedPeer(IHost provider, System.Diagnostics.Process? process, string home, int port, string modelUrl, string masterKey,
+        Action<ProcessStartInfo>? prepareProcess) : IAsyncDisposable
     {
         internal int Port { get; private set; } = port;
 
+        internal int ProcessId => process?.Id ?? throw new InvalidOperationException("The peer process has stopped.");
+
+        internal HttpClient CreateAdministrator() => NewMixedHostClient(Port, masterKey);
+
         internal int StartupAttempts { get; private set; }
 
-        internal static async Task<MixedPeer> StartAsync(CancellationToken ct, int? firstPort = null)
+        internal static async Task<MixedPeer> StartAsync(CancellationToken ct, int? firstPort = null,
+            Action<ProcessStartInfo>? prepareProcess = null)
         {
             int posts = 0;
 
@@ -860,11 +890,12 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 string modelUrl = provider.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
 
-                (process, int port, string key, int attempts) = await StartChildAsync(home, modelUrl, ct, firstPort, null);
+                (process, int port, string key, int attempts) = await StartChildAsync(home, modelUrl, ct, firstPort, null,
+                    prepareProcess: prepareProcess);
 
                 await VerifyEffectiveConfigurationAsync(port, key, ct);
 
-                MixedPeer result = new(provider, process, home, port, modelUrl, key) { StartupAttempts = attempts };
+                MixedPeer result = new(provider, process, home, port, modelUrl, key, prepareProcess) { StartupAttempts = attempts };
 
                 result.GetCounts = () => (Volatile.Read(ref posts), Volatile.Read(ref gets));
 
@@ -880,7 +911,7 @@ public sealed partial class GuildLocalHostPolicyTests
             }
         }
 
-        private static async Task VerifyEffectiveConfigurationAsync(int port, string key, CancellationToken ct)
+        internal static async Task VerifyEffectiveConfigurationAsync(int port, string key, CancellationToken ct)
         {
             using HttpClient admin = new();
 
@@ -909,8 +940,9 @@ public sealed partial class GuildLocalHostPolicyTests
             line.Contains("Failed to bind to address http://", StringComparison.OrdinalIgnoreCase)
             && line.Contains(": address already in use.", StringComparison.OrdinalIgnoreCase));
 
-        private static async Task<(System.Diagnostics.Process Process, int Port, string Key, int Attempts)> StartChildAsync(
-            string home, string modelUrl, CancellationToken ct, int? firstPort, string? existingMasterKey)
+        internal static async Task<(System.Diagnostics.Process Process, int Port, string Key, int Attempts)> StartChildAsync(
+            string home, string modelUrl, CancellationToken ct, int? firstPort, string? existingMasterKey,
+            Func<string, string>? configure = null, Action<ProcessStartInfo>? prepareProcess = null)
         {
             for (int attempt = 0; attempt < 5; attempt++)
             {
@@ -926,7 +958,7 @@ public sealed partial class GuildLocalHostPolicyTests
                     .Replace("PORT", port.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
                     .Replace("MODEL_URL", modelUrl, StringComparison.Ordinal);
 
-                await File.WriteAllTextAsync(Path.Combine(home, ".config", "arcanum", "arcanum.json"), config, ct);
+                await File.WriteAllTextAsync(Path.Combine(home, ".config", "arcanum", "arcanum.json"), configure?.Invoke(config) ?? config, ct);
 
                 ProcessStartInfo start = new("dotnet") { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
 
@@ -941,6 +973,8 @@ public sealed partial class GuildLocalHostPolicyTests
                 start.Environment["ARCANUM_TEST_IN_MEMORY_CREDENTIALS"] = "1";
 
                 start.Environment["TASK19_CHILD_PEER"] = Fixture.PeerCredential;
+
+                prepareProcess?.Invoke(start);
 
                 System.Diagnostics.Process child = System.Diagnostics.Process.Start(start)
                     ?? throw new InvalidOperationException("Peer process failed to start.");
@@ -1119,11 +1153,12 @@ public sealed partial class GuildLocalHostPolicyTests
             await StopProcessAsync(stopped);
         }
 
-        internal async Task RestartAsync(CancellationToken ct)
+        internal async Task RestartAsync(CancellationToken ct, int? preferredPort = null)
         {
             Assert.Null(process);
 
-            (process, int restartedPort, _, _) = await StartChildAsync(home, modelUrl, ct, null, masterKey);
+            (process, int restartedPort, _, _) = await StartChildAsync(home, modelUrl, ct, preferredPort, masterKey,
+                prepareProcess: prepareProcess);
 
             Port = restartedPort;
 
@@ -1134,43 +1169,7 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             Assert.Null(process);
 
-            string profile = Path.Combine(home, ".config", "arcanum");
-
-            IDataProtectionProvider protection = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(profile, "keys")),
-                builder => builder.SetApplicationName("ArcanumCore"));
-
-            var secret = await ProtectedCredentialFile.ReadAsync(Path.Combine(profile, "grimoire-key.dat"),
-                protection.CreateProtector("Arcanum.Core.GrimoireEncryption"), "Test peer secret unavailable.", ct);
-
-            Assert.Equal(SecretStoreReadStatus.Ok, secret.Status);
-
-            string database = Path.Combine(profile, "arcanum.db");
-
-            GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(database);
-
-            Assert.Equal(GrimoireKeyDerivation.KdfVersion2, sidecar.Version);
-
-            byte[] salt = sidecar.GetSaltBytes();
-
-            string passphrase;
-
-            try
-            {
-                passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(secret.Value!, salt);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(salt);
-            }
-
-            SqliteNativeRuntime.Instance.Initialize();
-
-            await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
-            {
-                DataSource = database, Mode = SqliteOpenMode.ReadOnly, Pooling = false, Password = passphrase,
-            }.ToString());
-
-            await connection.OpenAsync(ct);
+            await using SqliteConnection connection = await OpenStoppedMixedProfileAsync(home, ct);
 
             await using SqliteCommand command = connection.CreateCommand();
 
@@ -1226,6 +1225,58 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 _ = await CleanupAsync(process, provider, home);
             }
+        }
+    }
+
+    private static async Task<SqliteConnection> OpenStoppedMixedProfileAsync(string home, CancellationToken ct)
+    {
+        string profile = Path.Combine(home, ".config", "arcanum");
+
+        IDataProtectionProvider protection = DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(profile, "keys")),
+            builder => builder.SetApplicationName("ArcanumCore"));
+
+        var secret = await ProtectedCredentialFile.ReadAsync(Path.Combine(profile, "grimoire-key.dat"),
+            protection.CreateProtector("Arcanum.Core.GrimoireEncryption"), "Isolated test profile unavailable.", ct);
+
+        Assert.Equal(SecretStoreReadStatus.Ok, secret.Status);
+
+        string database = Path.Combine(profile, "arcanum.db");
+
+        GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(database);
+
+        Assert.Equal(GrimoireKeyDerivation.KdfVersion2, sidecar.Version);
+
+        byte[] salt = sidecar.GetSaltBytes();
+
+        string passphrase;
+
+        try
+        {
+            passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(secret.Value!, salt);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(salt);
+        }
+
+        SqliteNativeRuntime.Instance.Initialize();
+
+        SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = database, Mode = SqliteOpenMode.ReadOnly, Pooling = false, Password = passphrase,
+        }.ToString());
+
+        try
+        {
+            await connection.OpenAsync(ct);
+
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+
+            throw;
         }
     }
 }

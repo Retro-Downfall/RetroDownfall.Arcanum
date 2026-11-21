@@ -15,6 +15,31 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildLocalHostPolicyTests
 {
     [Fact]
+    public async Task Disabled_scheduler_recovers_a_stale_terminal_cohort_settlement_before_becoming_quiet()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        _ = await CreateIdleTerminalHistoryAsync(f, 1, refreshTerminalSnapshot: false);
+
+        const string pendingSnapshot = """
+            SELECT count(*) FROM guild_cohorts c JOIN guild_cohort_settlement_state s ON s.CohortId=c.Id
+            JOIN guild_budget_accounts account ON account.AccountId=c.AllocationAccountId
+            JOIN guild_cohort_settlement_clock clock ON clock.RootAccountId=account.RootAccountId
+            WHERE c.StateCode=4 AND (s.Complete=0 OR s.Epoch<>clock.Revision)
+            """;
+
+        Assert.Equal(1L, await f.ScalarAsync(pendingSnapshot));
+
+        long revision = await f.ScalarAsync("SELECT Revision FROM guild_cohorts WHERE StateCode=4");
+
+        await AssertRetainedHistoryBecomesQuietAsync(f, advanceAccountingPage: false);
+
+        Assert.Equal(0L, await f.ScalarAsync(pendingSnapshot));
+
+        Assert.Equal(revision, await f.ScalarAsync("SELECT Revision FROM guild_cohorts WHERE StateCode=4"));
+    }
+
+    [Fact]
     public async Task Disabled_scheduler_becomes_quiet_with_more_than_one_page_of_settled_bound_history_and_a_terminal_cohort()
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
@@ -35,7 +60,7 @@ public sealed partial class GuildLocalHostPolicyTests
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
-        _ = await CreateIdleSettledHistoryAsync(f, 101);
+        var history = await CreateIdleTerminalHistoryAsync(f, 101, refreshTerminalSnapshot: true);
 
         string target;
 
@@ -84,6 +109,11 @@ public sealed partial class GuildLocalHostPolicyTests
             await f.ExecuteAsync($"UPDATE guild_quests SET AccountingStateCode=1,Revision=Revision+1 WHERE Id='{target}'");
 
             long pendingRevision = await f.ScalarAsync($"SELECT Revision FROM guild_quests WHERE Id='{target}' AND AccountingStateCode=1");
+
+            // The test-authored Quest revision also advances the Cohort settlement epoch.
+            // Settle that projection before resuming the manual accounting-cursor scenario.
+            await DriveIdleHistoryConvergenceAsync(f, history.Cohorts, history.Owner, history.CohortId,
+                value => value.State == GuildCohortState.Completed);
 
             long stamps = traced.CompletedStamps;
 
@@ -283,7 +313,11 @@ public sealed partial class GuildLocalHostPolicyTests
         return registration.BuildServiceProvider();
     }
 
-    private static async Task<GuildQuestStored> CreateIdleSettledHistoryAsync(Fixture f, int memberCount)
+    private static async Task<GuildQuestStored> CreateIdleSettledHistoryAsync(Fixture f, int memberCount) =>
+        (await CreateIdleTerminalHistoryAsync(f, memberCount, refreshTerminalSnapshot: true)).Member;
+
+    private static async Task<(GuildQuestStored Member, GuildCallerContext Owner, GuildCohortStore Cohorts, Guid CohortId)>
+        CreateIdleTerminalHistoryAsync(Fixture f, int memberCount, bool refreshTerminalSnapshot)
     {
         var (owner, issuer, root, cohorts, cohort, members) = await ConvergenceFixtureAsync(f,
             GuildConvergenceKind.All, null, "text/plain", memberCount);
@@ -316,7 +350,11 @@ public sealed partial class GuildLocalHostPolicyTests
 
         await CommitConvergenceResultAsync(f, owner, root, "settled owner", retainedRun: issuer);
 
-        return members[0];
+        if (refreshTerminalSnapshot)
+            await DriveIdleHistoryConvergenceAsync(f, cohorts, owner, cohort.Id,
+                value => value.State == GuildCohortState.Completed);
+
+        return (members[0], owner, cohorts, cohort.Id);
     }
 
     private static async Task DriveIdleHistoryConvergenceAsync(Fixture f, GuildCohortStore cohorts,
