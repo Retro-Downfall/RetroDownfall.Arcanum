@@ -64,7 +64,10 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
             DisableAllTools: turn?.DisableAllTools ?? true);
 
         using GuildProviderCallBinding binding = new(execution, input, request, daily,
-            settings.Value.ResolvePricing().ResolveForModel(input.Model) with { });
+            settings.Value.ResolvePricing().ResolveForModel(input.Model) with { })
+        {
+            HasSignedToolGrant = materialized.Value.HasSignedToolGrant,
+        };
 
         using IDisposable accounting = TurnAccountingAmbient.Suspend();
 
@@ -109,14 +112,17 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
 
         List<AIFunction> functions = [];
 
-        foreach (GuildToolGrant tool in GuildLocalToolRegistry.SupportedTools)
+        if (binding.HasSignedToolGrant)
         {
-            GuildSchemaFunction template = tool.Name == ArcanumBuiltInToolNames.DelegateTask
-                ? new(tool.Name, "Run a self-contained task in an isolated child and return its result. Optional token and cost caps narrow inherited authority.", ArcanumDelegateTaskTool.GuildSchema)
-                : new(tool.Name, ArcanumInternalToolServer.DescribeGuildTool(tool.Name), tool.Name == "search_memory" ? ArcanumInternalToolServer.BuildSearchMemorySchema()
-                    : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name, settings.Value.ResolveCodingTools().Search));
+            foreach (GuildToolGrant tool in GuildLocalToolRegistry.SupportedTools)
+            {
+                GuildSchemaFunction template = tool.Name == ArcanumBuiltInToolNames.DelegateTask
+                    ? new(tool.Name, "Run a self-contained task in an isolated child and return its result. Optional token and cost caps narrow inherited authority.", ArcanumDelegateTaskTool.GuildSchema)
+                    : new(tool.Name, ArcanumInternalToolServer.DescribeGuildTool(tool.Name), tool.Name == "search_memory" ? ArcanumInternalToolServer.BuildSearchMemorySchema()
+                        : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name, settings.Value.ResolveCodingTools().Search));
 
-            if (await tools.AdvertiseAsync(template, tool, ct).ConfigureAwait(false) is { } advertised) functions.Add(advertised);
+                if (await tools.AdvertiseAsync(template, tool, ct).ConfigureAwait(false) is { } advertised) functions.Add(advertised);
+            }
         }
 
         List<ChatMessage> messages = [new(ChatRole.User, request.Prompt)];

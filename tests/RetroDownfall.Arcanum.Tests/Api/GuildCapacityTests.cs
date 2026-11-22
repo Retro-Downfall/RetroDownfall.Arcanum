@@ -414,9 +414,17 @@ public sealed partial class GuildCapacityTests
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            int ordinal = Interlocked.Increment(ref _calls);
+
             if (request.Content is not null)
             {
                 using JsonDocument payload = JsonDocument.Parse(await request.Content.ReadAsStringAsync(cancellationToken));
+
+                if (ordinal == 2)
+                {
+                    Assert.Contains(payload.RootElement.GetProperty("tools").EnumerateArray(),
+                        tool => tool.GetProperty("function").GetProperty("name").GetString() == "delegate_task");
+                }
 
                 foreach (JsonElement item in payload.RootElement.GetProperty("messages").EnumerateArray())
                 {
@@ -428,8 +436,6 @@ public sealed partial class GuildCapacityTests
                     }
                 }
             }
-
-            int ordinal = Interlocked.Increment(ref _calls);
 
             if (ordinal == 2) DelegationRequested.TrySetResult();
 

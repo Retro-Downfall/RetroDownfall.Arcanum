@@ -78,6 +78,8 @@ internal sealed record GuildLocalInferenceMaterialization(string Goal, Immutable
     internal Guid? CampaignId { get; init; }
 
     internal RetroDownfall.Arcanum.Core.Guild.GuildAuthorityKind GoalAuthority { get; init; } = RetroDownfall.Arcanum.Core.Guild.GuildAuthorityKind.Operator;
+
+    internal bool HasSignedToolGrant { get; init; }
 }
 
 /// <summary>Host-assembled planner/unit input. It cannot select a provider, model or grant.</summary>

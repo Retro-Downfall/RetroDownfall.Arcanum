@@ -40,7 +40,17 @@ internal sealed partial class GuildQuestStore
                     || dispatch.Value.QuestId != driver.Execution.QuestId || dispatch.Value.AccountingAssociationId != driver.Execution.RunId
                     || dispatch.Value.Evidence == GuildDispatchEvidence.ResolvedNoDispatch) return Conflict;
 
-                return await MaterializeProviderInputWithinAsync(connection, transaction, admitted.Value.Row, input, dispatch.Value, token).ConfigureAwait(false);
+                var materialized = await MaterializeProviderInputWithinAsync(connection, transaction, admitted.Value.Row, input, dispatch.Value, token).ConfigureAwait(false);
+
+                if (materialized.IsFailure || input.Mode != GuildLocalExecutionMode.Apprentice) return materialized;
+
+                var signet = await GuildSignetStore.ReadAsync(connection, transaction, driver.Execution.SignetId, false, token).ConfigureAwait(false);
+
+                if (signet.IsFailure) return signet.Error;
+
+                // The accepted Signet's signed grant is immutable. Live policy can narrow its tools.
+                // Leave dynamic decisions to the existing per-tool authorization when any were granted.
+                return materialized.Value with { HasSignedToolGrant = !signet.Value.Binding.Grant.Tools.IsEmpty };
             }, ct);
     }
 

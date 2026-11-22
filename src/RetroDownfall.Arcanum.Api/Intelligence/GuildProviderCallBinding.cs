@@ -30,6 +30,8 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
 
     internal bool PossiblyDispatched { get; private set; }
 
+    internal bool HasSignedToolGrant { get; init; } = true;
+
     internal GuildLocalExecutionInput Input => input;
 
     internal GuildLocalInferenceExecution Execution => execution;

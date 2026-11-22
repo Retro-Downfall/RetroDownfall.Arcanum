@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -27,6 +28,8 @@ public sealed partial class GuildCapacityTests
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
         using ParallelTransport transport = new();
+
+        ToolDiscoveryProbe toolDiscovery = new();
 
         ArcanumWebApplicationFactory factory = new()
         {
@@ -48,6 +51,9 @@ public sealed partial class GuildCapacityTests
             ServiceOverrides = services =>
             {
                 services.AddHttpClient("OpenAiCompatibleProvider").ConfigurePrimaryHttpMessageHandler(() => transport);
+
+                services.AddScoped<IGuildLocalChildToolDispatcher>(provider =>
+                    new ObservedToolDispatcher(provider.GetRequiredService<ConclaveArchmage>(), toolDiscovery));
 
                 services.AddScoped<IGuildLocalInferenceRuntime>(provider =>
                     new ParallelRuntime(provider.GetRequiredService<WizardIntelligenceProvider>(), transport));
@@ -158,6 +164,8 @@ public sealed partial class GuildCapacityTests
                 Assert.Equal(4, transport.OwnedCalls.Count);
 
                 Assert.All(transport.OwnedCalls, call => Assert.True(call.IsCompletedSuccessfully));
+
+                Assert.Equal(0, toolDiscovery.MemoryCapabilityChecks);
             });
         }
         finally
@@ -341,6 +349,43 @@ public sealed partial class GuildCapacityTests
         }
     }
 
+    private sealed class ToolDiscoveryProbe
+    {
+        private int _memoryCapabilityChecks;
+
+        internal int MemoryCapabilityChecks => Volatile.Read(ref _memoryCapabilityChecks);
+
+        internal void ObserveMemoryCapability() => Interlocked.Increment(ref _memoryCapabilityChecks);
+    }
+
+    private sealed class ObservedToolDispatcher(IGuildLocalChildToolDispatcher actual, ToolDiscoveryProbe probe) : IGuildLocalChildToolDispatcher
+    {
+        public bool SupportsLocal => actual.SupportsLocal;
+
+        public bool SupportsRemote => actual.SupportsRemote;
+
+        public bool SupportsMemory
+        {
+            get
+            {
+                probe.ObserveMemoryCapability();
+
+                return actual.SupportsMemory;
+            }
+        }
+
+        public bool SupportsWorkspaceReads => actual.SupportsWorkspaceReads;
+
+        public bool SupportsWorkspaceLeases => actual.SupportsWorkspaceLeases;
+
+        public bool SupportsWorkspaceMutations => actual.SupportsWorkspaceMutations;
+
+        public bool SupportsCohorts => actual.SupportsCohorts;
+
+        public Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken) =>
+            actual.DispatchAsync(call, cancellationToken);
+    }
+
     private sealed class ParallelTransport : HttpMessageHandler
     {
         internal int Turns;
@@ -391,6 +436,12 @@ public sealed partial class GuildCapacityTests
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            using JsonDocument wire = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+
+            Assert.True(!wire.RootElement.TryGetProperty("tools", out var tools)
+                || tools.ValueKind == JsonValueKind.Null
+                || tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() == 0);
+
             int ordinal = Interlocked.Increment(ref _calls);
 
             if (ordinal == 2)
