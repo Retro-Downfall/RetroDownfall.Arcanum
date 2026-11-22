@@ -413,6 +413,7 @@ public sealed class CappedChildProcessRunnerStandardInputTests : IAsyncLifetime
 
         string pidFile = Path.Combine(pidDirectory, "descendant.pid");
 
+        // The writer publishes the completed count by rename, so existence also means the integer is readable.
         string countFile = Path.Combine(pidDirectory, "read.count");
 
         try
@@ -430,9 +431,9 @@ public sealed class CappedChildProcessRunnerStandardInputTests : IAsyncLifetime
             psi.ArgumentList.Add(
                 "require 'timeout'; fork { fork { Process.setsid; STDOUT.reopen('/dev/null'); STDERR.reopen('/dev/null'); File.write('"
                 + pidFile
-                + "', Process.pid.to_s); n = 0; while (chunk = STDIN.read(65536)); n += chunk.bytesize; sleep 0.05; end; File.write('"
+                + "', Process.pid.to_s); n = 0; while (chunk = STDIN.read(65536)); n += chunk.bytesize; sleep 0.05; end; target = '"
                 + countFile
-                + "', n.to_s) }; exit! 0 }; Timeout.timeout(10) { sleep 0.01 until File.size?('"
+                + "'; File.write(target + '.tmp', n.to_s); File.rename(target + '.tmp', target) }; exit! 0 }; Timeout.timeout(10) { sleep 0.01 until File.size?('"
                 + pidFile
                 + "') }; exit 0");
 
