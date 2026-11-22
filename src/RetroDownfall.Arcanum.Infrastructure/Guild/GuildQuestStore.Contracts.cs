@@ -24,6 +24,14 @@ internal interface IGuildQuestHostPolicy
 
     Task<Result<GuildQuestAdmissionPlan>> ResolveAsync(GuildCallerContext caller, GuildQuestProposal proposal,
         SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken);
+
+    Task<Result<ArtifactSensitivityLabel?>> ResolvePublicationSensitivityAsync(GuildCallerContext caller, GuildQuestStored source,
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
+        Task.FromResult(Result<ArtifactSensitivityLabel?>.Failure(GuildPortalStore.Unavailable));
+
+    Task<Result> AuthorizeContentAsync(GuildCallerContext caller, ArtifactSensitivityLabel label,
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
+        Task.FromResult(Result.Failure(GuildPortalStore.Unavailable));
 }
 
 /// <summary>Mandatory same-transaction budget participant. No production no-op implementation is installed.</summary>

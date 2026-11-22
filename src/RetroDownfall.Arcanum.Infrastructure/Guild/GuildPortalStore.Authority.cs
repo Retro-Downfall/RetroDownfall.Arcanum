@@ -7,16 +7,10 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-/// <summary>Host policy for current protected disclosure; unavailable composition never implies permission.</summary>
-internal interface IGuildPortalDisclosurePolicy
+/// <summary>Opt-in to current protected disclosure under the host's visibility epoch.</summary>
+internal interface IGuildPortalDisclosurePolicy : IGuildQuestHostPolicy
 {
     string VisibilityEpoch { get; }
-
-    Task<Result<ArtifactSensitivityLabel?>> ResolvePublicationSensitivityAsync(GuildCallerContext caller, GuildQuestStored source,
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken);
-
-    Task<Result> AuthorizeContentAsync(GuildCallerContext caller, ArtifactSensitivityLabel label,
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken);
 }
 
 internal sealed partial class GuildPortalStore
@@ -250,9 +244,9 @@ internal sealed partial class GuildPortalStore
 
             if (available.IsFailure) return available.Error;
 
-            if (policy is not IGuildPortalDisclosurePolicy disclosure) return Unavailable;
+            if (policy is not IGuildPortalDisclosurePolicy) return Unavailable;
 
-            Result authorized = await disclosure.AuthorizeContentAsync(caller, label, connection, transaction, ct).ConfigureAwait(false);
+            Result authorized = await policy.AuthorizeContentAsync(caller, label, connection, transaction, ct).ConfigureAwait(false);
 
             if (authorized.IsFailure) return authorized.Error;
 

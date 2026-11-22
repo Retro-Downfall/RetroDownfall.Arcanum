@@ -75,7 +75,7 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.Contains(lateEvents.Value.Items, item => item.EventKind == GuildEventKind.NoteAppended && item.ObjectId == appended.Value.Id);
     }
 
-    private sealed class EventDisclosurePolicy(GuildLocalHostPolicy inner) : IGuildQuestHostPolicy, IGuildPortalDisclosurePolicy
+    private sealed class EventDisclosurePolicy(GuildLocalHostPolicy inner) : IGuildPortalDisclosurePolicy
     {
         public Guid InstallationGeneration => inner.InstallationGeneration;
 

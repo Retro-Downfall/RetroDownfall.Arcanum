@@ -156,7 +156,7 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
 
     private static Error TooLarge => new(ErrorCodes.Guild.PayloadTooLarge, "The Portal payload exceeds its representation bound.");
 
-    private static Error Unavailable => new(ErrorCodes.Guild.AuthorityUnavailable, "The Portal evidence is unavailable or inconsistent.");
+    internal static Error Unavailable => new(ErrorCodes.Guild.AuthorityUnavailable, "The Portal evidence is unavailable or inconsistent.");
 
     private static Error Conflict => new(ErrorCodes.Guild.IdempotencyConflict, "The Portal publication identity already binds different intent.");
 

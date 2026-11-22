@@ -260,6 +260,24 @@ public sealed partial class GuildPortalStoreTests
             1, new(SHA256.HashData("source"u8)), ContentSensitivity.CovenantDerived,
             GenerationProvenance.CreateExact([Guid.NewGuid()]), null, null, null, DateTimeOffset.UtcNow);
 
+        GuildPortalStore noDisclosure = new(f.Store, f.Authority, new HostWithoutPortalDisclosure(f.Host), TimeProvider.System);
+
+        var refused = await noDisclosure.PublishAsync(f.RunCaller(driver), root.Quest.Id, Progress(), default);
+
+        Assert.Equal(ErrorCodes.Guild.AuthorityUnavailable, refused.Error.Code);
+
+        Assert.Equal(0, await f.CountAsync("guild_envelopes"));
+
+        f.Host.DenyPublication = true;
+
+        var denied = await f.Portal.PublishAsync(f.RunCaller(driver), root.Quest.Id, Progress(), default);
+
+        Assert.Equal(ErrorCodes.Guild.Forbidden, denied.Error.Code);
+
+        Assert.Equal(0, await f.CountAsync("guild_envelopes"));
+
+        f.Host.DenyPublication = false;
+
         var published = await f.Portal.PublishAsync(f.RunCaller(driver), root.Quest.Id, Progress(), default);
 
         Assert.True(published.IsSuccess, published.Error.Message);
@@ -289,6 +307,17 @@ public sealed partial class GuildPortalStoreTests
         Assert.True(read.IsSuccess, read.Error.Message);
 
         Assert.Equal("Progress data", System.Text.Encoding.UTF8.GetString(read.Value));
+
+        var unavailable = await f.Authority.InQuestTransactionAsync<byte[]>(root.Quest.Id, async (connection, transaction, signets, ct) =>
+        {
+            var envelope = await GuildPortalStore.ReadEnvelopeWithinAsync(connection, transaction, published.Value.MessageId, ct);
+
+            Assert.True(envelope.IsSuccess, envelope.Error.Message);
+
+            return await noDisclosure.ReadBodyWithinAsync(connection, transaction, signets, f.Caller, envelope.Value, ct);
+        }, default);
+
+        Assert.Equal(ErrorCodes.Guild.AuthorityUnavailable, unavailable.Error.Code);
     }
 
     [Fact]

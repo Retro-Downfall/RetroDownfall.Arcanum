@@ -416,9 +416,9 @@ internal sealed partial class GuildPortalStore
 
         if (caller.Kind != GuildCallerKind.HostReceipt)
         {
-            if (policy is IGuildPortalDisclosurePolicy disclosure)
+            if (policy is IGuildPortalDisclosurePolicy)
             {
-                resolved = await disclosure.ResolvePublicationSensitivityAsync(caller, source, connection, transaction, ct).ConfigureAwait(false);
+                resolved = await policy.ResolvePublicationSensitivityAsync(caller, source, connection, transaction, ct).ConfigureAwait(false);
 
                 if (resolved.IsFailure) return resolved.Error;
             }

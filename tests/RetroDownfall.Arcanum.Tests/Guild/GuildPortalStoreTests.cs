@@ -172,17 +172,34 @@ public sealed partial class GuildPortalStoreTests
         }
     }
 
-    private sealed class HostPolicy : IGuildQuestHostPolicy, IGuildSignetHostPolicy, IGuildPortalDisclosurePolicy
+    private sealed class HostWithoutPortalDisclosure(HostPolicy host) : IGuildQuestHostPolicy
+    {
+        public Guid InstallationGeneration => host.InstallationGeneration;
+
+        public Task<Result> AuthorizeLocateAsync(GuildCallerContext caller, SqliteConnection connection, SqliteTransaction transaction,
+            Guid? questId, Guid? sessionId, Guid? campaignId, CancellationToken cancellationToken) =>
+            host.AuthorizeLocateAsync(caller, connection, transaction, questId, sessionId, campaignId, cancellationToken);
+
+        public Task<Result<GuildQuestAdmissionPlan>> ResolveAsync(GuildCallerContext caller, GuildQuestProposal proposal,
+            SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
+            host.ResolveAsync(caller, proposal, connection, transaction, cancellationToken);
+    }
+
+    private sealed class HostPolicy : IGuildSignetHostPolicy, IGuildPortalDisclosurePolicy
     {
         public string VisibilityEpoch { get; set; } = Guid.NewGuid().ToString("D");
 
         internal ArtifactSensitivityLabel? PublicationLabel { get; set; }
 
+        internal bool DenyPublication { get; set; }
+
         internal bool DenyProtectedContent { get; set; }
 
         public Task<Result<ArtifactSensitivityLabel?>> ResolvePublicationSensitivityAsync(GuildCallerContext caller, GuildQuestStored source,
             SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
-            Task.FromResult(Result<ArtifactSensitivityLabel?>.Success(PublicationLabel));
+            Task.FromResult(DenyPublication
+                ? Result<ArtifactSensitivityLabel?>.Failure(new(ErrorCodes.Guild.Forbidden, "Publication disclosure refused."))
+                : Result<ArtifactSensitivityLabel?>.Success(PublicationLabel));
 
         public Task<Result> AuthorizeContentAsync(GuildCallerContext caller, ArtifactSensitivityLabel label,
             SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
