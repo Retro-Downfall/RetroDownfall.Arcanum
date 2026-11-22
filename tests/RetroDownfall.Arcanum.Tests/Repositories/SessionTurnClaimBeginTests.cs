@@ -4,13 +4,16 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -29,6 +32,252 @@ public sealed class SessionTurnClaimBeginTests(GrimoireFixture fixture) : IAsync
     private GrimoireRepository _repository = null!;
 
     private SqliteConnection Connection => (SqliteConnection)_db.Database.GetDbConnection();
+
+    [SkippableTheory]
+    [InlineData("pending")]
+    [InlineData("begun")]
+    [InlineData("begun-retry")]
+    [InlineData("committed")]
+    [InlineData("discarded")]
+    public async Task A_new_turn_after_host_replacement_settles_only_the_old_claim(string previous)
+    {
+        RequireSqlCipher();
+
+        SessionTurnClaimLease old = await AcquireAsync();
+
+        if (previous != "pending")
+        {
+            var begun = await BeginAsync(old);
+
+            Assert.True(begun.IsSuccess, begun.Error.Message);
+        }
+
+        if (previous is "committed" or "discarded")
+        {
+            var receipt = await _repository.CommitTurnAsync(new(old.FutureAssistantEntryId,
+                old.Claim.SessionId, previous == "committed" ? AssistantFinalizationOutcome.Committed : AssistantFinalizationOutcome.Discarded,
+                previous == "committed" ? "existing saved answer" : string.Empty, old.Claim.RequestDigest,
+                ContentSensitivity.None, GenerationProvenance.CreateExact([])), default);
+
+            Assert.True(receipt.IsSuccess, receipt.Error.Message);
+        }
+
+        if (previous is "begun" or "begun-retry")
+        {
+            // A pre-invocation-ledger transcript may already have later tool entries.
+            await _repository.AppendToolInteractionAsync(old.Claim.SessionId, "read_file", "{}", "existing tool result", "test-model");
+
+            Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM session_tool_invocations;"));
+        }
+
+        string existingEntries = await ReadHistoryAsync();
+
+        long existingCount = await ScalarAsync("SELECT COUNT(*) FROM Entries;");
+
+        var input = (await _repository.ReadClaimInputAsync(old.Claim.SessionId, default)).Value;
+
+        SessionTurnRequestIdentity next = Identity(old.Claim) with
+        {
+            ClientTurnId = Guid.NewGuid(), RequestDigest = Digest(7),
+            PreRequestHistoryRevision = input.HistoryRevision, PreRequestHistoryWatermarkUtc = input.HistoryWatermarkUtc,
+            InputSensitivityRevision = input.SensitivityRevision,
+        };
+
+        Guid newBoot = Guid.NewGuid();
+
+        using ArcanumMaintenanceLock held = AcquireInstallationLock();
+
+        SessionTurnClaimStore restarted = HostedClaimStore(newBoot, held);
+
+        if (previous == "begun-retry")
+        {
+            var interrupted = await restarted.AcquireAsync(Identity(old.Claim), default);
+
+            Assert.True(interrupted.IsSuccess, interrupted.Error.Message);
+
+            Assert.Equal(SessionTurnClaimDisposition.Replayed, interrupted.Value.Disposition);
+
+            Assert.Equal(SessionTurnClaimState.RestoredInterrupted, interrupted.Value.Claim.State);
+        }
+
+        var continued = await restarted.AcquireAsync(next, default);
+
+        Assert.True(continued.IsSuccess, $"{continued.Error.Code}: {continued.Error.Message}");
+
+        Assert.Equal(SessionTurnClaimDisposition.Created, continued.Value.Disposition);
+
+        Assert.Equal(newBoot, continued.Value.OwnerBootId);
+
+        Assert.NotEqual(old.Claim.ClaimId, continued.Value.Claim.ClaimId);
+
+        var priorRetry = await restarted.AcquireAsync(Identity(old.Claim), default);
+
+        Assert.True(priorRetry.IsSuccess, priorRetry.Error.Message);
+
+        Assert.Equal(SessionTurnClaimDisposition.Replayed, priorRetry.Value.Disposition);
+
+        Assert.Equal(old.FutureAssistantEntryId, priorRetry.Value.FutureAssistantEntryId);
+
+        Assert.Null(priorRetry.Value.ExecutorId);
+
+        Assert.Null(priorRetry.Value.LeaseDeadlineUtc);
+
+        Assert.Equal(previous switch
+        {
+            "committed" => SessionTurnClaimState.Committed,
+            "discarded" => SessionTurnClaimState.Discarded,
+            _ => SessionTurnClaimState.RestoredInterrupted,
+        }, priorRetry.Value.Claim.State);
+
+        if (previous == "committed")
+            Assert.Equal("existing saved answer", (await _repository.ReadCleanCommittedReplyAsync(priorRetry.Value, default)).Value.Content);
+
+        if (priorRetry.Value.Claim.State == SessionTurnClaimState.RestoredInterrupted)
+            Assert.Equal(ErrorCodes.Hub.SessionTurnRestoredInterrupted, priorRetry.Value.Claim.Outcome?.TerminalErrorCode);
+
+        Assert.Equal(existingEntries, await ReadHistoryAsync());
+
+        Assert.Equal(2, await ScalarAsync("SELECT ClaimCount FROM installation_turn_quota_state;"));
+
+        Assert.Equal(1, await ScalarAsync("SELECT ReservedFinalizationCount FROM installation_turn_quota_state;"));
+
+        Assert.Equal(previous == "pending" ? 0 : 1, await ScalarAsync("SELECT ConsumedFinalizationCount FROM installation_turn_quota_state;"));
+
+        var started = await BeginAsync(continued.Value);
+
+        Assert.True(started.IsSuccess, started.Error.Message);
+
+        Assert.Equal(existingCount + 2, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+
+        Assert.Equal(existingEntries, await ReadHistoryAsync(input.HistoryRevision));
+    }
+
+    [SkippableTheory]
+    [InlineData("same-boot")]
+    [InlineData("no-host-lock")]
+    [InlineData("different-installation")]
+    [InlineData("different-restore-epoch")]
+    public async Task A_competing_turn_cannot_retire_an_unproven_prior_owner(string circumstance)
+    {
+        RequireSqlCipher();
+
+        SessionTurnClaimLease old = await AcquireAsync();
+
+        await ExecuteAsync("UPDATE session_turn_claims SET LeaseDeadlineUtc='2000-01-01T00:00:00.0000000+00:00';");
+
+        Guid newBoot = circumstance == "same-boot" ? old.OwnerBootId!.Value : Guid.NewGuid();
+
+        using ArcanumMaintenanceLock? held = circumstance == "no-host-lock" ? null : AcquireInstallationLock();
+
+        SessionTurnClaimStore store = HostedClaimStore(newBoot, held);
+
+        SessionTurnRequestIdentity next = Identity(old.Claim) with
+        {
+            ClientTurnId = Guid.NewGuid(),
+            OriginInstallationId = circumstance == "different-installation" ? Guid.NewGuid() : old.Claim.OriginInstallationId,
+            OriginRestoreEpoch = circumstance == "different-restore-epoch" ? 1 : old.Claim.OriginRestoreEpoch,
+        };
+
+        var refused = await store.AcquireAsync(next, default);
+
+        Assert.Equal(ErrorCodes.Hub.SessionTurnBusy, refused.Error.Code);
+
+        Assert.Equal(SessionTurnClaimState.PendingMaintenance, (await store.FindAsync(old.Claim.OriginInstallationId, old.Claim.ClientTurnId, default)).Value!.State);
+
+        Assert.Equal(1, await ScalarAsync("SELECT ClaimCount FROM installation_turn_quota_state;"));
+
+        Assert.Equal(1, await ScalarAsync("SELECT ReservedFinalizationCount FROM installation_turn_quota_state;"));
+    }
+
+    [SkippableFact]
+    public async Task Retiring_a_prior_boot_keeps_unresolved_tool_evidence_and_its_recovery_checkpoint()
+    {
+        RequireSqlCipher();
+
+        SessionTurnClaimLease old = await AcquireAsync();
+
+        Assert.True((await BeginAsync(old)).IsSuccess);
+
+        var connectionFactory = FixtureOrdinaryConnectionFactory.For(_db);
+
+        SqliteToolInvocationStore tools = new(connectionFactory, TimeProvider.System);
+
+        var key = ToolInvocationKey.Capture(old.Claim.SessionId, old.FutureAssistantEntryId,
+            new(old.FutureAssistantEntryId.ToString("D"), "previous-workspace-call", 1, 0, "apply_patch"), "{}");
+
+        Assert.True((await tools.PrepareAsync(key, old, default)).IsSuccess);
+
+        Assert.True((await tools.AdmitAsync(key, old, default)).Value.MayDispatch);
+
+        var outstanding = await tools.ReadAsync(key.SessionId, key.Receipt.Id, default);
+
+        Assert.Equal(ToolInvocationState.Dispatched, outstanding.Value!.State);
+
+        SessionRecoveryCheckpointStore checkpoints = new(connectionFactory, TimeProvider.System);
+
+        var checkpoint = new SessionRecoveryCheckpointRecord(Guid.NewGuid(), old.Claim.SessionId,
+            old.FutureAssistantEntryId, old.Claim.ClaimId, SessionRecoveryKind.ReconciliationRequired,
+            new("provider", "model", Digest(5), null, null, null), null, key.Receipt.Id, null, null);
+
+        Assert.Equal(checkpoint, (await checkpoints.SaveAsync(old, checkpoint, default)).Value);
+
+        var input = (await _repository.ReadClaimInputAsync(old.Claim.SessionId, default)).Value;
+
+        using ArcanumMaintenanceLock held = AcquireInstallationLock();
+
+        var restarted = HostedClaimStore(Guid.NewGuid(), held);
+
+        var next = await restarted.AcquireAsync(Identity(old.Claim) with
+        {
+            ClientTurnId = Guid.NewGuid(), RequestDigest = Digest(9),
+            PreRequestHistoryRevision = input.HistoryRevision, PreRequestHistoryWatermarkUtc = input.HistoryWatermarkUtc,
+        }, default);
+
+        Assert.True(next.IsSuccess, next.Error.Message);
+
+        Assert.Equal(outstanding.Value, (await tools.ReadAsync(key.SessionId, key.Receipt.Id, default)).Value);
+
+        Assert.False((await tools.AdmitAsync(key, old, default)).IsSuccess);
+
+        Assert.Equal(checkpoint, (await checkpoints.FindAsync(checkpoint.SessionId, checkpoint.Id, default)).Value);
+
+        var blocked = await BeginAsync(next.Value with { RecoveryCheckpointId = checkpoint.Id });
+
+        Assert.Equal(ErrorCodes.Hub.SessionRecoveryConflict, blocked.Error.Code);
+
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+
+        Assert.Equal(checkpoint, (await checkpoints.FindAsync(checkpoint.SessionId, checkpoint.Id, default)).Value);
+    }
+
+    private ArcanumMaintenanceLock AcquireInstallationLock() => Assert.IsType<ArcanumMaintenanceLock>(
+        ArcanumMaintenanceLock.TryAcquire(Path.GetDirectoryName(_path)!));
+
+    private SessionTurnClaimStore HostedClaimStore(Guid boot, ArcanumMaintenanceLock? held)
+    {
+        string directory = Path.GetDirectoryName(_path)!;
+
+        InstallationResetMaintenanceLockAccessor ownership = new();
+
+        if (held is not null) ownership.AttachHostLock(held, directory);
+
+        return new(new FixedCovenantConnectionSource(Connection), new CovenantQuotaGuard(), boot,
+            path => path == Connection.DataSource && ownership.BorrowHeldLock(directory).IsSuccess);
+    }
+
+    private async Task<string> ReadHistoryAsync(long through = long.MaxValue)
+    {
+        await using SqliteCommand command = Connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT json_group_array(json_array(Id,SessionId,Sequence,Role,Content,ModelUsed,CreatedAt,ToolCallId,ToolName,ToolArguments,IsPinned))
+            FROM (SELECT * FROM Entries WHERE Sequence <= $through ORDER BY Sequence);
+            """;
+
+        command.Parameters.AddWithValue("$through", through);
+
+        return (string)(await command.ExecuteScalarAsync())!;
+    }
 
     public Task InitializeAsync()
     {

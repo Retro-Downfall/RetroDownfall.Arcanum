@@ -516,6 +516,21 @@ public sealed class GrimoireDatabaseHostedService(
         }
     }
 
+    internal bool OwnsStartedDatabase(string databasePath)
+    {
+        lock (_maintenanceLockSync)
+        {
+            if (!_startedSuccessfully || !_maintenanceLockAttached || _maintenanceLock is not { } held
+                || !string.Equals(_databasePath, databasePath, OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                return false;
+
+            Result<ArcanumMaintenanceLock> borrowed = _maintenanceLockAccessor.BorrowHeldLock(_maintenanceDirectory);
+
+            return borrowed.IsSuccess && ReferenceEquals(borrowed.Value, held);
+        }
+    }
+
     private bool ClaimOwnedShutdownCheckpoint()
     {
         ArcanumMaintenanceLock? heldInstallationLock;

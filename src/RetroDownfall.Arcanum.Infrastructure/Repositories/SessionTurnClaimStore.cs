@@ -31,7 +31,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 internal sealed class SessionTurnClaimStore(
     ICovenantConnectionSource connections,
     CovenantQuotaGuard quotas,
-    Guid bootId) : ISessionTurnClaimCoordinator, ISessionTurnClaimLookup
+    Guid bootId,
+    Func<string, bool>? ownsStartedDatabase = null) : ISessionTurnClaimCoordinator, ISessionTurnClaimLookup
 {
     /// <summary>
     /// How long an acquisition owns its claim before another boot may take it over. Code-owned: a
@@ -176,16 +177,27 @@ internal sealed class SessionTurnClaimStore(
             return resumed;
         }
 
-        // A different client turn ID while this Session already has live work is the case the partial
-        // unique active-claim index exists for. Naming it here turns a raw constraint abort into the
-        // typed answer a competing client is supposed to receive.
-        if (await HasLiveClaimAsync(owned, request.SessionId, cancellationToken).ConfigureAwait(false))
-        {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+        ClaimRow? active = await ReadOneAsync(owned, "WHERE SessionId = $session AND StateCode IN (1, 2)",
+            command => Bind(command, "$session", request.SessionId), cancellationToken).ConfigureAwait(false);
 
-            return new Error(
-                ErrorCodes.Hub.SessionTurnBusy,
-                "This Session already has a turn in flight, so a second one cannot claim it.");
+        if (active is { } other)
+        {
+            if (!CanRecoverAbandonedClaim(owned, request, other))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return new Error(ErrorCodes.Hub.SessionTurnBusy,
+                    "This Session already has a turn in flight, so a second one cannot claim it.");
+            }
+
+            Result<ClaimRow> settled = await SettleAbandonedClaimAsync(owned, other, cancellationToken).ConfigureAwait(false);
+
+            if (settled.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return settled.Error;
+            }
         }
 
         Guid claimId = Guid.NewGuid();
@@ -289,17 +301,23 @@ internal sealed class SessionTurnClaimStore(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (existing.Claim.State is SessionTurnClaimState.Begun
-            && await ReadNativeFinalizationAsync(transaction, existing.Claim, futureAssistantEntryId, cancellationToken).ConfigureAwait(false) is { } finalization)
+        if (existing.Claim.State is SessionTurnClaimState.Begun)
         {
-            Result<ClaimRow> recovered = await RecoverFinalizedAsync(transaction, existing, finalization, cancellationToken).ConfigureAwait(false);
+            int? finalization = await ReadNativeFinalizationAsync(transaction, existing.Claim, futureAssistantEntryId, cancellationToken).ConfigureAwait(false);
 
-            if (recovered.IsFailure)
+            if (finalization is not null || CanRecoverAbandonedClaim(transaction, request, existing))
             {
-                return recovered.Error;
-            }
+                Result<ClaimRow> recovered = finalization is { } native
+                    ? await RecoverFinalizedAsync(transaction, existing, native, cancellationToken).ConfigureAwait(false)
+                    : await SettleAbandonedClaimAsync(transaction, existing, cancellationToken).ConfigureAwait(false);
 
-            existing = recovered.Value;
+                if (recovered.IsFailure)
+                {
+                    return recovered.Error;
+                }
+
+                existing = recovered.Value;
+            }
         }
 
         if (existing.Claim.IsTerminal)
@@ -855,24 +873,69 @@ internal sealed class SessionTurnClaimStore(
         return Result<SessionTurnClaim>.Success(row.Claim);
     }
 
-    private static async ValueTask<bool> HasLiveClaimAsync(
-        CovenantMutationTransaction transaction,
-        Guid sessionId,
-        CancellationToken cancellationToken)
+    private bool CanRecoverAbandonedClaim(CovenantMutationTransaction transaction, SessionTurnRequestIdentity request, ClaimRow previous) =>
+        previous.Claim.OriginInstallationId == request.OriginInstallationId
+        && previous.Claim.OriginRestoreEpoch == request.OriginRestoreEpoch
+        && previous.Claim.OwnerBootId is { } previousBoot && previousBoot != Guid.Empty && previousBoot != bootId
+        && previous.ExecutorId is { } executor && executor != Guid.Empty && previous.LeaseDeadlineUtc is not null
+        && ownsStartedDatabase?.Invoke(transaction.Connection.DataSource) == true;
+
+    private async Task<Result<ClaimRow>> SettleAbandonedClaimAsync(
+        CovenantMutationTransaction transaction, ClaimRow previous, CancellationToken cancellationToken)
     {
+        SessionTurnClaim claim = previous.Claim;
+
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
-            SELECT 1 FROM session_turn_claims
-            WHERE SessionId = $session AND StateCode IN (1, 2)
-            LIMIT 1;
+            SELECT AssistantEntryId FROM assistant_finalization_capacity_reservations
+            WHERE ReservationId = $reservation AND SessionId = $session AND ClaimId = $claim
+                AND OriginCode = 1 AND StateCode = $state;
             """;
 
-        Bind(command, "$session", sessionId);
+        bool begun = claim.State == SessionTurnClaimState.Begun;
 
-        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        Bind(command, "$reservation", claim.FinalizationReservationId);
 
-        return value is not (null or DBNull);
+        Bind(command, "$session", claim.SessionId);
+
+        Bind(command, "$claim", claim.ClaimId);
+
+        Bind(command, "$state", begun ? 2 : 1);
+
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string reserved
+            || !Guid.TryParseExact(reserved, "D", out Guid assistant) || assistant == Guid.Empty
+            || (begun && claim.AssistantEntryId != assistant))
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, "The abandoned Session claim does not match its finalization reservation.");
+
+        if (begun)
+        {
+            // An authoritative answer outranks a host interruption. A claim with a contradictory
+            // guard may not be rewritten as an interrupted answer just to free the Session.
+            if (await ReadNativeFinalizationAsync(transaction, claim, assistant, cancellationToken).ConfigureAwait(false) is { } native)
+                return await RecoverFinalizedAsync(transaction, previous, native, cancellationToken).ConfigureAwait(false);
+
+            await using SqliteCommand guard = transaction.CreateCommand();
+
+            guard.CommandText = "SELECT 1 FROM assistant_entry_finalizations WHERE AssistantEntryId = $assistant;";
+
+            Bind(guard, "$assistant", assistant);
+
+            if (await guard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
+                return new Error(ErrorCodes.Covenant.IntegrityFailure, "The abandoned Session claim has conflicting finalization evidence.");
+        }
+        else
+        {
+            var released = await quotas.ReleaseReservedFinalizationAsync(
+                new(claim.FinalizationReservationId, claim.SessionId, assistant), transaction, cancellationToken).ConfigureAwait(false);
+
+            if (released.IsFailure) return released.Error;
+        }
+
+        // The prior executor is gone. Keep its Entries, consumed quota, tool outcomes and
+        // checkpoints. Interruption revokes execution without guessing which effects occurred.
+        return await RecordRecoveredOutcomeAsync(transaction, previous,
+            SessionTurnClaimOutcome.RestoredInterrupted(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -932,13 +995,15 @@ internal sealed class SessionTurnClaimStore(
         return value is null or DBNull ? null : Convert.ToInt32(value, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<Result<ClaimRow>> RecoverFinalizedAsync(
-        CovenantMutationTransaction transaction, ClaimRow existing, int finalization, CancellationToken cancellationToken)
-    {
-        SessionTurnClaimOutcome outcome = finalization == 1
+    private static Task<Result<ClaimRow>> RecoverFinalizedAsync(
+        CovenantMutationTransaction transaction, ClaimRow existing, int finalization, CancellationToken cancellationToken) =>
+        RecordRecoveredOutcomeAsync(transaction, existing, finalization == 1
             ? SessionTurnClaimOutcome.Committed()
-            : SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []);
+            : SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []), cancellationToken);
 
+    private static async Task<Result<ClaimRow>> RecordRecoveredOutcomeAsync(
+        CovenantMutationTransaction transaction, ClaimRow existing, SessionTurnClaimOutcome outcome, CancellationToken cancellationToken)
+    {
         await using SqliteCommand command = transaction.CreateCommand();
 
         command.CommandText = """
@@ -946,8 +1011,8 @@ internal sealed class SessionTurnClaimStore(
             SET StateCode = $state, TerminalErrorCode = $code, TerminalHttpStatus = $status,
                 TerminalParameterBytes = $parameters, TerminalParameterDigest = $digest,
                 TerminalAtUtc = $now, HeartbeatAtUtc = $now, ExecutorId = NULL, LeaseDeadlineUtc = NULL
-            WHERE ClaimId = $claim AND StateCode = 2 AND AssistantEntryId = $assistant
-              AND RequestDigest = $request;
+            WHERE ClaimId = $claim AND StateCode = $expected AND AssistantEntryId IS $assistant
+              AND RequestDigest = $request AND OwnerBootId IS $boot AND ExecutorId IS $executor;
             """;
 
         BindOutcome(command, outcome);
@@ -956,13 +1021,19 @@ internal sealed class SessionTurnClaimStore(
 
         Bind(command, "$claim", existing.Claim.ClaimId);
 
-        Bind(command, "$assistant", existing.Claim.AssistantEntryId!.Value);
+        Bind(command, "$expected", (int)existing.Claim.State);
+
+        Bind(command, "$assistant", existing.Claim.AssistantEntryId is { } assistant ? assistant : DBNull.Value);
 
         Bind(command, "$request", existing.Claim.RequestDigest.Bytes);
 
+        Bind(command, "$boot", existing.Claim.OwnerBootId is { } boot ? boot : DBNull.Value);
+
+        Bind(command, "$executor", existing.ExecutorId is { } executor ? executor : DBNull.Value);
+
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
-            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The authoritative assistant finalization could not settle its Session claim.");
+            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The recovered outcome could not settle its exact Session claim.");
         }
 
         ClaimRow? settled = await ReadByClaimIdAsync(transaction, existing.Claim.ClaimId, cancellationToken).ConfigureAwait(false);

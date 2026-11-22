@@ -289,8 +289,9 @@ public interface ISessionTurnClaimCoordinator
     /// <remarks>
     /// A same-identity request with a different request digest is
     /// <c>Security.IdempotencyConflict</c> and claims nothing at all. A different identity while
-    /// another claim is live on the Session is <c>Hub.SessionTurnBusy</c>, which is what stops a
-    /// competing client from overtaking maintenance or Entry order.
+    /// another claim is live on the Session is <c>Hub.SessionTurnBusy</c>. The exclusive serving
+    /// host may settle an abandoned claim from a proven prior boot of the same installation and
+    /// restore epoch before claiming a new turn. Its retained outcome remains replayable.
     /// </remarks>
     ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(
         SessionTurnRequestIdentity request,
