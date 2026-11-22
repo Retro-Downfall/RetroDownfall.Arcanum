@@ -2934,6 +2934,8 @@ public sealed partial class WizardIntelligenceProvider(
                 ? CovenantDispatchGate.ResolveSensitivity(scope, streamCovenantDispatch).Level
                 : campaignTurn?.Artifact?.Sensitivity ?? ContentSensitivity.None;
 
+            bool CanDiscloseWorkspaceMutations() => covenantScope?.Protection is null && ResolveCallSensitivity() == ContentSensitivity.None;
+
             bool TrySelectOrdinaryCacheFallback(ModelCallRetryDirective directive)
             {
                 if (directive != ModelCallRetryDirective.OrdinaryPromptCacheFallback
@@ -3674,7 +3676,8 @@ public sealed partial class WizardIntelligenceProvider(
                         RemoveSemanticMaterialization,
                         out ContextTokenBreakdown callBreakdown,
                         systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
-                        progress: toolLoopProgressDetector);
+                        progress: toolLoopProgressDetector,
+                        discloseWorkspaceMutations: CanDiscloseWorkspaceMutations());
 
                     if (CaptureToolEvidenceEviction(callBreakdown) is { } evictionNotice && streaming)
                         yield return new IntelligenceEvent(IntelligenceEventType.Status, evictionNotice.Message) { Notices = [evictionNotice] };
@@ -4654,6 +4657,9 @@ public sealed partial class WizardIntelligenceProvider(
                                     toolCallIndex == 0 ? rawRoundReasoning : null,
                                     toolCallIndex == 0 ? combinedRound.Text : null);
 
+                                if (CanDiscloseWorkspaceMutations())
+                                    toolLoopProgressDetector.WorkspaceMutations.Associate(chatMessages[^1], processed.CommittedWorkspaceMutations);
+
                                 SubagentParentContextInjector.AppendBudgetFailureIfRequired(
                                     chatMessages,
                                     processed.ToolName,
@@ -5061,7 +5067,8 @@ public sealed partial class WizardIntelligenceProvider(
                                             RemoveSemanticMaterialization,
                                             out ContextTokenBreakdown retryContextBreakdown,
                                             systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
-                                            progress: toolLoopProgressDetector);
+                                            progress: toolLoopProgressDetector,
+                                            discloseWorkspaceMutations: CanDiscloseWorkspaceMutations());
 
                                         InferenceNotice? retryNotice = CaptureToolEvidenceEviction(retryContextBreakdown);
 
@@ -8578,7 +8585,8 @@ public sealed partial class WizardIntelligenceProvider(
         Func<ContextMaterializationEntry, bool>? onSemanticDropped,
         out ContextTokenBreakdown breakdown,
         Func<SystemPromptAttributionMap?>? systemPromptAttribution = null,
-        ToolLoopProgressDetector? progress = null)
+        ToolLoopProgressDetector? progress = null,
+        bool discloseWorkspaceMutations = false)
     {
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
         ModelCallContext context = BuildModelCallContext(lease, request);
@@ -8607,6 +8615,9 @@ public sealed partial class WizardIntelligenceProvider(
 
         int Count(IReadOnlyList<MeAiChatMessage> messages) => Measure(messages).TotalTokens;
 
+        // Last call's optional facts must not evict fresh evidence or semantic materializations.
+        progress?.WorkspaceMutations.RemoveProjection(chatMessages);
+
         if (ledger is not null && onSemanticDropped is not null)
         {
             CascadeSemanticDrops(
@@ -8628,6 +8639,18 @@ public sealed partial class WizardIntelligenceProvider(
             // Trimming ends with an authoritative full-list measurement. Its empty,
             // removed-run and notice slices must never replace that dispatch breakdown.
             breakdown = latestFullBreakdown!;
+        }
+
+        if (discloseWorkspaceMutations && progress?.TryProjectWorkspaceMutations(chatMessages, contextWindowLimit, contextWindowLimit - breakdown.TotalTokens,
+            text => ModelTokenEstimator.EstimateText(lease.Provider, lease.ResolvedModel, text).TokenCount) == true)
+        {
+            breakdown = Measure(chatMessages);
+
+            if (breakdown.TotalTokens > contextWindowLimit)
+            {
+                progress.WorkspaceMutations.RemoveProjection(chatMessages);
+                breakdown = Measure(chatMessages);
+            }
         }
 
         if (ledger is not null)

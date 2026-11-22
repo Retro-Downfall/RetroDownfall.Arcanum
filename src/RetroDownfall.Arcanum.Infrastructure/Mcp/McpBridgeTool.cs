@@ -242,20 +242,66 @@ internal sealed class McpBridgeTool : AIFunction
             result,
             receiptHandled ? long.MaxValue : _toolOutputCapBytes);
 
-        return trustStructuredResult
-            && _trustedStructuredResultKind is { } kind
+        WorkspaceMutationFact[]? mutations = trustStructuredResult && isHostTransport
+            ? ReadOwnerMutations(result, text)
+            : null;
+
+        TrustedStructuredToolResultKind? kind = _trustedStructuredResultKind;
+
+        if (mutations is not null && kind is null)
+        {
+            kind = TrustedStructuredToolResultKind.WorkspaceFileMutation;
+        }
+
+        return trustStructuredResult && kind is { } trustedKind
             ? new TrustedStructuredToolResult(
-                kind,
+                trustedKind,
                 text,
                 ReceiptHandled: receiptHandled)
             {
                 FailureEvidence = isHostTransport
-                    && kind is (TrustedStructuredToolResultKind.WorkspacePatch or TrustedStructuredToolResultKind.WorkspaceCheck)
+                    && trustedKind is (TrustedStructuredToolResultKind.WorkspacePatch or TrustedStructuredToolResultKind.WorkspaceCheck)
                     ? ReadOwnerFailureEvidence(result)
                     : null,
+                CommittedWorkspaceMutations = mutations,
             }
             : text;
     }
+
+    private WorkspaceMutationFact[]? ReadOwnerMutations(CallToolResult result, string text)
+    {
+        if (_name is not ("write_file" or "edit_file" or ToolRiskClassifier.ApplyPatchToolName)
+            || result.Content is not [TextContentBlock { Text: { } original }] || !string.Equals(text, original, StringComparison.Ordinal)
+            || result.Meta is not { } metadata || !metadata.TryGetPropertyValue(WorkspaceMutationFact.MetadataName, out var node)
+            || node is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            WorkspaceMutationFact[]? facts = node.Deserialize(McpJsonSerializerContext.Default.WorkspaceMutationFactArray);
+
+            return facts is { Length: > 0 }
+                && (_name == ToolRiskClassifier.ApplyPatchToolName || facts.Length == 1)
+                && facts.All(fact => fact is not null && WorkspaceMutationFact.IsPublishablePath(fact.RelativePath) && MutationMatchesTool(fact.Operation))
+                ? facts
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private bool MutationMatchesTool(WorkspaceMutationOperation operation) => _name switch
+    {
+        "write_file" => operation == WorkspaceMutationOperation.Write,
+        "edit_file" => operation == WorkspaceMutationOperation.Edit,
+        ToolRiskClassifier.ApplyPatchToolName => operation is WorkspaceMutationOperation.Create or WorkspaceMutationOperation.Modify
+            or WorkspaceMutationOperation.Rename or WorkspaceMutationOperation.Delete,
+        _ => false,
+    };
 
     private static bool IsHostResultTransport(IMcpClient client) =>
         client is SdkMcpClientWrapper { IsHostOwned: true } or McpClientGeneration { IsGuildHostTransport: true };

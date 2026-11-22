@@ -678,6 +678,28 @@ internal sealed partial class ArcanumInternalToolServer
             return wire;
         }
 
+        if (response.Result is { ValueKind: JsonValueKind.Object } payload
+            && payload.TryGetProperty("_meta", out JsonElement metadata)
+            && metadata.ValueKind == JsonValueKind.Object
+            && metadata.TryGetProperty(WorkspaceMutationFact.MetadataName, out _)
+            && payload.Deserialize(_json.McpToolsCallResultWire) is { Meta: { } ownerMetadata } toolResult)
+        {
+            // Observational metadata cannot turn an otherwise deliverable tool result into an
+            // oversized-frame error. Leave both the original content and other metadata intact.
+            JsonRpcResponse withoutMutations = BuildToolsCallResponse(response.Id, toolResult with
+            {
+                Meta = ownerMetadata.Outcome is null && ownerMetadata.FailureEvidence is null
+                    ? null
+                    : ownerMetadata with { CommittedWorkspaceMutations = null },
+            });
+            string originalResult = JsonSerializer.Serialize(withoutMutations, _json.JsonRpcResponse);
+
+            if (!ExceedsOutboundFrameBudget(originalResult))
+            {
+                return originalResult;
+            }
+        }
+
         _logger?.LogWarning(
             "Arcanum internal MCP server replaced a {ActualBytes}-byte JSON-RPC response line exceeding {MaxBytes} UTF-8 bytes with an oversized-output error.",
             Encoding.UTF8.GetByteCount(wire),

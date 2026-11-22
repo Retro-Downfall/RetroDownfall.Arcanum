@@ -463,6 +463,8 @@ internal sealed partial class ArcanumInternalToolServer
             return writeLimitError;
         }
 
+        SandboxedFileIo.WriteObservation observation = new();
+
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
             .TryWriteAllTextAtomicallyAsync(
                 _workspaceRoot!,
@@ -470,7 +472,8 @@ internal sealed partial class ArcanumInternalToolServer
                 updated,
                 cancellationToken,
                 readBaseline,
-                _allowProtectedPathWrites)
+                _allowProtectedPathWrites,
+                observation)
             .ConfigureAwait(false);
 
         if (!writeSuccess)
@@ -482,14 +485,7 @@ internal sealed partial class ArcanumInternalToolServer
             ? $"Replaced 1 occurrence in '{absolutePath}'."
             : $"Replaced {occurrences} occurrences in '{absolutePath}'.";
 
-        return new McpToolsCallResultWire
-        {
-            Content =
-            [
-                new McpToolContentTextWire { Text = text },
-            ],
-            IsError = false,
-        };
+        return CompletedFileMutation(absolutePath, observation.RelativePath, WorkspaceMutationOperation.Edit, text);
     }
 
     private async Task<McpToolsCallResultWire> ExecuteWriteFileAsync(
@@ -553,6 +549,8 @@ internal sealed partial class ArcanumInternalToolServer
             return writeLimitError;
         }
 
+        SandboxedFileIo.WriteObservation observation = new();
+
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
             .TryWriteAllTextAtomicallyAsync(
                 _workspaceRoot!,
@@ -560,7 +558,8 @@ internal sealed partial class ArcanumInternalToolServer
                 args.Content,
                 cancellationToken,
                 expectedExistingContent: null,
-                _allowProtectedPathWrites)
+                _allowProtectedPathWrites,
+                observation)
             .ConfigureAwait(false);
 
         if (!writeSuccess)
@@ -568,13 +567,25 @@ internal sealed partial class ArcanumInternalToolServer
             return PrefixToolError("write_file", writeError!);
         }
 
+        return CompletedFileMutation(absolutePath, observation.RelativePath, WorkspaceMutationOperation.Write, $"Wrote file '{absolutePath}'.");
+    }
+
+    private McpToolsCallResultWire CompletedFileMutation(
+        string absolutePath,
+        string? verifiedRelativePath,
+        WorkspaceMutationOperation operation,
+        string text)
+    {
+        string relativePath = Path.GetRelativePath(_workspaceRoot!, absolutePath).Replace(Path.DirectorySeparatorChar, '/');
+
         return new McpToolsCallResultWire
         {
-            Content =
-            [
-                new McpToolContentTextWire { Text = $"Wrote file '{absolutePath}'." },
-            ],
+            Content = [new McpToolContentTextWire { Text = text }],
             IsError = false,
+            Meta = WorkspaceMutationFact.IsPublishablePath(relativePath)
+                && string.Equals(relativePath, verifiedRelativePath?.Replace(Path.DirectorySeparatorChar, '/'), StringComparison.Ordinal)
+                ? new McpToolResultMetadata { CommittedWorkspaceMutations = [new(relativePath, operation)] }
+                : null,
         };
     }
 

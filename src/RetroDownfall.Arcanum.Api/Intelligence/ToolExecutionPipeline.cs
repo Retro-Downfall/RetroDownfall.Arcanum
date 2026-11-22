@@ -161,6 +161,8 @@ public sealed class ToolExecutionPipeline(
         public TurnFailureEvidence? FailureEvidence { get; init; }
 
         internal bool OwnerProvedNoDispatch { get; init; }
+
+        internal IReadOnlyList<WorkspaceMutationFact>? CommittedWorkspaceMutations { get; init; }
     }
 
     public sealed record ProcessedToolCall(
@@ -176,6 +178,8 @@ public sealed class ToolExecutionPipeline(
         AttachmentRefreshEvent? AttachmentRefresh = null)
     {
         internal ToolInvocationCompletion? ProtectedInvocationCompletion { get; init; }
+
+        internal IReadOnlyList<WorkspaceMutationFact>? CommittedWorkspaceMutations { get; init; }
 
         public ProviderCallSensitivity? Sensitivity { get; init; }
 
@@ -781,6 +785,10 @@ public sealed class ToolExecutionPipeline(
             Sensitivity = wardedExecution.Sensitivity,
             ToolOutcome = wardedExecution.ToolOutcome,
             FailureEvidence = wardedExecution.FailureEvidence,
+            CommittedWorkspaceMutations = executedSuccessfully && wardedExecution.FailureEvidence is null
+                && !turnContext.ProtectedContent && wardedExecution.Sensitivity is null
+                ? wardedExecution.CommittedWorkspaceMutations
+                : null,
             ProtectedInvocationCompletion = !receiptHandled && executedSuccessfully
                 && (turnContext.ProtectedContent || wardedExecution.Sensitivity is not null)
                 && (wardedExecution.FailureEvidence is null or { Effect: TurnEffectState.Completed })
@@ -2004,8 +2012,14 @@ public sealed class ToolExecutionPipeline(
             && (exactPatchResult.ReceiptHandled
                 || ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true))
         {
-            return new(exactPatchResult.Text, wardEvents) { FailureEvidence = exactPatchResult.FailureEvidence };
+            return new(exactPatchResult.Text, wardEvents)
+            {
+                FailureEvidence = exactPatchResult.FailureEvidence,
+                CommittedWorkspaceMutations = exactPatchResult.CommittedWorkspaceMutations,
+            };
         }
+
+        TrustedStructuredToolResult? ownerResult = rawResult as TrustedStructuredToolResult;
 
         if (toolResultMaterializer is not null)
         {
@@ -2015,10 +2029,20 @@ public sealed class ToolExecutionPipeline(
                 rawResult,
                 toolResultMaterializer);
 
-            return new(materialized, wardEvents) { FailureEvidence = (rawResult as TrustedStructuredToolResult)?.FailureEvidence };
+            return new(materialized, wardEvents)
+            {
+                FailureEvidence = ownerResult?.FailureEvidence,
+                CommittedWorkspaceMutations = ownerResult is { } kept && string.Equals(kept.Text, materialized, StringComparison.Ordinal)
+                    ? kept.CommittedWorkspaceMutations
+                    : null,
+            };
         }
 
-        return new(rawResult?.ToString() ?? string.Empty, wardEvents) { FailureEvidence = (rawResult as TrustedStructuredToolResult)?.FailureEvidence };
+        return new(rawResult?.ToString() ?? string.Empty, wardEvents)
+        {
+            FailureEvidence = ownerResult?.FailureEvidence,
+            CommittedWorkspaceMutations = ownerResult?.CommittedWorkspaceMutations,
+        };
     }
 
     private static TurnFailureEvidence? ReadCompletedWorkspaceCheckFailure(string serializedResult)

@@ -161,7 +161,7 @@ public sealed record McpToolsCallResultWire
     public McpToolResultMetadata? Meta { get; init; }
 }
 
-/// <summary>Host-authored reported outcomes, independent of a tool's structured output schema.</summary>
+/// <summary>Host-authored observations, independent of a tool's structured output schema.</summary>
 public sealed record McpToolResultMetadata
 {
     [JsonPropertyName("arcanum/toolOutcome")]
@@ -171,6 +171,10 @@ public sealed record McpToolResultMetadata
     [JsonPropertyName("arcanum/turnFailureEvidence")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TurnFailureEvidence? FailureEvidence { get; init; }
+
+    [JsonPropertyName(WorkspaceMutationFact.MetadataName)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WorkspaceMutationFact[]? CommittedWorkspaceMutations { get; init; }
 }
 
 /// <summary>

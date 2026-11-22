@@ -107,7 +107,11 @@ internal sealed partial class ArcanumInternalToolServer
             }
         }
 
-        return WithOwnerEvidence(StructuredTextResult(response.SerializedResult, isError: false), evidence);
+        McpToolsCallResultWire result = WithOwnerEvidence(StructuredTextResult(response.SerializedResult, isError: false), evidence);
+
+        return response.CommittedWorkspaceMutations is { } facts
+            ? result with { Meta = (result.Meta ?? new McpToolResultMetadata()) with { CommittedWorkspaceMutations = facts } }
+            : result;
     }
 
     private McpToolsCallResultWire BuildSmallStructuredPatchResult(

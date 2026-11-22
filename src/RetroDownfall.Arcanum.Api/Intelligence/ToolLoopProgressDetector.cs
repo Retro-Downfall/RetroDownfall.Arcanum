@@ -39,6 +39,11 @@ internal sealed class ToolLoopProgressDetector
 
     private readonly TextContent _trimNotice = new("Tool evidence trimmed; reread narrowly.");
 
+    internal TrimmedWorkspaceMutations WorkspaceMutations { get; } = new();
+
+    internal bool TryProjectWorkspaceMutations(List<ChatMessage> messages, int window, int availableTokens, Func<string, int> estimateText) =>
+        WorkspaceMutations.TryProject(messages, _trimNotice, window, availableTokens, estimateText);
+
     private int _nextSlot;
 
     private int _completedRounds;
@@ -227,6 +232,8 @@ internal sealed class ToolLoopProgressDetector
     {
         foreach (ChatMessage message in removed)
         {
+            WorkspaceMutations.ObserveEviction(message);
+
             _evictedMessages = Increment(_evictedMessages);
 
             int calls = message.Contents.OfType<FunctionCallContent>().Count()

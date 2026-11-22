@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -127,6 +128,79 @@ public sealed class ToolLoopEvidenceTests
     }
 
     private static ToolLoopProgressEntry[] Entries() => [new("read_file", "{}", "stable evidence")];
+
+    [Fact]
+    public void Only_eviction_of_the_original_result_makes_a_committed_path_available()
+    {
+        ToolLoopProgressDetector detector = new();
+
+        List<ChatMessage> messages = [new(ChatRole.User, "My task")];
+        detector.EnsureTrimNotice(messages);
+
+        List<ChatMessage> exchange = Exchange();
+        detector.WorkspaceMutations.Associate(exchange[^1], [new("notes.txt", WorkspaceMutationOperation.Write)]);
+        detector.ObserveTrimmedExchanges(Exchange());
+
+        Assert.False(detector.TryProjectWorkspaceMutations(messages, 4_096, 1_000, text => text.Length));
+
+        detector.ObserveTrimmedExchanges(exchange);
+
+        Assert.False(detector.TryProjectWorkspaceMutations(messages, 4_096, 1, text => text.Length));
+        Assert.True(detector.TryProjectWorkspaceMutations(messages, 4_096, 1_000, text => text.Length));
+
+        string shown = Assert.IsType<TextContent>(messages[0].Contents[^1]).Text;
+        Assert.Contains("notes.txt", shown, StringComparison.Ordinal);
+
+        TextContent similarUserText = new(shown);
+        messages[0].Contents.Insert(0, similarUserText);
+        detector.WorkspaceMutations.RemoveProjection(messages);
+
+        Assert.Same(similarUserText, Assert.Single(messages[0].Contents.OfType<TextContent>(), item => item.Text == shown));
+    }
+
+    [Fact]
+    public void Latest_operation_per_path_is_quoted_and_a_long_path_does_not_hide_other_fitting_facts()
+    {
+        ToolLoopProgressDetector detector = new();
+        List<ChatMessage> messages = [new(ChatRole.User, "My task")];
+        detector.EnsureTrimNotice(messages);
+
+        const string path = "notes\"\n.txt";
+        List<ChatMessage> first = Exchange();
+        detector.WorkspaceMutations.Associate(first[^1], [new(path, WorkspaceMutationOperation.Write)]);
+        detector.ObserveTrimmedExchanges(first);
+
+        List<ChatMessage> second = Exchange();
+        detector.WorkspaceMutations.Associate(second[^1], [
+            new(path, WorkspaceMutationOperation.Delete),
+            new(new string('x', 500), WorkspaceMutationOperation.Write),
+        ]);
+        detector.ObserveTrimmedExchanges(second);
+
+        Assert.True(detector.TryProjectWorkspaceMutations(messages, 4_096, 300, text => text.Length));
+        string[] lines = Assert.IsType<TextContent>(messages[0].Contents[^1]).Text.Split('\n');
+        Assert.Equal(2, lines.Length);
+        Assert.StartsWith("Delete ", lines[1], StringComparison.Ordinal);
+        using var quotedPath = System.Text.Json.JsonDocument.Parse(lines[1]["Delete ".Length..]);
+        Assert.Equal(path, quotedPath.RootElement.GetString());
+    }
+
+    [Fact]
+    public void The_model_window_can_preserve_more_than_thirty_two_short_paths()
+    {
+        ToolLoopProgressDetector detector = new();
+        List<ChatMessage> messages = [new(ChatRole.User, "My task")];
+        detector.EnsureTrimNotice(messages);
+
+        string[] paths = Enumerable.Range(0, 64).Select(i => $"catalog-{i:D2}.txt").ToArray();
+        List<ChatMessage> exchange = Exchange();
+        detector.WorkspaceMutations.Associate(exchange[^1], paths.Select(path => new WorkspaceMutationFact(path, WorkspaceMutationOperation.Write)).ToArray());
+        detector.ObserveTrimmedExchanges(exchange);
+
+        Assert.True(detector.TryProjectWorkspaceMutations(messages, 4_096, 4_096, text => text.Length));
+        string rendered = Assert.IsType<TextContent>(messages[0].Contents[^1]).Text;
+        Assert.All(paths, path => Assert.Contains(path, rendered, StringComparison.Ordinal));
+    }
 
     private static List<ChatMessage> Exchange(string callId = "same-model-id") =>
     [

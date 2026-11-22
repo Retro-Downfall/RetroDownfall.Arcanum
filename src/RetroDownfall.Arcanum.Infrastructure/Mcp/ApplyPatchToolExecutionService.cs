@@ -12,7 +12,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed record ApplyPatchToolExecutionResponse(
     string SerializedResult, bool WorkspaceChanged = false, bool RequiresReconciliation = false,
-    TurnFailureEvidence? FailureEvidence = null, WorkspacePatchToolResultEnvelope? FailureDiagnostics = null);
+    TurnFailureEvidence? FailureEvidence = null, WorkspacePatchToolResultEnvelope? FailureDiagnostics = null)
+{
+    internal WorkspaceMutationFact[]? CommittedWorkspaceMutations { get; init; }
+}
 
 internal sealed class ApplyPatchToolExecutionService
 {
@@ -399,7 +402,10 @@ internal sealed class ApplyPatchToolExecutionService
         if (handoff.Outcome is MandatoryToolInteractionAppendOutcome.NewlyCommitted
             or MandatoryToolInteractionAppendOutcome.RecoveredCommitted)
         {
-            return new ApplyPatchToolExecutionResponse(serializedResult, WorkspaceChanged: true);
+            return new ApplyPatchToolExecutionResponse(serializedResult, WorkspaceChanged: true)
+            {
+                CommittedWorkspaceMutations = ObserveCommittedFiles(plan, serializedResult),
+            };
         }
 
         if (handoff.Outcome == MandatoryToolInteractionAppendOutcome.Failed)
@@ -561,6 +567,43 @@ internal sealed class ApplyPatchToolExecutionService
 
     internal static bool ReceiptIsUnresolved(WorkspacePatchToolResultEnvelope? result) =>
         result?.Status is not ("ok" or "dry_run" or "conflict");
+
+    private WorkspaceMutationFact[]? ObserveCommittedFiles(WorkspacePatchPlan plan, string serializedResult)
+    {
+        // The commit owner supplies the paths. The bounded response only proves that every path
+        // was actually disclosed. A replay or an omitted path cannot add new working-context facts.
+        if (_allowProtectedPathWrites
+            || ReadReceipt(serializedResult) is not { Status: "ok", Truncated: false, Files.Length: > 0 } visible
+            || visible.Files.Length != plan.Files.Count)
+        {
+            return null;
+        }
+
+        WorkspaceMutationFact[] facts = new WorkspaceMutationFact[plan.Files.Count];
+
+        for (int index = 0; index < facts.Length; index++)
+        {
+            WorkspacePatchPlannedFile file = plan.Files[index];
+            WorkspaceMutationOperation? operation = file.Operation switch
+            {
+                UnifiedDiffOperationKind.Create => WorkspaceMutationOperation.Create,
+                UnifiedDiffOperationKind.Modify => WorkspaceMutationOperation.Modify,
+                UnifiedDiffOperationKind.Rename => WorkspaceMutationOperation.Rename,
+                UnifiedDiffOperationKind.Delete => WorkspaceMutationOperation.Delete,
+                _ => null,
+            };
+
+            if (operation is null || !string.Equals(file.Path, visible.Files[index].Path, StringComparison.Ordinal)
+                || !WorkspaceMutationFact.IsPublishablePath(file.Path))
+            {
+                return null;
+            }
+
+            facts[index] = new(file.Path, operation.Value);
+        }
+
+        return facts;
+    }
 
     private ApplyPatchToolExecutionResponse Recovered(string serializedResult)
     {

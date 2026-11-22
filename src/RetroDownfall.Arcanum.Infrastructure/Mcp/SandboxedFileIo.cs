@@ -19,6 +19,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal static class SandboxedFileIo
 {
+    internal sealed class WriteObservation
+    {
+        internal string? RelativePath { get; set; }
+    }
+
     /// <summary>
     /// Emits the UTF-8 preamble, used only to carry an existing destination BOM across an overwrite.
     /// </summary>
@@ -167,7 +172,8 @@ internal static class SandboxedFileIo
         string content,
         CancellationToken cancellationToken,
         FileContentBaseline? expectedExistingContent = null,
-        bool allowProtectedPathWrites = false)
+        bool allowProtectedPathWrites = false,
+        WriteObservation? observation = null)
     {
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
@@ -260,6 +266,7 @@ internal static class SandboxedFileIo
         // the write and rename. The write callback intentionally leaves the stream open so the
         // helper owns its lifetime and performs the durability flush.
         FileHandleIdentity expectedIdentity = default;
+        string? verifiedRelativePath = null;
 
         try
         {
@@ -295,11 +302,16 @@ internal static class SandboxedFileIo
                 // opened handle is under the workspace, so a swapped destination is rejected here even
                 // if the move followed a symlink (platform-dependent).
                 afterReplace: () =>
-                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _),
+                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out verifiedRelativePath),
                 expectedDestinationContent: expectedExistingContent).ConfigureAwait(false);
 
             if (replaceStatus == AtomicReplaceStatus.Succeeded)
             {
+                if (observation is not null)
+                {
+                    observation.RelativePath = verifiedRelativePath;
+                }
+
                 return (true, null);
             }
 
@@ -438,13 +450,22 @@ internal static class SandboxedFileIo
         string workspaceRoot,
         FileStream stream,
         FileHandleIdentity expectedIdentity,
+        [NotNullWhen(false)] out McpToolsCallResultWire? error) =>
+        TryRevalidateOpenedHandle(workspaceRoot, stream, expectedIdentity, out _, out error);
+
+    private static bool TryRevalidateOpenedHandle(
+        string workspaceRoot,
+        FileStream stream,
+        FileHandleIdentity expectedIdentity,
+        [NotNullWhen(true)] out string? relativePath,
         [NotNullWhen(false)] out McpToolsCallResultWire? error)
     {
+        relativePath = null;
         error = null;
 
         // The kernel's path for the open handle, never stream.Name: the name is only the string the
         // stream was opened with, and re-checking it would repeat the pre-open check verbatim.
-        if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle))
+        if (!WorkspacePathPolicy.TryGetOpenedHandleRelativePath(workspaceRoot, stream.SafeFileHandle, out string? ownedPath))
         {
             error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
 
@@ -461,6 +482,8 @@ internal static class SandboxedFileIo
             return false;
         }
 
+        relativePath = ownedPath;
+
         return true;
     }
 
@@ -473,9 +496,9 @@ internal static class SandboxedFileIo
         string workspaceRoot,
         string absolutePath,
         FileHandleIdentity expectedIdentity,
-        [NotNullWhen(false)] out McpToolsCallResultWire? error)
+        [NotNullWhen(true)] out string? relativePath)
     {
-        error = null;
+        relativePath = null;
 
         BeforeMovedDestinationOpenForTests?.Invoke(absolutePath);
 
@@ -493,20 +516,13 @@ internal static class SandboxedFileIo
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
-            error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
-
             return false;
         }
 
         using (verifyStream)
         {
-            if (!TryRevalidateOpenedHandle(workspaceRoot, verifyStream, expectedIdentity, out error))
-            {
-                return false;
-            }
+            return TryRevalidateOpenedHandle(workspaceRoot, verifyStream, expectedIdentity, out relativePath, out _);
         }
-
-        return true;
     }
 
     private const string PathEscapesSandboxMessage =
