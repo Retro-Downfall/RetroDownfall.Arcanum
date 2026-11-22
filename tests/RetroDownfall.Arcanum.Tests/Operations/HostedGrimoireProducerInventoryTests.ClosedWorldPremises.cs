@@ -1051,6 +1051,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(scoped.Items, static site => site.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
     }
 
+    private const string ScopedGuildAuthorizationType = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestStore";
+
+    private const string ScopedGuildAuthorizationOperation = ScopedGuildAuthorizationType + ".AuthorizeLocalToolAsync";
+
     [Theory]
     [InlineData("PidFileService")]
     [InlineData("GuildMaintenanceHostedService")]
@@ -1082,21 +1086,26 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.NotEmpty(recovery.Items);
 
-            Assert.All(recovery.Items, site => Assert.Equal(type, site.RootType));
-
             var metrics = Assert.IsType<HostedProducerAnalysisMetrics>(recovery.AnalysisMetrics);
 
-            var traversal = Assert.Single(metrics.RootTraversals);
+            Assert.All(recovery.Items, site => Assert.True(
+                (site.RootType == type && site.AuthorityOperationId == operation)
+                || HostedGrimoireProducerInventory.IsGuildRevalidationChildSite(site), site.OperationId));
 
-            Assert.Equal(type, traversal.RootType);
+            AssertScopedGuildAuthorization(recovery.Items, metrics, operation);
 
-            Assert.Equal(operation, traversal.RootOperation);
+            Assert.Equal(2, metrics.RootTraversals.Count);
+
+            var traversal = Assert.Single(metrics.RootTraversals,
+                root => root.RootType == type && root.RootOperation == operation);
+
+            Assert.Null(traversal.SelfAdmittedWorkKind);
 
             foreach (string line in RenderRootTraversalMetrics(metrics.RootTraversals)) output.WriteLine(line);
 
             HeadroomCeiling ceiling = Assert.Single(ProductionRootCeilings, row => row.RootOperation == operation);
 
-            Assert.Empty(HeadroomViolations(metrics.RootTraversals, [ceiling], HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot));
+            Assert.Empty(HeadroomViolations([traversal], [ceiling], HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot));
 
             int maximum = traversal.AnalyzedStates;
 
@@ -1110,7 +1119,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.Empty(reviewed.Diagnostics);
 
-            Assert.Equal(HostedGrimoireProducerInventory.RenderCapsuleManifest(reviewed.Sites.Where(site => site.RootType == type)),
+            Assert.Equal(HostedGrimoireProducerInventory.RenderCapsuleManifest(reviewed.Sites.Where(site =>
+                    (site.RootType == type && site.AuthorityOperationId == operation)
+                    || HostedGrimoireProducerInventory.IsGuildRevalidationChildSite(site))),
                 HostedGrimoireProducerInventory.RenderCapsuleManifest(recovery.Items));
 
             return;
@@ -1496,6 +1507,44 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(DispatchRefused(result, "System.Data.Common.DbParameterCollection.Count"));
     }
 
+    private static void AssertScopedGuildAuthorization(IReadOnlyList<HostedProducerSite> sites,
+        HostedProducerAnalysisMetrics metrics, params string[] expectedCallerOperations)
+    {
+        HostedProducerSite[] links = [.. sites.Where(static site => site.Kind == HostedProducerSiteKind.JoinedSelfAdmission)];
+
+        Assert.Equal(expectedCallerOperations.Order(StringComparer.Ordinal),
+            links.Select(static site => site.AuthorityOperationId).Order(StringComparer.Ordinal));
+
+        Assert.All(links, link =>
+        {
+            Assert.True(HostedGrimoireProducerInventory.IsGuildRevalidationJoinedEdge(link), link.OperationId);
+
+            Assert.Single(metrics.RootTraversals, root =>
+                root.RootType == link.RootType && root.RootOperation == link.AuthorityOperationId);
+        });
+
+        HostedProducerSite[] childSites = [.. sites.Where(HostedGrimoireProducerInventory.IsGuildRevalidationChildSite)];
+
+        Assert.NotEmpty(childSites);
+
+        Assert.All(sites.Where(static site => site.AuthorityOperationId == ScopedGuildAuthorizationOperation),
+            site => Assert.Equal(ScopedGuildAuthorizationType, site.RootType));
+
+        Assert.Contains(childSites, static site => site.AdmittedWorkKind == GrimoireWorkKind.GuildStorage);
+
+        var child = Assert.Single(metrics.RootTraversals, root =>
+            HostedGrimoireProducerInventory.IsGuildRevalidationChildRoot(root.RootType, root.RootOperation));
+
+        Assert.Equal(GrimoireWorkKind.GuildStorage, child.SelfAdmittedWorkKind);
+
+        Assert.True(child.AnalyzedStates > 0 && child.TraversalCalls > 0);
+
+        HeadroomCeiling ceiling = Assert.Single(ProductionRootCeilings, row =>
+            row.RootType == child.RootType && row.RootOperation == child.RootOperation);
+
+        Assert.Empty(HeadroomViolations([child], [ceiling], HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot));
+    }
+
     private void VerifyIssue145AffectedProductionRoots(bool schemaAdditional)
     {
         string[] selectors = schemaAdditional
@@ -1568,6 +1617,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(scoped.AnalysisMetrics);
 
+        HashSet<string> rootOwners = new(selected.Registrations.Items
+            .Concat(selected.NonHostedCatalog.Select(static chain => chain.EnclosingType)), StringComparer.Ordinal);
+
         foreach (string operationId in operations)
         {
             HostedProducerRootTraversalMetric traversal = Assert.Single(metrics.RootTraversals,
@@ -1576,6 +1628,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.True(traversal.AnalyzedStates > 0, operationId);
         }
 
+        if (schemaAdditional)
+        {
+            Assert.DoesNotContain(scoped.Items, static site => site.Kind == HostedProducerSiteKind.JoinedSelfAdmission);
+
+            Assert.DoesNotContain(metrics.RootTraversals, static root => root.SelfAdmittedWorkKind.HasValue);
+        }
+        else
+        {
+            AssertScopedGuildAuthorization(scoped.Items, metrics,
+                "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync",
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync");
+
+            Assert.True(operations.Add(ScopedGuildAuthorizationOperation));
+
+            Assert.True(rootOwners.Add(ScopedGuildAuthorizationType));
+        }
+
+        Assert.All(metrics.RootTraversals, root => Assert.Contains(root.RootType, rootOwners));
+
         Assert.All(scoped.Items, site => Assert.Contains(site.AuthorityOperationId, operations));
 
         HostedProducerCapsuleManifest reviewed = HostedGrimoireProducerInventory.ParseCapsuleManifest(
@@ -1583,7 +1658,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Empty(reviewed.Diagnostics);
 
-        // Replace exactly the selected authority operations, retaining every other partition and root.
+        // Replace the selected authority operations and their joined authorization, retaining every other partition and root.
         string unaffected = HostedGrimoireProducerInventory.RenderCapsuleManifest(
             reviewed.Sites.Where(site => !operations.Contains(site.AuthorityOperationId)));
 
@@ -1617,8 +1692,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Sites = [.. persisted.Sites.Where(site => site.RootType == chain.EnclosingType && site.AuthorityOperationId == chain.ChainId)],
         })];
 
+        HostedProducerOperationEntry? joinedAuthorization = schemaAdditional
+            ? null
+            : new(ScopedGuildAuthorizationOperation, "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ToolEffects.cs",
+                ScopedGuildAuthorizationType, "AuthorizeLocalToolAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage, null, [.. persisted.Sites.Where(HostedGrimoireProducerInventory.IsGuildRevalidationChildSite)]);
+
         HostedProducerInventoryValidation validation = HostedGrimoireProducerInventory.Validate(
-            services, chains, selected.Registrations, scoped);
+            services, chains, selected.Registrations, scoped, joinedAuthorization);
 
         Assert.True(validation.IsValid, HostedGrimoireProducerInventory.RenderDiagnosticReport(validation.Diagnostics));
     }
