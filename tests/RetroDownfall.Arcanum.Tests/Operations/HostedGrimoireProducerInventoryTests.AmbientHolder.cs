@@ -127,6 +127,63 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(3, result.Diagnostics.Count);
     }
 
+    [Theory]
+    [InlineData("lease-parameter")]
+    [InlineData("holder-read-field")]
+    [InlineData("holder-read-conditional-access")]
+    [InlineData("inaccessible-holder")]
+    public void Long_ordinary_body_keeps_work_unless_it_reads_an_authored_holder(string shape)
+    {
+        const string firstSend = "private async Task SendFirstAsync(IGrimoireWorkLease admission, CancellationToken ct)";
+
+        bool inaccessible = shape == "inaccessible-holder";
+
+        string source = OrdinaryLeaseParameterFixture(inaccessible ? "holder-read-without-binder" : shape);
+
+        Assert.Contains(firstSend, source, StringComparison.Ordinal);
+
+        int body = source.IndexOf('{', source.IndexOf(firstSend, StringComparison.Ordinal) + firstSend.Length);
+
+        source = source.Insert(body + 1, string.Concat(Enumerable.Repeat(" _ = string.Empty;", 300)));
+
+        if (inaccessible) source = source.ReplaceSdkFixtureText("internal IGrimoireWorkLease Lease", "private IGrimoireWorkLease Lease", StringComparison.Ordinal);
+
+        AmbientHolderRun run = RunAmbientHolder(shape, source, inaccessible ? "CS0122" : null);
+
+        if (inaccessible)
+        {
+            MemberAccessExpressionSyntax holder = Assert.Single(run.FirstSend.DescendantNodes().OfType<MemberAccessExpressionSyntax>(),
+                static access => access.Name.Identifier.ValueText == "Lease");
+
+            SymbolInfo info = run.Model.GetSymbolInfo(holder);
+
+            Assert.Null(info.Symbol);
+
+            Assert.Equal(CandidateReason.Inaccessible, info.CandidateReason);
+
+            var slot = Assert.IsAssignableFrom<IPropertySymbol>(Assert.Single(info.CandidateSymbols));
+
+            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease", slot.Type.ToDisplayString());
+        }
+
+        InvocationExpressionSyntax send = run.PhysicalSend(run.FirstSend);
+
+        HostedProducerSite first = run.Site(send, "System.IO.File.Delete");
+
+        HostedProducerSite second = run.Site(run.PhysicalSend(run.SecondSend), "System.IO.File.Delete");
+
+        bool carriesWork = shape == "lease-parameter";
+
+        Assert.Equal(run.Acquired.CapsuleId, second.WorkFrontierCapsuleId);
+
+        Assert.Equal(carriesWork ? run.Acquired.CapsuleId : null, first.WorkFrontierCapsuleId);
+
+        Assert.Equal(carriesWork, first.EffectFrontierCapsuleId is not null);
+
+        Assert.Equal(!carriesWork, run.Result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Identity.EndsWith("/site@" + run.Tree.FilePath + ":" + send.SpanStart, StringComparison.Ordinal)));
+    }
+
     private sealed record AmbientHolderRun(
         SyntaxTree Tree, SemanticModel Model, HostedProducerDiscovery<HostedProducerSite> Result, HostedProducerSite Acquired,
         MethodDeclarationSyntax FirstSend, MethodDeclarationSyntax SecondSend)
@@ -153,11 +210,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     private AmbientHolderRun RunAmbientHolder(string shape) => RunAmbientHolder(shape, OrdinaryLeaseParameterFixture(shape));
 
-    private AmbientHolderRun RunAmbientHolder(string shape, string source)
+    private AmbientHolderRun RunAmbientHolder(string shape, string source, string? expectedCompilerError = null)
     {
         CSharpCompilation compilation = Compile(source);
 
-        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+        var compilerErrors = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        if (expectedCompilerError is null) Assert.Empty(compilerErrors);
+        else Assert.Equal(expectedCompilerError, Assert.Single(compilerErrors).Id);
 
         SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
 

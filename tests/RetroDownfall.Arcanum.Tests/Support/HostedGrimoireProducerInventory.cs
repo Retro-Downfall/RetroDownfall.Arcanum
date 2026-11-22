@@ -11889,43 +11889,33 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (ordinaryScopedHolderDemands.TryGetValue(identity, out bool cached)) return cached;
 
-            CleanupProvenanceContext proof = new();
-
-            bool demand = false;
-
             static bool InMemberBody(AuthoredMember member, SyntaxNode node) =>
                 node == member.Syntax || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax;
 
-            foreach (MemberAccessExpressionSyntax access in member.Syntax.DescendantNodesAndSelf(node => InMemberBody(member, node))
-                .OfType<MemberAccessExpressionSyntax>())
-            {
-                if (proof.RemainingWork-- <= 0 || ReadsHolderLease(member, access))
-                {
-                    demand = true;
-                    break;
-                }
-            }
-
-            // A conditional access reads the holder the same way, and a read of that spelling must not slip past the refusal.
-            if (!demand)
-            {
-                demand = member.Syntax.DescendantNodesAndSelf(node => InMemberBody(member, node))
-                    .OfType<MemberBindingExpressionSyntax>().Any(binding => ReadsHolderLease(member, binding));
-            }
+            // Census one finite authored body. Each member access needs only its bound symbol and is checked once.
+            bool demand = member.Syntax.DescendantNodesAndSelf(node => InMemberBody(member, node))
+                .Any(node => node is MemberAccessExpressionSyntax or MemberBindingExpressionSyntax && ReadsHolderLease(member, node));
 
             ordinaryScopedHolderDemands[identity] = demand;
 
             return demand;
         }
 
-        private bool ReadsHolderLease(AuthoredMember member, SyntaxNode access) => member.Model.GetOperation(access) switch
+        private bool ReadsHolderLease(AuthoredMember member, SyntaxNode access)
         {
-            IPropertyReferenceOperation { Property: { IsStatic: false } property } =>
-                IsAuthoredLeaseSlot(property, property.Type, member.Model.Compilation),
-            IFieldReferenceOperation { Field: { IsStatic: false } field } =>
-                IsAuthoredLeaseSlot(field, field.Type, member.Model.Compilation),
-            _ => false,
-        };
+            SymbolInfo info = member.Model.GetSymbolInfo(access);
+
+            bool IsInstanceSlot(ISymbol? symbol) => symbol switch
+            {
+                IPropertySymbol { IsStatic: false } property =>
+                    IsAuthoredLeaseSlot(property, property.Type, member.Model.Compilation),
+                IFieldSymbol { IsStatic: false } field =>
+                    IsAuthoredLeaseSlot(field, field.Type, member.Model.Compilation),
+                _ => false,
+            };
+
+            return IsInstanceSlot(info.Symbol) || info.CandidateSymbols.Any(IsInstanceSlot);
+        }
 
         private bool IsAuthoredLeaseSlot(ISymbol slot, ITypeSymbol type, Compilation compilation) =>
             !slot.DeclaringSyntaxReferences.IsEmpty
