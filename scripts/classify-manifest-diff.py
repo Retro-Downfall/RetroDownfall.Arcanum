@@ -754,6 +754,75 @@ class Reach:
 
 
 @dataclasses.dataclass(frozen=True)
+class ExactSourceReach:
+    """One added call in a named member and its exact reviewed capsule rows."""
+
+    rows: frozenset[Row]
+    caller: str
+    caller_member: str
+    marker: str
+    reason: str
+
+    def covers(self, row: Row, side: str) -> bool:
+        return side == "+" and row in self.rows
+
+
+GUILD_SCHEDULER_REACH_PATH = WORKSPACE_LEASE_CONTRACT_DIRECTORY / "hosted-producer-guild-scheduler-source-reach-v1.tsv"
+
+GUILD_SCHEDULER_REACH_HEADER = "# arcanum-guild-scheduler-source-reach v1"
+
+GUILD_SCHEDULER_REACH_COLUMNS = "# cause\t" + COLUMNS[2:]
+
+
+def read_guild_scheduler_reaches(path: Path) -> tuple[ExactSourceReach, ...]:
+    """Read exact Scheduler capsule keys grouped by their independently reviewed added call."""
+    guild = "src/RetroDownfall.Arcanum.Infrastructure/Guild/"
+    causes = {
+        "terminal-local-outbox": (
+            guild + "GuildLocalQuestScheduler.cs",
+            "RunAdmittedAsync",
+            "_ = await portal.DrainOutboxAsync(caller.Value, pending.Value.Quest.Quest.RootQuestId, ct).ConfigureAwait(false);",
+            "terminal local work now drains the durable outbox through the ordinary Portal publication transaction",
+        ),
+        "terminal-remote-receipt": (
+            guild + "GuildLocalQuestScheduler.cs",
+            "RunRemoteAdmittedAsync",
+            "_ = await services.GetRequiredService<GuildRemotePort>().ReconcileTerminalPortalAsync(caller, questId, ct).ConfigureAwait(false);",
+            "terminal remote work now reconciles an existing Portal receipt through current recipient and recovery authority",
+        ),
+        "connected-portal-pulse": (
+            guild + "GuildRemotePort.cs",
+            "PulseAsync",
+            "portal = DrainConnectedPortalAsync(run, ct);",
+            "the remote lease pulse starts a joined Portal drain before the driver scope ends, reaching recipient and delivery evidence",
+        ),
+    }
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if lines[:2] != [GUILD_SCHEDULER_REACH_HEADER, GUILD_SCHEDULER_REACH_COLUMNS]:
+        raise ManifestError(f"{path}: invalid Scheduler reach table headers")
+
+    seen: set[Row] = set()
+    by_cause: dict[str, set[Row]] = {cause: set() for cause in causes}
+    for number, line in enumerate(lines[2:], start=3):
+        cause, *fields = line.split("\t")
+        if cause not in causes or len(fields) != ROW_FIELDS:
+            raise ManifestError(f"{path}:{number}: unknown cause or malformed capsule fields")
+
+        row = Row(*fields)
+        if row in seen or row.root_type != "GuildLocalQuestScheduler":
+            raise ManifestError(f"{path}:{number}: duplicate row or row outside the Scheduler")
+
+        seen.add(row)
+        by_cause[cause].add(row)
+
+    return tuple(ExactSourceReach(frozenset(rows), *causes[cause]) for cause, rows in by_cause.items())
+
+
+EXACT_SOURCE_REACHES: tuple[ExactSourceReach, ...] = read_guild_scheduler_reaches(GUILD_SCHEDULER_REACH_PATH)
+
+
+@dataclasses.dataclass(frozen=True)
 class LeaseHandoffReach(Reach):
     """One exact old row retained under the newly declared cancellation handoff root."""
 
@@ -1640,9 +1709,9 @@ REACHED_THROUGH = (
 
 
 def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceTexts | None,
-    regenerated: Manifest | None = None) -> tuple[Reach | None, str]:
+    regenerated: Manifest | None = None) -> tuple[Reach | ExactSourceReach | None, str]:
     """The entry that explains the row as class r, or None and why not."""
-    candidates = [entry for entry in REACHED_THROUGH if entry.covers(row, side)]
+    candidates = [entry for entry in (*REACHED_THROUGH, *EXACT_SOURCE_REACHES) if entry.covers(row, side)]
 
     if not candidates:
         return None, "no reviewed call chain reaches this site"
@@ -1665,8 +1734,14 @@ def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceText
 
         head, base = sources.head(entry.caller), sources.base(entry.caller)
 
-        in_head = head is not None and entry.marker in head
-        in_base = base is not None and entry.marker in base
+        if isinstance(entry, ExactSourceReach):
+            head_members = member_bodies(head or "", entry.caller_member)
+            base_members = member_bodies(base or "", entry.caller_member)
+            in_head = len(head_members) == 1 and head_members[0].count(entry.marker) == 1
+            in_base = any(entry.marker in body for body in base_members)
+        else:
+            in_head = head is not None and entry.marker in head
+            in_base = base is not None and entry.marker in base
 
         if (side == "+" and in_head and not in_base) or (side == "-" and in_base and not in_head):
             return entry, entry.reason

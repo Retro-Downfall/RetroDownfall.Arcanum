@@ -399,6 +399,62 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertIn("edited caller", result[("+", added)].detail)
 
+    def test_exact_source_reach_requires_the_reviewed_row_and_call_in_the_named_member(self) -> None:
+        caller = "src/Scheduler.cs"
+        marker = "await portal.DrainOutboxAsync(token);"
+        acquired = site("src/Lease.cs", callee=ACQUISITION, kind="EffectFrontier", member="Acquire")
+        acquired = acquired._replace(work=acquired.capsule_id, admitted_work_kind="GuildStorage")
+        changed = site("src/Portal.cs", member="Publish", work=acquired.capsule_id)
+        reach = CLASSIFIER.ExactSourceReach(frozenset([changed]), caller, "RunAdmittedAsync", marker, "the scheduler awaits the durable publish path")
+        base = "private async Task RunAdmittedAsync() { await ExistingAsync(); }"
+        head = base.replace("await ExistingAsync();", marker)
+        old = manifest(acquired)
+
+        def label(row=changed, old_source=base, new_source=head, parity=old, edited=(caller,)):
+            sources = FakeSources(base={caller: old_source}, head={caller: new_source})
+            with patched("EXACT_SOURCE_REACHES", (reach,)):
+                result = classify(old, manifest(acquired, row), edited=edited, parity=parity, sources=sources)
+            return result[("+", row)].label
+
+        self.assertEqual("r", label())
+        self.assertEqual("d", label(old_source=head))
+        self.assertEqual("d", label(new_source=base + " private async Task OtherAsync() { " + marker + " }"))
+        self.assertEqual("d", label(edited=()))
+        self.assertEqual("d", label(parity=manifest(acquired, changed)))
+
+        for field, value in (("root_type", "Other"), ("authority_operation_id", "Other.Run"),
+            ("syntax_ordinal", "3"), ("syntax_sha256", "F" * 64), ("work", "-"), ("effect", "missing")):
+            self.assertEqual("d", label(row=changed._replace(**{field: value})), field)
+
+    def test_scheduler_reach_table_binds_exact_rows_to_the_current_authored_calls(self) -> None:
+        reaches = CLASSIFIER.EXACT_SOURCE_REACHES
+
+        self.assertEqual({"RunAdmittedAsync": 45, "RunRemoteAdmittedAsync": 2, "PulseAsync": 13},
+            {entry.caller_member: len(entry.rows) for entry in reaches})
+
+        for entry in reaches:
+            source = (REPOSITORY / entry.caller).read_text(encoding="utf-8")
+            self.assertEqual(1, sum(body.count(entry.marker) for body in CLASSIFIER.member_bodies(source, entry.caller_member)))
+            added = FakeSources(base={entry.caller: source.replace(entry.marker, "")}, head={entry.caller: source})
+            unchanged = FakeSources(base={entry.caller: source}, head={entry.caller: source})
+            edited = frozenset({entry.caller})
+
+            for reviewed in entry.rows:
+                self.assertIs(entry, CLASSIFIER.prove_reach(reviewed, "+", edited, added)[0])
+                self.assertIsNone(CLASSIFIER.prove_reach(reviewed, "+", edited, unchanged)[0])
+                self.assertIsNone(CLASSIFIER.prove_reach(reviewed, "-", edited, added)[0])
+
+    def test_scheduler_reach_table_rejects_a_duplicate_or_unknown_cause(self) -> None:
+        lines = CLASSIFIER.GUILD_SCHEDULER_REACH_PATH.read_text(encoding="utf-8").splitlines()
+        header, columns, first = lines[:3]
+
+        with tempfile.TemporaryDirectory() as folder:
+            contract = Path(folder) / "unreviewed.tsv"
+            for extra in (first, "unknown" + first[first.index("\t"):]):
+                contract.write_text("\n".join((header, columns, first, extra)) + "\n", encoding="utf-8")
+                with self.assertRaises(CLASSIFIER.ManifestError):
+                    CLASSIFIER.read_guild_scheduler_reaches(contract)
+
     def test_a_reviewed_call_chain_explains_a_removed_row_only_when_the_call_is_gone_at_the_head(self) -> None:
         removed = site("src/Unedited.cs", member="ProveAbsent")
 
