@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -241,6 +242,107 @@ public sealed class EnvironmentIsolationContractTests
         Assert.Contains("PhysicalFileSystemWriterTests", found);
 
         Assert.Contains("WorkspacePathResolverTests", found);
+
+        Type fixture = typeof(WorkspacePolicyCallFixture);
+
+        MethodBase[] paths = [.. MethodsReachingWorkspacePolicy(
+            [fixture, .. fixture.GetNestedTypes(BindingFlags.NonPublic)],
+            static called => called.DeclaringType == typeof(WorkspacePolicyCallFixture)
+                             && called.Name == nameof(WorkspacePolicyCallFixture.Policy))];
+
+        string[] methods = [.. paths.Select(static method => method.Name)];
+
+        Assert.Contains(nameof(WorkspacePolicyCallFixture.Direct), methods);
+
+        Assert.Contains(nameof(WorkspacePolicyCallFixture.AsyncCaller), methods);
+
+        Assert.Contains(nameof(WorkspacePolicyCallFixture.IteratorCaller), methods);
+
+        Assert.Contains(nameof(WorkspacePolicyCallFixture.Callback), methods);
+
+        Assert.Contains(nameof(WorkspacePolicyCallFixture.InterfaceCaller), methods);
+
+        Assert.Contains(nameof(WorkspacePolicyCallFixture.OverrideCaller), methods);
+
+        Assert.DoesNotContain(nameof(WorkspacePolicyCallFixture.PureCaller), methods);
+
+        Assert.DoesNotContain(nameof(WorkspacePolicyCallFixture.ExplicitBaseCaller), methods);
+    }
+
+    private static class WorkspacePolicyCallFixture
+    {
+        internal static void Policy() => throw new InvalidOperationException("The IL walk must inspect this call.");
+
+        internal static void Direct() => Policy();
+
+        internal static Task AsyncCaller() => ReadAsync();
+
+        internal static IEnumerable<int> IteratorCaller() => ReadIterator();
+
+        internal static Action Callback() => Policy;
+
+        internal static bool PureCaller() => Pure();
+
+        internal static void InterfaceCaller()
+        {
+            IPolicyReader reader = new InterfaceReader();
+
+            reader.Read();
+        }
+
+        internal static void OverrideCaller()
+        {
+            PolicyReader reader = new OverriddenReader();
+
+            reader.Read();
+        }
+
+        internal static void ExplicitBaseCaller() => new OverriddenReader().ReadBase();
+
+        private interface IPolicyReader
+        {
+            void Read();
+        }
+
+        private sealed class InterfaceReader : IPolicyReader
+        {
+            void IPolicyReader.Read() => Policy();
+        }
+
+        private class PolicyReader
+        {
+            internal virtual void Read()
+            {
+            }
+        }
+
+        private sealed class OverriddenReader : PolicyReader
+        {
+            internal override void Read() => Policy();
+
+            internal void ReadBase() => base.Read();
+        }
+
+        private static bool Pure() => true;
+
+        private static async Task ReadAsync()
+        {
+            await Task.Yield();
+
+            Policy();
+        }
+
+        private static IEnumerable<int> ReadIterator()
+        {
+            try
+            {
+                yield return 1;
+            }
+            finally
+            {
+                Policy();
+            }
+        }
     }
 
     /// <summary>
@@ -935,7 +1037,159 @@ public sealed class EnvironmentIsolationContractTests
     private const string WorkspacePathPolicyCollectionName = "WorkspacePathPolicy";
 
     private static IReadOnlyList<Type> LoadWorkspacePathPolicyUsingTestClasses() =>
-        LoadMutatingTestClasses(IsWorkspacePathPolicyUse);
+        [
+            .. MethodsReachingWorkspacePolicy(AssemblyTypes.Value, IsWorkspacePathPolicyUse)
+                .Select(static method => OutermostDeclaring(method.DeclaringType!))
+                .Where(IsTestClass)
+                .Distinct()
+                .OrderBy(static type => type.FullName, StringComparer.Ordinal),
+        ];
+
+    private static IReadOnlyCollection<MethodBase> MethodsReachingWorkspacePolicy(
+        IEnumerable<Type> types,
+        Func<MethodBase, bool> isPolicyCall)
+    {
+        Dictionary<(Module Module, int Token), List<MethodBase>> callers = [];
+
+        Queue<MethodBase> pending = new();
+
+        HashSet<Type> dispatchTypes = [.. types];
+
+        List<(MethodBase Caller, MethodInfo Slot)> virtualCalls = [];
+
+        foreach (Type type in dispatchTypes.ToArray())
+        {
+            foreach (MethodBase method in DeclaredMethods(type))
+            {
+                foreach ((OpCode opcode, MethodBase called) in ClrMethodBodyReader.MethodReferences(method))
+                {
+                    if (isPolicyCall(called))
+                    {
+                        pending.Enqueue(method);
+                    }
+                    else if (called.Module.Assembly == type.Assembly)
+                    {
+                        AddCaller(called, method);
+
+                        if (called.DeclaringType is { IsConstructedGenericType: true, ContainsGenericParameters: false } closed)
+                        {
+                            dispatchTypes.Add(closed);
+                        }
+
+                        if ((opcode == OpCodes.Callvirt || opcode == OpCodes.Ldvirtftn)
+                            && called is MethodInfo { IsVirtual: true } dispatch)
+                        {
+                            virtualCalls.Add((method, dispatch));
+                        }
+                    }
+                }
+
+                // The wrapper owns only its declared state machine's execution/disposal entries.
+                if (method.GetCustomAttribute<StateMachineAttribute>() is { StateMachineType: var stateMachine })
+                {
+                    foreach (MethodBase entry in DeclaredMethods(stateMachine))
+                    {
+                        string name = entry.Name[(entry.Name.LastIndexOf('.') + 1)..];
+
+                        if (name is "MoveNext" or "MoveNextAsync" or "Dispose" or "DisposeAsync")
+                        {
+                            AddCaller(entry, method);
+                        }
+                    }
+                }
+            }
+        }
+
+        var dispatchTargets = TestLocalWorkspaceDispatchTargets(dispatchTypes);
+
+        foreach ((MethodBase caller, MethodInfo slot) in virtualCalls)
+        {
+            MethodInfo definition = slot.GetBaseDefinition();
+
+            if (dispatchTargets.TryGetValue((definition.Module, definition.MetadataToken), out var implementations))
+            {
+                foreach (MethodInfo implementation in implementations)
+                {
+                    AddCaller(implementation, caller);
+                }
+            }
+        }
+
+        HashSet<MethodBase> reaching = [];
+
+        while (pending.TryDequeue(out MethodBase? method))
+        {
+            if (reaching.Add(method) && callers.TryGetValue((method.Module, method.MetadataToken), out var parents))
+            {
+                foreach (MethodBase parent in parents)
+                {
+                    pending.Enqueue(parent);
+                }
+            }
+        }
+
+        return reaching;
+
+        void AddCaller(MethodBase target, MethodBase caller)
+        {
+            var key = (target.Module, target.MetadataToken);
+
+            if (!callers.TryGetValue(key, out var found))
+            {
+                callers.Add(key, found = []);
+            }
+
+            found.Add(caller);
+        }
+    }
+
+    private static Dictionary<(Module Module, int Token), HashSet<MethodInfo>> TestLocalWorkspaceDispatchTargets(
+        IEnumerable<Type> types)
+    {
+        Dictionary<(Module Module, int Token), HashSet<MethodInfo>> dispatch = [];
+
+        foreach (Type type in types)
+        {
+            foreach (MethodInfo method in DeclaredMethods(type).OfType<MethodInfo>().Where(static method => method.IsVirtual))
+            {
+                MethodInfo definition = method.GetBaseDefinition();
+
+                if (definition != method && definition.Module.Assembly == type.Assembly)
+                {
+                    Add(definition, method);
+                }
+            }
+
+            if (type.IsInterface || type.ContainsGenericParameters)
+            {
+                continue;
+            }
+
+            foreach (Type contract in type.GetInterfaces().Where(contract => contract.Assembly == type.Assembly))
+            {
+                InterfaceMapping mapping = type.GetInterfaceMap(contract);
+
+                for (int i = 0; i < mapping.InterfaceMethods.Length; i++)
+                {
+                    Add(mapping.InterfaceMethods[i], mapping.TargetMethods[i]);
+                }
+            }
+        }
+
+        return dispatch;
+
+        void Add(MethodInfo slot, MethodInfo implementation)
+        {
+            var key = (slot.Module, slot.MetadataToken);
+
+            if (!dispatch.TryGetValue(key, out var targets))
+            {
+                dispatch.Add(key, targets = []);
+            }
+
+            targets.Add(implementation);
+        }
+    }
 
     /// <summary>
     /// Any call into <c>WorkspacePathPolicy</c>, <c>PhysicalFileSystemWriter</c> or the

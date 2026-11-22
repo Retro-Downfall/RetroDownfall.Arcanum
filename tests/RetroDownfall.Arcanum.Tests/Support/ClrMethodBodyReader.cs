@@ -17,8 +17,10 @@ internal static class ClrMethodBodyReader
     /// operand bytes as tokens and produce false accusations. Bails out of the whole method on the
     /// first unknown opcode rather than guessing at an operand length.
     /// </summary>
-    internal static IEnumerable<MethodBase> CalledMethods(
-        MethodBase method)
+    internal static IEnumerable<MethodBase> CalledMethods(MethodBase method) =>
+        MethodReferences(method).Select(static reference => reference.Method);
+
+    internal static IEnumerable<(OpCode Opcode, MethodBase Method)> MethodReferences(MethodBase method)
     {
         Module module = method.Module;
 
@@ -54,7 +56,7 @@ internal static class ClrMethodBodyReader
 
             if (called is not null)
             {
-                yield return called;
+                yield return (opCode, called);
             }
         }
     }
