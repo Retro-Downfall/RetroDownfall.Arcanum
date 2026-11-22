@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -407,8 +408,81 @@ public sealed partial class ToolInvocationRecoveryTests(GrimoireFixture database
         Assert.Equal(ToolInvocationState.Dispatched, (await turn.Store.ReadAsync(session, key.Receipt.Id, default)).Value!.State);
     });
 
+    [SkippableFact]
+    public async Task A_live_coding_turn_can_dispatch_after_a_long_model_call_and_cannot_dispatch_after_release()
+    {
+        ManualWallClockTimeProvider clock = new();
+
+        await WithActiveTurnAsync(async turn =>
+        {
+            clock.Advance(TimeSpan.FromHours(2));
+
+            Guid session = turn.Owner.Claim.SessionId;
+
+            Guid assistant = turn.Owner.FutureAssistantEntryId;
+
+            ToolInvocationKey key = ToolInvocationKey.Capture(session, assistant,
+                new(assistant.ToString("D"), "slow-model", 1, 0, "fixture"), "{}");
+
+            var prepared = await turn.Store.PrepareAsync(key, turn.Owner, default);
+
+            Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+            clock.Advance(TimeSpan.FromHours(1));
+
+            var admitted = await turn.Store.AdmitAsync(key, turn.Owner, default);
+
+            Assert.True(admitted.IsSuccess, admitted.Error.Message);
+
+            Assert.True(admitted.Value.MayDispatch);
+
+            var duplicate = await turn.Store.AdmitAsync(key, turn.Owner, default);
+
+            Assert.True(duplicate.IsSuccess, duplicate.Error.Message);
+
+            Assert.False(duplicate.Value.MayDispatch);
+
+            turn.Writer.Dispose();
+
+            ToolInvocationKey next = ToolInvocationKey.Capture(session, assistant,
+                new(assistant.ToString("D"), "released", 2, 0, "fixture"), "{}");
+
+            var released = await turn.Store.PrepareAsync(next, turn.Owner, default);
+
+            Assert.Equal(ErrorCodes.Hub.SessionTurnRestoredInterrupted, released.Error.Code);
+        }, toolTime: clock);
+    }
+
+    [SkippableFact]
+    public Task A_copied_or_released_begun_owner_cannot_use_its_remaining_lease_time() => WithActiveTurnAsync(async turn =>
+    {
+        Guid session = turn.Owner.Claim.SessionId;
+
+        Guid assistant = turn.Owner.FutureAssistantEntryId;
+
+        ToolInvocationKey key = ToolInvocationKey.Capture(session, assistant,
+            new(assistant.ToString("D"), "live-owner", 1, 0, "fixture"), "{}");
+
+        var copied = await turn.Store.PrepareAsync(key, turn.Owner with { }, default);
+
+        Assert.Equal(ErrorCodes.Hub.SessionTurnRestoredInterrupted, copied.Error.Code);
+
+        var prepared = await turn.Store.PrepareAsync(key, turn.Owner, default);
+
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        turn.Writer.Dispose();
+
+        var released = await turn.Store.AdmitAsync(key, turn.Owner, default);
+
+        Assert.Equal(ErrorCodes.Hub.SessionTurnRestoredInterrupted, released.Error.Code);
+
+        Assert.Equal(ToolInvocationState.Prepared, (await turn.Store.ReadAsync(session, key.Receipt.Id, default)).Value!.State);
+    });
+
     private async Task WithActiveTurnAsync(Func<RecoveryTurn, Task> test,
-        Func<Guid, ISessionAttachmentStore>? attachmentFactory = null, IReadOnlySet<Guid>? visibleAttachmentIds = null)
+        Func<Guid, ISessionAttachmentStore>? attachmentFactory = null, IReadOnlySet<Guid>? visibleAttachmentIds = null,
+        TimeProvider? toolTime = null)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -456,7 +530,9 @@ public sealed partial class ToolInvocationRecoveryTests(GrimoireFixture database
 
             var owner = Assert.IsType<SessionTurnClaimLease>(begun.Value.ClaimLease);
 
-            SqliteToolInvocationStore store = new(FixtureOrdinaryConnectionFactory.For(db), TimeProvider.System);
+            FixtureOrdinaryConnectionFactory connections = FixtureOrdinaryConnectionFactory.For(db);
+
+            SqliteToolInvocationStore store = new(connections, toolTime ?? TimeProvider.System);
 
             ToolExecutionPipeline.TurnContext active = new() { PersistedSessionId = session, AssistantEntryId = assistant,
                 InvocationId = assistant.ToString("D"), ClaimLease = owner, ModelUsed = "fixture-model", WorkspaceRoot = workspace.Root,
@@ -469,7 +545,7 @@ public sealed partial class ToolInvocationRecoveryTests(GrimoireFixture database
             ToolExecutionPipeline NewPipeline() => new(settings, new RecordOnlyWard(), sanctum.Guard, attachments,
                 NullLogger<ToolExecutionPipeline>.Instance, grimoireTurnWriter: writer, toolInvocationStore: store);
 
-            await test(new(workspace.Root, request, active, NewPipeline, store, owner, repository, attachments, writer, begun.Value,
+            await test(new(workspace.Root, request, active, NewPipeline, store, owner, repository, attachments, writer, begun.Value, connections,
                 () => writer.TryResolveInterruptedOnStreamExitAsync(begun.Value, "The provider stopped.")));
         }
         finally
@@ -493,7 +569,7 @@ public sealed partial class ToolInvocationRecoveryTests(GrimoireFixture database
     private sealed record RecoveryTurn(string Workspace, PingRequest Request, ToolExecutionPipeline.TurnContext Context,
         Func<ToolExecutionPipeline> CreatePipeline, SqliteToolInvocationStore Store, SessionTurnClaimLease Owner,
         GrimoireRepository Transcript, ISessionAttachmentStore Attachments, GrimoireTurnWriter Writer,
-        GrimoireTurnWriter.TurnHandle Handle, Func<Task> InterruptAsync)
+        GrimoireTurnWriter.TurnHandle Handle, FixtureOrdinaryConnectionFactory Connections, Func<Task> InterruptAsync)
     {
         internal Task<ToolExecutionPipeline.ProcessedToolCall> InvokeAsync(FunctionCallContent call, ChatOptions options,
             Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null, int round = 1) =>

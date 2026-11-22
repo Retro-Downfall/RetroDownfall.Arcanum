@@ -27,7 +27,8 @@ internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnection
 
         if (checkpoint.Id == Guid.Empty || owner.Claim.SessionId != checkpoint.SessionId
             || owner.FutureAssistantEntryId != checkpoint.AssistantEntryId || owner.Claim.ClaimId != checkpoint.ClaimId
-            || owner.ExecutorId is not { } executor || owner.OwnerBootId is not { } boot || !owner.IsExecutable)
+            || owner.ExecutorId is not { } executor || owner.OwnerBootId is not { } boot || !owner.IsExecutable
+            || owner.HoldsActiveExecution is false)
             return Conflict;
 
         var opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, ct).ConfigureAwait(false);
@@ -44,6 +45,33 @@ internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnection
 
                 await using SqliteTransaction tx = connection.BeginTransaction(deferred: false);
 
+                await using SqliteCommand authorize = connection.CreateCommand();
+
+                authorize.Transaction = tx;
+
+                authorize.CommandText = """
+                    SELECT 1 FROM session_turn_claims c
+                    JOIN assistant_finalization_capacity_reservations r ON r.ReservationId=c.FinalizationReservationId
+                    WHERE c.ClaimId=$claim AND c.SessionId=$session AND c.AssistantEntryId=$assistant
+                      AND c.StateCode=2 AND c.OwnerBootId=$boot AND c.ExecutorId=$executor
+                      AND c.LeaseDeadlineUtc IS NOT NULL AND COALESCE($activeExecution, c.LeaseDeadlineUtc > $now)
+                      AND c.FinalizationReservationId=$reservation AND r.ClaimId=c.ClaimId AND r.SessionId=c.SessionId
+                      AND r.AssistantEntryId=c.AssistantEntryId AND r.OriginCode=1 AND r.StateCode=2
+                      AND NOT EXISTS(SELECT 1 FROM assistant_entry_finalizations f WHERE f.AssistantEntryId=c.AssistantEntryId)
+                    """;
+
+                Add(authorize, "$claim", Id(checkpoint.ClaimId));
+                Add(authorize, "$session", Id(checkpoint.SessionId));
+                Add(authorize, "$assistant", Id(checkpoint.AssistantEntryId));
+                Add(authorize, "$boot", Id(boot));
+                Add(authorize, "$executor", Id(executor));
+                Add(authorize, "$reservation", Id(owner.Claim.FinalizationReservationId));
+                Add(authorize, "$activeExecution", owner.HoldsActiveExecution);
+                Add(authorize, "$now", UtcInstantText.Format(time.GetUtcNow()));
+
+                if (await authorize.ExecuteScalarAsync(ct).ConfigureAwait(false) is null)
+                    return Result<SessionRecoveryCheckpointRecord>.Failure(Conflict);
+
                 await using SqliteCommand insert = connection.CreateCommand();
 
                 insert.Transaction = tx;
@@ -53,10 +81,7 @@ internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnection
                         ProviderRouteDigest,CampaignId,Workspace,WorkspaceIdentity,QuestionEntryId,InvocationId,LastVerifiedInvocationId,CreatedAtUtcTicks)
                     SELECT $id,$session,$assistant,$claim,$kind,$provider,$model,$route,$campaign,$workspace,$identity,
                         $question,$invocation,$verified,$created
-                    WHERE EXISTS(SELECT 1 FROM session_turn_claims c WHERE c.ClaimId=$claim AND c.SessionId=$session
-                        AND c.AssistantEntryId=$assistant AND c.StateCode=2 AND c.OwnerBootId=$boot AND c.ExecutorId=$executor
-                        AND c.LeaseDeadlineUtc > $now)
-                    AND ($question IS NULL OR EXISTS(SELECT 1 FROM Entries e WHERE e.SessionId=$session AND e.Id=$question AND e.ToolName='ask_human'))
+                    WHERE ($question IS NULL OR EXISTS(SELECT 1 FROM Entries e WHERE e.SessionId=$session AND e.Id=$question AND e.ToolName='ask_human'))
                     ON CONFLICT(ClaimId) DO NOTHING
                     """;
 
@@ -75,15 +100,13 @@ internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnection
                 Add(insert, "$invocation", Id(checkpoint.InvocationId));
                 Add(insert, "$verified", Id(checkpoint.LastVerifiedInvocationId));
                 Add(insert, "$created", time.GetUtcNow().UtcTicks);
-                Add(insert, "$boot", Id(boot));
-                Add(insert, "$executor", Id(executor));
-                Add(insert, "$now", UtcInstantText.Format(time.GetUtcNow()));
 
                 _ = await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
                 var saved = await FindWithinAsync(connection, tx, checkpoint.SessionId, checkpoint.Id, ct).ConfigureAwait(false);
 
-                if (saved != checkpoint) return Result<SessionRecoveryCheckpointRecord>.Failure(Conflict);
+                if (saved != checkpoint || owner.HoldsActiveExecution is false)
+                    return Result<SessionRecoveryCheckpointRecord>.Failure(Conflict);
 
                 await tx.CommitAsync(ct).ConfigureAwait(false);
 

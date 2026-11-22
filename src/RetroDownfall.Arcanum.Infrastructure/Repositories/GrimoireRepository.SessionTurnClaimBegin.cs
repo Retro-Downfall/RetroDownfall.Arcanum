@@ -234,7 +234,9 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimBeginStore
                 AND claim.RequestDigest = $request AND claim.DependencyDigest = $dependency
                 AND claim.PreRequestHistoryRevision = $history AND claim.PreRequestHistoryWatermarkUtc IS $watermark
                 AND claim.InputSensitivityRevision = $inputSensitivity AND claim.FinalizationReservationId = $reservation
-                AND claim.OwnerBootId = $boot AND claim.ExecutorId = $executor AND claim.LeaseDeadlineUtc > $now
+                AND claim.OwnerBootId = $boot AND claim.ExecutorId = $executor AND claim.LeaseDeadlineUtc IS NOT NULL
+                AND COALESCE($activeExecution, claim.LeaseDeadlineUtc > $now)
+                AND ($state <> 2 OR NOT EXISTS(SELECT 1 FROM assistant_entry_finalizations f WHERE f.AssistantEntryId = $assistant))
                 AND reservation.SessionId = claim.SessionId AND reservation.ClaimId = claim.ClaimId
                 AND reservation.OriginCode = 1 AND reservation.StateCode = $state AND reservation.AssistantEntryId = $assistant;
             """, cancellationToken).ConfigureAwait(false);
@@ -270,6 +272,8 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimBeginStore
         _ = command.Parameters.AddWithValue("$executor", ClaimGuid(lease.ExecutorId!.Value));
 
         _ = command.Parameters.AddWithValue("$assistant", ClaimGuid(lease.FutureAssistantEntryId));
+
+        _ = command.Parameters.AddWithValue("$activeExecution", begun && lease.HoldsActiveExecution is { } active ? active : DBNull.Value);
 
         _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(DateTimeOffset.UtcNow));
 

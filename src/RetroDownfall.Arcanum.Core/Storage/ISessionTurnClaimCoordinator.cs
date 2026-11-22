@@ -260,6 +260,29 @@ public sealed record SessionTurnClaimLease(
 
     public Guid? RecoveryCheckpointId { get; init; }
 
+    private ActiveExecution? Execution { get; init; }
+
+    /// <summary>The exact begun writer can prove liveness until it releases its per-Session gate.</summary>
+    internal bool? HoldsActiveExecution => Execution?.Holds(this);
+
+    internal sealed class ActiveExecution : IDisposable
+    {
+        private IDisposable? _sessionGate;
+
+        internal ActiveExecution(SessionTurnClaimLease owner, IDisposable sessionGate)
+        {
+            _sessionGate = sessionGate;
+
+            Lease = owner with { Execution = this };
+        }
+
+        internal SessionTurnClaimLease Lease { get; }
+
+        internal bool Holds(SessionTurnClaimLease owner) =>
+            ReferenceEquals(Lease, owner) && Volatile.Read(ref _sessionGate) is not null;
+
+        public void Dispose() => Interlocked.Exchange(ref _sessionGate, null)?.Dispose();
+    }
 }
 
 /// <summary>

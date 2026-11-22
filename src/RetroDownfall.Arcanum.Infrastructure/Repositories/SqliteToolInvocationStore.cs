@@ -513,7 +513,7 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
             && owner.Claim.SessionId == key.SessionId && owner.FutureAssistantEntryId == key.AssistantEntryId
             && row.GetString(0) == Id(owner.Claim.ClaimId) && row.GetInt32(1) == (int)SessionTurnClaimState.Begun
             && !row.IsDBNull(2) && row.GetString(2) == Id(executor) && !row.IsDBNull(3) && row.GetString(3) == Id(boot)
-            && !row.IsDBNull(4) && UtcInstantText.Parse(row.GetString(4)) >= now;
+            && !row.IsDBNull(4) && (owner.HoldsActiveExecution ?? (UtcInstantText.Parse(row.GetString(4)) >= now));
     }
 
     private static async Task<Result<Slot?>> ReadSlotAsync(SqliteConnection connection, SqliteTransaction tx, ToolInvocationKey key, CancellationToken ct)

@@ -18,7 +18,8 @@ public sealed partial class GrimoireRepository
 
         var claim = request.ClaimLease;
 
-        if (claim.ExecutorId is null || claim.OwnerBootId is null) return ProtectedToolRefused();
+        if (!claim.IsExecutable || claim.ExecutorId is null || claim.OwnerBootId is null || claim.HoldsActiveExecution is false)
+            return ProtectedToolRefused();
 
         Guid sessionId = claim.Claim.SessionId;
 
@@ -68,7 +69,8 @@ public sealed partial class GrimoireRepository
                 UPDATE session_turn_claims
                 SET ExpectedCurrentSensitivityRevision = COALESCE((SELECT Revision FROM session_sensitivity_state WHERE SessionId = $session), 0)
                 WHERE ClaimId = $claim AND SessionId = $session AND StateCode = 2
-                  AND ExecutorId = $executor AND OwnerBootId = $boot AND LeaseDeadlineUtc > $now
+                  AND ExecutorId = $executor AND OwnerBootId = $boot AND LeaseDeadlineUtc IS NOT NULL
+                  AND COALESCE($activeExecution, LeaseDeadlineUtc > $now)
                   AND AssistantEntryId = $assistant AND ExpectedCurrentSensitivityRevision = $expected;
                 """;
 
@@ -77,6 +79,7 @@ public sealed partial class GrimoireRepository
             advance.Parameters.AddWithValue("$executor", ClaimGuid(claim.ExecutorId.Value));
             advance.Parameters.AddWithValue("$boot", ClaimGuid(claim.OwnerBootId.Value));
             advance.Parameters.AddWithValue("$assistant", ClaimGuid(claim.FutureAssistantEntryId));
+            advance.Parameters.AddWithValue("$activeExecution", claim.HoldsActiveExecution is { } active ? active : DBNull.Value);
             advance.Parameters.AddWithValue("$now", UtcInstantText.Format(DateTimeOffset.UtcNow));
             advance.Parameters.AddWithValue("$expected", expected.Value);
 
@@ -89,6 +92,8 @@ public sealed partial class GrimoireRepository
             {
                 return ProtectedToolRefused();
             }
+
+            if (claim.HoldsActiveExecution is false) return ProtectedToolRefused();
 
             await attached.CommitAsync(cancellationToken).ConfigureAwait(false);
 

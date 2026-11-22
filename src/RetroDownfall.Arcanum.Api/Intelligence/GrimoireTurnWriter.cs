@@ -68,8 +68,19 @@ public sealed class GrimoireTurnWriter(
 
         internal ImmutableArray<SagaUseCoordinate> SagaUses { get; set; } = [];
 
-        internal void AttachSessionTurnLease(IDisposable lease) =>
+        internal void AttachSessionTurnLease(IDisposable lease)
+        {
+            if (ClaimLease is { } claim)
+            {
+                SessionTurnClaimLease.ActiveExecution execution = new(claim, lease);
+
+                ClaimLease = execution.Lease;
+
+                lease = execution;
+            }
+
             _sessionTurnLease = lease;
+        }
 
         internal void ReleaseSessionTurnLease() =>
             Interlocked.Exchange(ref _sessionTurnLease, null)?.Dispose();
