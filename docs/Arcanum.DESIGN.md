@@ -4690,6 +4690,8 @@ The producer inventory records the joined authorization transaction in the works
 
 Scoped verification checks which selected callers reach the Guild authorization transaction and compares the caller and transaction capsules with the reviewed inventory. Offline startup recovery and its joined transaction each have a separate traversal limit. A selection with no such call has no joined authorization entry.
 
+The serving-host database ownership check has its own measured traversal ceiling. It compares the immutable declared target of the admitted SQLite connection with the started host's configured database and verifies the exact retained installation lock. The check contributes no physical effect capsule.
+
 A nested expression-bodied getter that reads a bound instance field or throws a framework `ObjectDisposedException` with a compile-time string is terminal for effect discovery. Receiver binding, value-flow resolution and caller-owned cleanup still use its original source. Unclassified accessors, custom conversions or exceptions, and throw arguments that execute code retain ordinary traversal.
 
 Expression dependency queries exclude operands only when the current semantic model identifies a compiler `INameOfOperation`. Runtime siblings, surrounding call arguments, member accesses and ordinary same-spelling `@nameof` methods retain their existing source-dependency analysis; unknown or invalid operations keep the existing traversal. This naming distinction grants no general constant purity or change to effect/site traversal, binding identities, caches or proof budgets.
