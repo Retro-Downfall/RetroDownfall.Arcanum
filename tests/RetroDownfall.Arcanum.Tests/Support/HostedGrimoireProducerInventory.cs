@@ -2835,6 +2835,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             internal bool CollectionIndexerProof { get; init; }
 
+            internal bool ClosedNamedHttpClient { get; init; }
+
             /// <summary>
             /// Demands the final-provider certificate for a container-built DbContext rather than
             /// the registration-only provenance cleanup tracking uses. Never shares the stable cache.
@@ -38525,6 +38527,11 @@ internal static partial class HostedGrimoireProducerInventory
                 return finallyJoin;
             }
 
+            if (ExactLoopRetainedTaskCompletion(member, expression) is { } retainedTaskJoin)
+            {
+                return retainedTaskJoin;
+            }
+
             if (CancelledTimerRaceCompletionPoint(member, call) is { } timerJoin)
             {
                 return timerJoin;
@@ -47221,7 +47228,8 @@ internal static partial class HostedGrimoireProducerInventory
                             parameter,
                             rejectElementWrites: false))
                     || storage is ILocalSymbol collectionLocal
-                        && HasCollectionValueReplacement(member, collectionLocal, rejectElementWrites: false))
+                        && HasCollectionValueReplacement(member, collectionLocal, rejectElementWrites: false,
+                            allowHttpClientBufferAssignment: context.ClosedNamedHttpClient))
                 {
                     return new([], false, true);
                 }
@@ -48016,7 +48024,8 @@ internal static partial class HostedGrimoireProducerInventory
             AuthoredMember member,
             ISymbol symbol,
             bool rejectSimpleAssignment = true,
-            bool rejectElementWrites = true)
+            bool rejectElementWrites = true,
+            bool allowHttpClientBufferAssignment = false)
         {
             bool RefersTo(SyntaxNode node) => node.DescendantNodesAndSelf()
                 .OfType<ExpressionSyntax>()
@@ -48027,6 +48036,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 AssignmentExpressionSyntax assignment
                     when rejectElementWrites || assignment.Left is not ElementAccessExpressionSyntax => RefersTo(assignment.Left)
+                    && (!allowHttpClientBufferAssignment || !IsExactNamedHttpClientBufferAssignment(member, assignment, symbol))
                     && (rejectSimpleAssignment
                         || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
                         || assignment.Left is TupleExpressionSyntax),

@@ -15,18 +15,23 @@ internal static partial class HostedGrimoireProducerInventory
         {
             external = null;
 
-            if (name != "Dispose") return false;
+            string type = TypeKey(staticType);
 
-            bool closed = IsExactFrameworkType(staticType, "System.Net.Http.HttpMessageHandler", typeof(HttpMessageHandler).Assembly.GetName())
-                ? HasClosedSocketsHandlerOrigin(member, resource, new CleanupProvenanceContext { CollectionIndexerProof = true })
-                : IsExactFrameworkType(staticType, "System.Net.Http.HttpClient", typeof(HttpClient).Assembly.GetName())
-                    ? HasClosedNonOwningClientOrigin(member, resource, new CleanupProvenanceContext { CollectionIndexerProof = true })
-                    : IsExactFrameworkType(staticType, "System.Net.Http.HttpRequestMessage", typeof(HttpRequestMessage).Assembly.GetName())
-                        && HasClosedSpendRequestOwner(member, resource);
+            if (name != "Dispose" || !IsExactFrameworkType(staticType, type, typeof(HttpClient).Assembly.GetName())) return false;
+
+            bool closed = type switch
+            {
+                "System.Net.Http.HttpMessageHandler" => HasClosedSocketsHandlerOrigin(member, resource, new CleanupProvenanceContext { CollectionIndexerProof = true }),
+                "System.Net.Http.HttpClient" => HasClosedNonOwningClientOrigin(member, resource, new CleanupProvenanceContext { CollectionIndexerProof = true })
+                    || HasClosedNamedHttpClientOrigin(member, resource),
+                "System.Net.Http.ByteArrayContent" => HasClosedByteArrayContentOrigin(member, resource),
+                "System.Net.Http.HttpRequestMessage" => HasClosedSpendRequestOwner(member, resource),
+                _ => false,
+            };
 
             if (!closed) return false;
 
-            external = new(TypeKey(staticType) + ".Dispose", HostedProducerSiteKind.ProviderCall);
+            external = new(type + ".Dispose", HostedProducerSiteKind.ProviderCall);
 
             return true;
         }
@@ -47,13 +52,18 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (cleanup is not { Name: "Dispose", IsStatic: false, Arity: 0, Parameters.Length: 0, ReturnsVoid: true }) return false;
 
-            string? slot = IsExactFrameworkType(exactType, "System.Net.Http.HttpRequestMessage", typeof(HttpRequestMessage).Assembly.GetName())
-                ? "System.Net.Http.HttpRequestMessage"
-                : IsExactFrameworkType(exactType, "System.Net.Http.HttpClient", typeof(HttpClient).Assembly.GetName())
-                    ? "System.Net.Http.HttpMessageInvoker"
-                    : IsExactFrameworkType(exactType, "System.Net.Http.SocketsHttpHandler", typeof(SocketsHttpHandler).Assembly.GetName())
-                        ? "System.Net.Http.HttpMessageHandler"
-                        : null;
+            string type = TypeKey(exactType);
+
+            if (!IsExactFrameworkType(exactType, type, typeof(HttpClient).Assembly.GetName())) return false;
+
+            string? slot = type switch
+            {
+                "System.Net.Http.HttpRequestMessage" => "System.Net.Http.HttpRequestMessage",
+                "System.Net.Http.HttpClient" => "System.Net.Http.HttpMessageInvoker",
+                "System.Net.Http.SocketsHttpHandler" => "System.Net.Http.HttpMessageHandler",
+                "System.Net.Http.ByteArrayContent" => "System.Net.Http.HttpContent",
+                _ => null,
+            };
 
             return slot is not null
                 && IsExactFrameworkType(cleanup.ContainingType, slot, typeof(HttpClient).Assembly.GetName())
@@ -129,6 +139,41 @@ internal static partial class HostedGrimoireProducerInventory
                 && HasClosedHttpConstructionUses(value.Caller, creation, handler: false)
                 && IsExactNonOwningHttpClientCreation(value.Caller, creation, out ExpressionSyntax? handler)
                 && handler is not null && HasClosedSocketsHandlerOrigin(value.Caller, handler, proof));
+        }
+
+        private bool HasClosedNamedHttpClientOrigin(AuthoredMember member, ExpressionSyntax expression)
+        {
+            CleanupValueFlow flow = CleanupValueFlowOf(member, expression, new CleanupProvenanceContext
+            {
+                CollectionIndexerProof = true,
+                ClosedNamedHttpClient = true,
+            });
+
+            // The exact default factory constructs the HttpClient and retains the handler.
+            // This proves its disposal target, while disposal still requires an Effect group.
+            return flow.Complete && flow.Values.Count != 0 && flow.Values.All(value =>
+                value.Expression is InvocationExpressionSyntax factory
+                && value.Caller.Model.GetSymbolInfo(factory).Symbol is IMethodSymbol method
+                && IsReviewedNamedHttpFactoryCreation(method, factory, value.Caller));
+        }
+
+        private static bool IsExactNamedHttpClientBufferAssignment(AuthoredMember member, AssignmentExpressionSyntax assignment, ISymbol storage) =>
+            assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            && member.Model.GetOperation(assignment.Left) is IPropertyReferenceOperation
+            {
+                Instance: ILocalReferenceOperation { Local: { } receiver },
+                Property: { Name: "MaxResponseContentBufferSize" } property,
+            }
+            && SymbolEqualityComparer.Default.Equals(storage, receiver)
+            && IsReviewedA2AHttpStorageProperty(property, mutation: true);
+
+        private bool HasClosedByteArrayContentOrigin(AuthoredMember member, ExpressionSyntax expression)
+        {
+            CleanupValueFlow flow = CleanupValueFlowOf(member, expression, new CleanupProvenanceContext { CollectionIndexerProof = true });
+
+            return flow.Complete && flow.Values.Count != 0 && flow.Values.All(value =>
+                value.Caller.Model.GetOperation(value.Expression) is IObjectCreationOperation { Constructor: { } constructor }
+                && IsExactByteArrayContentConstruction(constructor));
         }
 
         private static bool IsExactNonOwningHttpClientCreation(AuthoredMember member, BaseObjectCreationExpressionSyntax creation,

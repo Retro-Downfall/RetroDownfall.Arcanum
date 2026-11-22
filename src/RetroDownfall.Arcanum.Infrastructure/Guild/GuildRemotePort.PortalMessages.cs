@@ -89,7 +89,7 @@ internal sealed partial class GuildRemotePort
         try
         {
             var reconciled = await client.WithGuildPortalPeerAsync<GuildPortalMessageDeliveryReceipt>(observation.Target.DiscoveryEndpoint,
-                observation.Target.Transport, new TerminalPortalDiscovery(this, owner, questId, observation.Work), receiptOnly: true,
+                observation.Target.Transport, new TerminalPortalDiscovery(this, gate, owner, questId, observation.Work), receiptOnly: true,
                 (peer, token) => _quests.ObserveTerminalRemotePortalMessageAsync(owner, questId, observation.Work, peer.ReadReceiptAsync, token), ct)
                 .ConfigureAwait(false);
 
@@ -101,24 +101,24 @@ internal sealed partial class GuildRemotePort
         }
     }
 
-    private sealed class TerminalPortalDiscovery(GuildRemotePort port, GuildCallerContext owner, Guid questId,
+    private sealed class TerminalPortalDiscovery(GuildRemotePort port, IGrimoireConnectionAdmissionGate admission, GuildCallerContext owner, Guid questId,
         GuildRemotePortalWork expected) : IA2AGuildDiscoveryAdmission
     {
         public async Task<T> AdmitAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken ct)
         {
-            if (!port.TryAcquirePortalWork(out IGrimoireWorkLease? lease) || lease is null)
+            if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? lease) || lease is null)
             {
                 throw new TerminalDiscoveryRefusedException(Unavailable);
             }
 
             await using IGrimoireWorkLease work = lease;
 
-            if (!work.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effect))
+            if (!work.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effect) || effect is null)
             {
                 throw new TerminalDiscoveryRefusedException(Unavailable);
             }
 
-            await using IGrimoireExternalEffectGroup? held = effect;
+            await using IGrimoireExternalEffectGroup held = effect;
 
             using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, work.MaintenanceRevocation);
 
@@ -132,9 +132,6 @@ internal sealed partial class GuildRemotePort
             return await action(lifetime.Token).ConfigureAwait(false);
         }
     }
-
-    private bool TryAcquirePortalWork(out IGrimoireWorkLease? work) =>
-        gate.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out work);
 
     private sealed class TerminalDiscoveryRefusedException(Error error) : Exception("Terminal peer receipt discovery was refused.")
     {

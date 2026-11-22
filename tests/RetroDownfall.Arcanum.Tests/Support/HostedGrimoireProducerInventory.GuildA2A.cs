@@ -48,6 +48,7 @@ internal static partial class HostedGrimoireProducerInventory
             "A2A.AgentSkill.Id", "A2A.AgentSkill.OutputModes",
             "A2A.AgentInterface.Url", "A2A.AgentInterface.ProtocolBinding", "A2A.AgentInterface.ProtocolVersion",
             "A2A.AgentCapabilities.PushNotifications", "A2A.AgentCapabilities.Streaming",
+            "A2A.AgentCapabilities.Extensions", "A2A.AgentExtension.Uri",
             "A2A.AgentTask.Id", "A2A.AgentTask.ContextId", "A2A.AgentTask.Status", "A2A.AgentTask.Artifacts", "A2A.AgentTask.Metadata",
             "A2A.Message.TaskId", "A2A.Message.ContextId", "A2A.Message.Parts", "A2A.Message.Metadata",
             "A2A.TaskStatus.State", "A2A.TaskStatus.Message", "A2A.Artifact.Parts",
@@ -215,6 +216,10 @@ internal static partial class HostedGrimoireProducerInventory
                 && (IsExactFrameworkType(method.ContainingType, "System.Net.Http.HttpClient", typeof(HttpClient).Assembly.GetName())
                     || IsExactFrameworkType(method.ContainingType, "System.Threading.SpinWait", typeof(SpinWait).Assembly.GetName()))) return true;
 
+            if (IsExactByteArrayContentConstruction(method)
+                || method.MethodKind == MethodKind.Constructor && identity == "M:System.Net.Http.Headers.MediaTypeHeaderValue.#ctor(System.String)"
+                    && IsExactFrameworkType(method.ContainingType, "System.Net.Http.Headers.MediaTypeHeaderValue", typeof(System.Net.Http.Headers.MediaTypeHeaderValue).Assembly.GetName())) return true;
+
             return !method.IsStatic && !method.IsAbstract && !method.IsVirtual && method.Arity == 0
                 && (IsExactFrameworkType(method.ContainingType, "System.Net.Http.Headers.HttpHeaders", typeof(System.Net.Http.Headers.HttpHeaders).Assembly.GetName())
                         && identity is "M:System.Net.Http.Headers.HttpHeaders.Remove(System.String)"
@@ -228,10 +233,17 @@ internal static partial class HostedGrimoireProducerInventory
                         && identity == "M:System.Threading.SpinWait.SpinOnce");
         }
 
+        private static bool IsExactByteArrayContentConstruction(IMethodSymbol method) =>
+            method.MethodKind == MethodKind.Constructor && method.GetDocumentationCommentId() == "M:System.Net.Http.ByteArrayContent.#ctor(System.Byte[])"
+            && IsExactFrameworkType(method.ContainingType, "System.Net.Http.ByteArrayContent", typeof(ByteArrayContent).Assembly.GetName());
+
         private static bool IsReviewedA2AHttpStorageProperty(IPropertySymbol property, bool mutation) =>
             property is { IsStatic: false, IsIndexer: false }
             && (mutation ? property.SetMethod : property.GetMethod) is { IsVirtual: false, IsAbstract: false }
             && (!mutation && (IsExactHttpResponseContent(property) || IsExactHttpResponseStatusProperty(property))
+                || mutation && property.Name == "ContentType" && property.ContainingType.IsSealed
+                    && IsExactFrameworkType(property.ContainingType, "System.Net.Http.Headers.HttpContentHeaders", typeof(System.Net.Http.Headers.HttpContentHeaders).Assembly.GetName())
+                    && IsExactFrameworkType(property.Type, "System.Net.Http.Headers.MediaTypeHeaderValue", typeof(System.Net.Http.Headers.MediaTypeHeaderValue).Assembly.GetName())
                 || !mutation && property.Name == "Headers"
                     && IsExactFrameworkType(property.ContainingType, "System.Net.Http.HttpContent", typeof(HttpContent).Assembly.GetName())
                 || property.Name == (mutation ? "MaxResponseContentBufferSize" : "DefaultRequestHeaders")
@@ -423,7 +435,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static bool IsExactHttpResponseFactory(IMethodSymbol method) =>
             !method.IsStatic && !method.IsVirtual && method.Arity == 0
-            && method.Name is "GetAsync" or "SendAsync"
+            && (method.Name is "GetAsync" or "SendAsync" || method.Name == "PostAsync"
+                && HasExactParameterTypes(method, "System.Uri", "System.Net.Http.HttpContent", "System.Threading.CancellationToken"))
             && IsExactFrameworkType(method.ContainingType, "System.Net.Http.HttpClient", typeof(HttpClient).Assembly.GetName())
             && method.ReturnType is INamedTypeSymbol { TypeArguments: [ITypeSymbol response] } task
             && IsExactFrameworkType(task, "System.Threading.Tasks.Task`1", typeof(Task<>).Assembly.GetName())
@@ -444,7 +457,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static bool IsExactHttpValueOrigin(ISymbol? symbol) => symbol switch
         {
-            IMethodSymbol method => IsExactHttpResponseFactory(method) || IsExactHttpContentStreamFactory(method),
+            IMethodSymbol method => IsExactHttpResponseFactory(method) || IsExactHttpContentStreamFactory(method) || IsExactLongRestHttpFactoryMethod(method),
             IPropertySymbol property => IsExactHttpResponseContent(property) || IsExactHttpContentHeaders(property),
             _ => false,
         };
