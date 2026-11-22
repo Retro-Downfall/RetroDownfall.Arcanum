@@ -1,13 +1,18 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
-internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnectionFactory connections, TimeProvider time)
+internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnectionFactory connections, TimeProvider time,
+    CovenantProcessBootIdentity? bootIdentity = null, GrimoireDatabaseHostedService? databaseHost = null,
+    ICovenantAuthoritySnapshotProvider? authority = null)
     : ISessionRecoveryCheckpointStore
 {
     private const string Columns = """
@@ -91,7 +96,38 @@ internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnection
         }
     }
 
-    public async Task<Result<SessionRecoveryCheckpointRecord?>> FindAsync(Guid sessionId, Guid? checkpointId, CancellationToken ct)
+    public Task<Result<SessionRecoveryCheckpointRecord?>> FindAsync(Guid sessionId, Guid? checkpointId, CancellationToken ct) =>
+        ReadAsync<SessionRecoveryCheckpointRecord?>(async (connection, token) =>
+            await FindWithinAsync(connection, null, sessionId, checkpointId, token).ConfigureAwait(false), ct);
+
+    public Task<Result<SessionRecoveryReadSnapshot>> ReadStatusAsync(Guid sessionId, Guid? after, CancellationToken ct) =>
+        ReadAsync<SessionRecoveryReadSnapshot>(async (connection, token) =>
+        {
+            await using SqliteTransaction tx = connection.BeginTransaction(deferred: true);
+
+            SessionRecoveryCheckpointRecord? checkpoint =
+                await FindWithinAsync(connection, tx, sessionId, null, token).ConfigureAwait(false);
+
+            Guid? currentBoot = null;
+
+            Guid? currentInstallation = null;
+
+            if (bootIdentity is { } boot && authority?.Current is { } snapshot
+                && Guid.TryParse(snapshot.InstallationIdentity, out Guid installation) && installation != Guid.Empty
+                && databaseHost?.OwnsStartedDatabase(connection) == true)
+            {
+                currentBoot = boot.BootId;
+
+                currentInstallation = installation;
+            }
+
+            var effects = await SqliteToolInvocationStore.ReadInterruptedEffectsWithinAsync(connection, tx,
+                sessionId, after, currentBoot, currentInstallation, token).ConfigureAwait(false);
+
+            return effects.IsSuccess ? new SessionRecoveryReadSnapshot(checkpoint, effects.Value) : effects.Error;
+        }, ct);
+
+    private async Task<Result<T>> ReadAsync<T>(Func<SqliteConnection, CancellationToken, Task<Result<T>>> read, CancellationToken ct)
     {
         GuildMemoryAccess.DemandOperator();
 
@@ -103,10 +139,9 @@ internal sealed class SessionRecoveryCheckpointStore(IGrimoireOrdinaryConnection
 
         try
         {
-            return Result<SessionRecoveryCheckpointRecord?>.Success(
-                await FindWithinAsync(lease.Connection, null, sessionId, checkpointId, ct).ConfigureAwait(false));
+            return await read(lease.Connection, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is SqliteException or FormatException)
+        catch (Exception ex) when (ex is SqliteException or InvalidDataException or FormatException)
         {
             return Unavailable;
         }

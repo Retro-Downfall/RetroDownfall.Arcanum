@@ -1254,11 +1254,18 @@ public sealed partial class ArcanumApiClient(
         return result.IsSuccess ? Result.Success() : Result.Failure(result.Error);
     }
 
-    public async Task<Result<SessionDetailDto>> GetSessionAsync(Guid id, CancellationToken cancellationToken = default)
+    public Task<Result<SessionDetailDto>> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
+        GetSessionAsync(id, null, cancellationToken);
+
+    public async Task<Result<SessionDetailDto>> GetSessionAsync(Guid id, Guid? interruptedToolEffectAfter, CancellationToken cancellationToken)
     {
+        string path = $"api/sessions/{id:D}";
+
+        if (interruptedToolEffectAfter is { } cursor) path += $"?interruptedToolEffectAfter={cursor:D}";
+
         return await SendRequestAsync(
             HttpMethod.Get,
-            $"api/sessions/{id:D}",
+            path,
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseSessionDetailDto,

@@ -11,6 +11,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFactory connections, TimeProvider time) : IToolInvocationStore
 {
+    private const int InterruptedEffectPageSize = 16;
+
     public Task<Result<ToolInvocationEvidence>> PrepareAsync(ToolInvocationKey key, SessionTurnClaimLease? owner, CancellationToken ct) =>
         WriteAsync<ToolInvocationEvidence>(async (connection, tx, token) =>
         {
@@ -200,6 +202,91 @@ internal sealed class SqliteToolInvocationStore(IGrimoireOrdinaryConnectionFacto
         {
             return Unavailable;
         }
+    }
+
+    internal static async Task<Result<InterruptedToolEffectPage>> ReadInterruptedEffectsWithinAsync(
+        SqliteConnection connection, SqliteTransaction tx, Guid sessionId, Guid? after,
+        Guid? currentBoot, Guid? currentInstallation, CancellationToken ct)
+    {
+        long? afterTicks = null;
+
+        if (after is { } cursor)
+        {
+            await using SqliteCommand lookup = connection.CreateCommand();
+
+            lookup.Transaction = tx;
+
+            lookup.CommandText = "SELECT CreatedAtUtcTicks FROM session_tool_invocations WHERE ReceiptId=$receipt AND SessionId=$session;";
+
+            Add(lookup, "$receipt", Id(cursor));
+
+            Add(lookup, "$session", Id(sessionId));
+
+            if (await lookup.ExecuteScalarAsync(ct).ConfigureAwait(false) is not long ticks)
+                return new Error(ErrorCodes.Validation.InvalidFields, "The interrupted tool cursor does not belong to this Session.");
+
+            afterTicks = ticks;
+        }
+
+        List<(Guid Receipt, bool ProvenOwner)> candidates = [];
+
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+            read.Transaction = tx;
+
+            // Keep the interrupted claim lookup first even on databases without planner statistics.
+            read.CommandText = """
+                SELECT i.ReceiptId,c.StateCode,c.OwnerBootId,c.ExecutorId
+                FROM session_turn_claims c
+                CROSS JOIN session_tool_invocations i ON c.ClaimId=i.ClaimId AND c.SessionId=i.SessionId AND c.AssistantEntryId=i.AssistantEntryId
+                WHERE c.SessionId=$session AND i.StateCode=2 AND c.StateCode IN (2,4,6)
+                  AND (c.StateCode IN (4,6) OR (c.StateCode=2 AND c.OriginInstallationId=$installation AND c.OriginRestoreEpoch=0
+                    AND c.OwnerBootId<>$boot AND c.ExecutorId IS NOT NULL AND c.LeaseDeadlineUtc IS NOT NULL))
+                  AND ($after IS NULL OR (i.CreatedAtUtcTicks,i.ReceiptId)>($afterTicks,$after))
+                ORDER BY i.CreatedAtUtcTicks,i.ReceiptId
+                LIMIT $limit;
+                """;
+
+            Add(read, "$session", Id(sessionId));
+
+            Add(read, "$installation", currentInstallation is { } target ? Id(target) : null);
+
+            Add(read, "$boot", currentBoot is { } owner ? Id(owner) : null);
+
+            Add(read, "$after", after is { } previousPage ? Id(previousPage) : null);
+
+            Add(read, "$afterTicks", afterTicks);
+
+            Add(read, "$limit", InterruptedEffectPageSize + 1);
+
+            await using SqliteDataReader row = await read.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await row.ReadAsync(ct).ConfigureAwait(false))
+            {
+                bool provenOwner = (SessionTurnClaimState)row.GetInt32(1) is SessionTurnClaimState.Discarded or SessionTurnClaimState.RestoredInterrupted
+                    || (Guid.TryParseExact(row.GetString(2), "D", out Guid previous) && previous != Guid.Empty && previous != currentBoot
+                        && Guid.TryParseExact(row.GetString(3), "D", out Guid executor) && executor != Guid.Empty);
+
+                candidates.Add((Guid.ParseExact(row.GetString(0), "D"), provenOwner));
+            }
+        }
+
+        List<ToolInvocationEvidence> outstanding = [];
+
+        foreach ((Guid receipt, bool provenOwner) in candidates.Take(InterruptedEffectPageSize))
+        {
+            if (!provenOwner) continue;
+
+            var evidence = await ReadWithinAsync(connection, tx, sessionId, receipt, ct).ConfigureAwait(false);
+
+            if (evidence.IsFailure) return evidence.Error;
+
+            if (evidence.Value is { State: ToolInvocationState.Dispatched } unresolved) outstanding.Add(unresolved);
+        }
+
+        Guid? next = candidates.Count > InterruptedEffectPageSize ? candidates[InterruptedEffectPageSize - 1].Receipt : null;
+
+        return new InterruptedToolEffectPage([.. outstanding], next);
     }
 
     internal static async Task<Result<ToolInvocationTurnProgress>> ReadTurnProgressWithinAsync(SqliteConnection connection, SqliteTransaction tx,

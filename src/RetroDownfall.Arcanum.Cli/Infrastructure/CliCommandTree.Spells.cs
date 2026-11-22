@@ -421,10 +421,17 @@ internal static partial class CliCommandTree
 
         Argument<string?> showIdentifier = SessionArgument();
 
+        Option<Guid?> showInterruptedToolEffectAfter = new("--interrupted-tool-effect-after")
+        {
+            Description = "Continue interrupted tool effects after the cursor from the previous page.",
+        };
+
         show.Add(showIdentifier);
 
+        show.Add(showInterruptedToolEffectAfter);
+
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Value.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
+            await handler.Value.Show(pr.GetValue(showIdentifier), pr.GetValue(showInterruptedToolEffectAfter), ct).ConfigureAwait(false));
 
         session.Add(show);
 

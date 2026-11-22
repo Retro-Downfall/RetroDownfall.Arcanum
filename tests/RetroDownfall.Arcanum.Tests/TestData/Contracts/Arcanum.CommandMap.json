@@ -2050,7 +2050,17 @@
               "completion": "session"
             }
           ],
-          "options": [],
+          "options": [
+            {
+              "name": "--interrupted-tool-effect-after",
+              "aliases": [],
+              "description": "Continue interrupted tool effects after the cursor from the previous page.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            }
+          ],
           "examples": [
             "arcanum session show 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5"
           ],

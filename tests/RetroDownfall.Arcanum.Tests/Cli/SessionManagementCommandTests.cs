@@ -19,6 +19,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Hosting;
 
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -1034,6 +1036,54 @@ public sealed class SessionManagementCommandTests
         Assert.DoesNotContain('\u001b', result.Output);
         Assert.DoesNotContain('\u0007', result.Output);
         Assert.DoesNotContain('\u009b', result.Output);
+    }
+
+    [Fact]
+    public void SessionShow_reads_later_interrupted_tool_effect_pages()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        Guid cursor = Guid.NewGuid();
+
+        Guid invocation = Guid.NewGuid();
+
+        Guid nextCursor = Guid.NewGuid();
+
+        SessionDetailDto detail = new(
+            sessionId, null, "Interrupted tool effects", "active", 2, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, 0,
+            InterruptedToolEffects:
+            [
+                new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool) { InvocationId = invocation },
+            ],
+            NextInterruptedToolEffectAfter: nextCursor);
+
+        RecordingHandler handler = new(request => request.RequestUri!.AbsolutePath.EndsWith("/attachments", StringComparison.Ordinal)
+            ? CreateResponse(
+                ApiResponse<SessionAttachmentDto[]>.FromResult(Result<SessionAttachmentDto[]>.Success([])),
+                ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray)
+            : CreateResponse(
+                ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Success(detail)),
+                ArcanumJsonContext.Default.ApiResponseSessionDetailDto));
+
+        CliTestResult result = RunCommand(handler,
+            ["session", "show", sessionId.ToString("D"), "--interrupted-tool-effect-after", cursor.ToString("D"), "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests,
+            candidate => candidate.RequestUri!.AbsolutePath.EndsWith(sessionId.ToString("D"), StringComparison.Ordinal));
+
+        Assert.Equal($"?interruptedToolEffectAfter={cursor:D}", request.RequestUri!.Query);
+
+        using JsonDocument json = JsonDocument.Parse(result.Output);
+
+        JsonElement effect = Assert.Single(json.RootElement.GetProperty("interruptedToolEffects").EnumerateArray());
+
+        Assert.Equal(invocation, effect.GetProperty("invocationId").GetGuid());
+
+        Assert.Equal("reconcileTool", effect.GetProperty("nextAction").GetString());
+
+        Assert.Equal(nextCursor, json.RootElement.GetProperty("nextInterruptedToolEffectAfter").GetGuid());
     }
 
     private static CliTestResult RunCommand(

@@ -65,6 +65,8 @@ internal sealed record ToolInvocationCompletion(ToolInvocationKey Key, ToolInvoc
 
 public sealed record ToolInvocationTurnProgress(Guid? OutstandingInvocationId, Guid? LastVerifiedInvocationId);
 
+public sealed record InterruptedToolEffectPage(ToolInvocationEvidence[] Outstanding, Guid? NextAfter);
+
 public interface IToolInvocationStore
 {
     Task<Result<ToolInvocationEvidence>> PrepareAsync(ToolInvocationKey key, SessionTurnClaimLease? owner, CancellationToken cancellationToken);

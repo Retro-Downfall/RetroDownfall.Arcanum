@@ -134,6 +134,7 @@ public sealed class SessionCommands(
 
     public async Task<int> Show(
         string? identifier,
+        Guid? interruptedToolEffectAfter,
         CancellationToken cancellationToken = default)
     {
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
@@ -143,7 +144,7 @@ public sealed class SessionCommands(
             return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
-        Task<Result<SessionDetailDto>> detailTask = apiClient.GetSessionAsync(resolution.Id, cancellationToken);
+        Task<Result<SessionDetailDto>> detailTask = apiClient.GetSessionAsync(resolution.Id, interruptedToolEffectAfter, cancellationToken);
 
         Task<Result<SessionAttachmentDto[]>> attachmentsTask = apiClient.GetSessionAttachmentsAsync(resolution.Id, cancellationToken);
 
@@ -172,7 +173,9 @@ public sealed class SessionCommands(
             session.TotalTokensUsed,
             session.TotalCostUsd,
             session.ForkedFromSessionId,
-            session.RecoveryCheckpoint);
+            session.RecoveryCheckpoint,
+            session.InterruptedToolEffects,
+            session.NextInterruptedToolEffectAfter);
 
         if (CliInvocationContext.Current.Json)
         {
@@ -206,6 +209,15 @@ public sealed class SessionCommands(
         table.AddRow("Forked from:", Markup.Escape(payload.ForkedFromSessionId?.ToString("D") ?? "root"));
 
         table.AddRow("Updated:", Markup.Escape(payload.UpdatedAt.ToString("u", CultureInfo.InvariantCulture)));
+
+        foreach (var effect in payload.InterruptedToolEffects ?? [])
+        {
+            if (effect.InvocationId is { } invocation)
+                table.AddRow("Tool reconciliation:", Markup.Escape(invocation.ToString("D")));
+        }
+
+        if (payload.NextInterruptedToolEffectAfter is { } after)
+            table.AddRow("More tool effects:", Markup.Escape($"--interrupted-tool-effect-after {after:D}"));
 
         AnsiConsole.Write(table);
 

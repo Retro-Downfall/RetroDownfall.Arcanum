@@ -45,10 +45,14 @@ public sealed record SessionRecoveryCheckpointRecord(Guid Id, Guid SessionId, Gu
         new(Id, SessionId, AssistantEntryId, Kind, Scope.Provider, Scope.Model, question, InvocationId, LastVerifiedInvocationId);
 }
 
+public sealed record SessionRecoveryReadSnapshot(SessionRecoveryCheckpointRecord? Checkpoint, InterruptedToolEffectPage InterruptedEffects);
+
 public interface ISessionRecoveryCheckpointStore
 {
     Task<Result<SessionRecoveryCheckpointRecord>> SaveAsync(SessionTurnClaimLease owner,
         SessionRecoveryCheckpointRecord checkpoint, CancellationToken cancellationToken);
 
     Task<Result<SessionRecoveryCheckpointRecord?>> FindAsync(Guid sessionId, Guid? checkpointId, CancellationToken cancellationToken);
+
+    Task<Result<SessionRecoveryReadSnapshot>> ReadStatusAsync(Guid sessionId, Guid? after, CancellationToken cancellationToken);
 }

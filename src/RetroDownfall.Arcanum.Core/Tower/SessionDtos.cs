@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -41,7 +42,11 @@ public sealed record SessionDetailDto(
     Guid? ForkedFromSessionId = null,
     decimal TotalCostUsd = 0,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    SessionRecoveryCheckpoint? RecoveryCheckpoint = null);
+    SessionRecoveryCheckpoint? RecoveryCheckpoint = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    TurnFailureEvidence[]? InterruptedToolEffects = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    Guid? NextInterruptedToolEffectAfter = null);
 
 /// <summary>
 /// Body for <c>POST /api/sessions/{id}/fork</c>. All fields optional: <paramref name="Title"/>

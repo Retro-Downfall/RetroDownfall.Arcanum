@@ -2190,7 +2190,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRecoveryCheckpointStore.cs", "SessionRecoveryCheckpointStore", "FindAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRecoveryCheckpointStore.cs", "SessionRecoveryCheckpointStore", "ReadAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

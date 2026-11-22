@@ -149,7 +149,7 @@ internal static class SessionEndpoints
 
         apiGroup.MapGet(
             "/sessions/{id:guid}",
-            async (Guid id, ISessionRepository repo, HttpContext ctx) =>
+            async (Guid id, Guid? interruptedToolEffectAfter, ISessionRepository repo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -169,18 +169,26 @@ internal static class SessionEndpoints
 
                 SessionDetailDto detail = SessionMapping.ToDetailDto(session, entryCount);
 
-                var checkpoint = await SessionRecoveryRequests.ReadCurrentAsync(id, ctx.RequestServices, ctx.RequestAborted).ConfigureAwait(false);
+                var recovery = await SessionRecoveryRequests.ReadCurrentAsync(id, interruptedToolEffectAfter, ctx.RequestServices, ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
-                if (checkpoint.IsFailure)
+                if (recovery.IsFailure)
                 {
                     return Results.Json(ApiResponse<SessionDetailDto>.FromResult(
-                            Result<SessionDetailDto>.Failure(checkpoint.Error), traceId),
-                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto, statusCode: ArcanumErrorMapper.ResolveStatusCode(checkpoint.Error.Code));
+                            Result<SessionDetailDto>.Failure(recovery.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto, statusCode: ArcanumErrorMapper.ResolveStatusCode(recovery.Error.Code));
                 }
+
+                detail = detail with
+                {
+                    RecoveryCheckpoint = recovery.Value.Checkpoint,
+                    InterruptedToolEffects = recovery.Value.InterruptedToolEffects,
+                    NextInterruptedToolEffectAfter = recovery.Value.NextAfter,
+                };
 
                 return Results.Ok(
                     ApiResponse<SessionDetailDto>.FromResult(
-                        Result<SessionDetailDto>.Success(detail with { RecoveryCheckpoint = checkpoint.Value }),
+                        Result<SessionDetailDto>.Success(detail),
                         traceId));
             })
         .WithName("GetSession");

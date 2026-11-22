@@ -53,19 +53,29 @@ internal static class SessionRecoveryRequests
         });
     }
 
-    internal static async Task<Result<SessionRecoveryCheckpoint?>> ReadCurrentAsync(Guid sessionId, IServiceProvider services, CancellationToken ct)
+    internal sealed record Status(SessionRecoveryCheckpoint? Checkpoint, TurnFailureEvidence[]? InterruptedToolEffects, Guid? NextAfter);
+
+    internal static async Task<Result<Status>> ReadCurrentAsync(Guid sessionId, Guid? after, IServiceProvider services, CancellationToken ct)
     {
         var store = services.GetService<ISessionRecoveryCheckpointStore>();
 
-        if (store is null) return Result<SessionRecoveryCheckpoint?>.Success(null);
+        if (store is null) return new Status(null, null, null);
 
-        var result = await store.FindAsync(sessionId, null, ct).ConfigureAwait(false);
+        var result = await store.ReadStatusAsync(sessionId, after, ct).ConfigureAwait(false);
 
         if (result.IsFailure) return result.Error;
 
-        if (result.Value is not { } checkpoint) return Result<SessionRecoveryCheckpoint?>.Success(null);
+        SessionRecoveryCheckpoint? checkpoint = result.Value.Checkpoint is { } current
+            ? await ProjectAsync(current, services, ct).ConfigureAwait(false) : null;
 
-        return Result<SessionRecoveryCheckpoint?>.Success(await ProjectAsync(checkpoint, services, ct).ConfigureAwait(false));
+        InterruptedToolEffectPage page = result.Value.InterruptedEffects;
+
+        TurnFailureEvidence[]? evidence = page.Outstanding.Length == 0 && page.NextAfter is null ? null
+            : [.. page.Outstanding.Select(static effect => new TurnFailureEvidence(
+                TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool,
+                effect.Call, effect.Round) { InvocationId = effect.ReceiptId })];
+
+        return new Status(checkpoint, evidence, page.NextAfter);
     }
 
     internal static async Task<SessionRecoveryCheckpoint> ProjectAsync(SessionRecoveryCheckpointRecord checkpoint, IServiceProvider services, CancellationToken ct)

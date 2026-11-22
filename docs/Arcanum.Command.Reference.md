@@ -650,6 +650,8 @@ Manages persistent project containers. Campaigns own sessions, prompts, spells, 
 
 The existing live `ask_human` prompt accepts guidance in interactive inference. `arcanum session show --json` exposes a saved Session recovery checkpoint when one is pending. The native API accepts an explicit checkpoint ID with a fresh keyed continuation in the same Session.
 
+After a host interruption, `arcanum session show` lists invocation IDs that still need reconciliation. Its JSON includes typed `interruptedToolEffects` and, when further records exist, `nextInterruptedToolEffectAfter`. Pass that cursor to `arcanum session show <session> --interrupted-tool-effect-after <invocation-id>` to read the next page.
+
 ### `arcanum session`
 
 Manage and continue sessions through the Arcanum API.
@@ -663,7 +665,7 @@ Sessions do not impose a total entry-count or fork-depth ceiling. The code-owned
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum session list` | List recent sessions. Without `--limit` the host's pages are followed until every matching session is listed, in the table and in the `--json` array alike; a cursor that does not advance fails with `Api.PaginationNoProgress` and prints nothing. With `--limit` one page of that size is read, and a stderr notice says when the host holds more. | `--campaign <campaign>` — Filter by campaign GUID.<br>`--status <status>` — Filter by session status.<br>`--search <search>` — Native FTS5 transcript expression plus literal title substring (see examples below).<br>`--model <model>` — Filter by model.<br>`--from <from>` — Include sessions on or after this ISO-8601 timestamp.<br>`--to <to>` — Include sessions on or before this ISO-8601 timestamp.<br>`--limit <limit>` — Maximum sessions per page. |
-| `arcanum session show [<session>]` | Summarize a session, including telemetry and lineage. | None beyond global or inherited family options. |
+| `arcanum session show [<session>]` | Summarize a session, including telemetry and lineage. | `--interrupted-tool-effect-after <invocation-id>` continues the interrupted tool effects from the previous page. |
 | `arcanum session entries [<session>]` | List transcript entries for a session. | `--offset <offset>` — Number of entries to skip.<br>`--limit <limit>` — Maximum entries to return. |
 | `arcanum session fork [<session>]` | Fork a session through the server fork API. | `--title <title>` — Optional fork title.<br>`--up-to-entry <up-to-entry>` — Copy through this entry GUID.<br>`--campaign <campaign>` — Optional destination campaign GUID. |
 | `arcanum session rename [<session>]` | Rename a session. | `--title <title>` — New session title. |
