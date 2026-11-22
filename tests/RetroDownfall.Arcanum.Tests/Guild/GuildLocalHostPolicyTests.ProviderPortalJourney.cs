@@ -28,9 +28,23 @@ public sealed partial class GuildLocalHostPolicyTests
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(80));
+        TimeSpan phaseTimeout = TimeSpan.FromSeconds(80);
+
+        using CancellationTokenSource deadline = new(phaseTimeout);
 
         CancellationToken ct = deadline.Token;
+
+        string phase = "provisioning the two hosts and their Portal bindings";
+
+        // A phase advances only after the previous fixture step finishes or a new provider request arrives.
+        void BeginPhase(string name)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            phase = name;
+
+            deadline.CancelAfter(phaseTimeout);
+        }
 
         await using Fixture sender = await Fixture.CreateAsync(localExecution: true);
 
@@ -154,6 +168,8 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 try
                 {
+                    BeginPhase($"completing peer work for provider round {ordinal}");
+
                     // The scripted provider callback runs inside the sender's physical
                     // handoff. Schedule the independently owned fixture work without
                     // inheriting its active root-ordering marker.
@@ -165,6 +181,8 @@ public sealed partial class GuildLocalHostPolicyTests
                     }
 
                     await scheduled;
+
+                    BeginPhase($"awaiting the turn after provider round {ordinal}");
                 }
                 catch (Exception error)
                 {
@@ -268,6 +286,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db, sender.Settings), settings, providers, coordinator);
 
+                BeginPhase("executing the turn after fixture setup");
+
                 var completed = await runtime.Runtime.ExecuteTurnAsync(parentExecution, input.Value, new("Send the remote informational update.", DisableAllTools: false), ct);
 
                 Assert.True(completed.IsSuccess, $"{model.Bodies.Count} provider calls. {completed.Error.Code} {completed.Error.Message}\n" +
@@ -281,6 +301,8 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 await wizard.DisposeAsync();
             }
+
+            BeginPhase("verifying the persisted Portal effects");
 
             Assert.Equal(1, egress.MessagePosts);
 
@@ -319,6 +341,10 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.True(stillWaiting.IsSuccess, stillWaiting.Error.Message);
 
             Assert.Equal(QuestState.InputRequired, stillWaiting.Value.Quest.State);
+        }
+        catch (OperationCanceledException error) when (deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Portal journey timed out while {phase}.", error);
         }
         finally
         {
