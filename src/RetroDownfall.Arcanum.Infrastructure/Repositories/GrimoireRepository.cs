@@ -31,9 +31,10 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         return read();
     }
 
-    private async Task<List<Entry>> LoadRecentEntriesAsync(Guid sessionId, int limit, CancellationToken cancellationToken)
+    private async Task<List<Entry>> LoadRecentEntriesAsync(Guid sessionId, int limit, CancellationToken cancellationToken,
+        bool includeFinalization = false)
     {
-        if (!GuildMemoryAccess.IsGuildInvocation)
+        if (!GuildMemoryAccess.IsGuildInvocation && !includeFinalization)
         {
             return await EntryTemporalQueries.LoadRecentDescendingAsync(_db, sessionId, limit, cancellationToken).ConfigureAwait(false);
         }
@@ -43,8 +44,17 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         string scope = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript,
             GuildMemoryOperation.Read, "guild_entry.SessionId");
 
+        // Each selected answer looks up its own native receipt by primary key, within its admitted Session.
+        string frontier = includeFinalization ? $"""
+            , CASE WHEN guild_entry.Role={(int)MessageRole.Assistant} AND guild_entry.ToolName IS NULL THEN
+                (SELECT f.ThroughEntrySequence FROM assistant_entry_finalizations f
+                 WHERE f.AssistantEntryId=guild_entry.Id AND f.SessionId=guild_entry.SessionId
+                   AND f.OutcomeCode={(int)AssistantFinalizationOutcome.Committed})
+              END AS FinalizedThroughSequence
+            """ : string.Empty;
+
         command.CommandText = $"""
-            SELECT {GrimoireEntitySql.EntryColumns} FROM Entries guild_entry
+            SELECT {GrimoireEntitySql.EntryColumns}{frontier} FROM Entries guild_entry
             WHERE guild_entry.SessionId=$session AND ({scope}) AND {GuildEntryEligible("guild_entry")}
             ORDER BY guild_entry.Sequence DESC LIMIT $limit
             """;
@@ -57,9 +67,16 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
+        int frontierOrdinal = includeFinalization ? reader.GetOrdinal("FinalizedThroughSequence") : -1;
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            entries.Add(GrimoireEntitySql.ReadEntry(reader));
+            Entry entry = GrimoireEntitySql.ReadEntry(reader);
+
+            if (frontierOrdinal >= 0 && !reader.IsDBNull(frontierOrdinal))
+                entry.FinalizedThroughSequence = reader.GetInt64(frontierOrdinal);
+
+            entries.Add(entry);
         }
 
         return entries;
@@ -715,7 +732,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             hasWatermark: watermark is not null,
             afterWatermarkCount: afterWatermarkCount);
 
-        List<Entry> recent = await LoadRecentEntriesAsync(id, take, cancellationToken)
+        List<Entry> recent = await LoadRecentEntriesAsync(id, take, cancellationToken, includeFinalization: true)
             .ConfigureAwait(false);
 
         recent.Reverse();

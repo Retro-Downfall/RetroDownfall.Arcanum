@@ -22,7 +22,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class InferenceContextBuilderTests
+public sealed partial class InferenceContextBuilderTests
 {
     [Fact]
     public void HasStatelessMessages_WhenMessagesPresent_ReturnsTrue()

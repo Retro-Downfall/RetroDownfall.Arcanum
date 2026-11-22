@@ -1369,6 +1369,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
         internal const string OrdinaryToolFinal = "published-ordinary-protected-final";
 
+        internal const string OrdinaryToolFollowUp = "inspect the finished tool turn";
+
         private readonly ConcurrentQueue<ProviderRequest> _requests = new();
 
         internal readonly TaskCompletionSource FirstArm = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1395,7 +1397,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
         public int RuntimeMutationCount => Volatile.Read(ref _runtimeMutationCount);
 
-        public static async Task<FakeOpenAiProvider> StartAsync()
+        public static async Task<FakeOpenAiProvider> StartAsync(bool allowOrdinaryFollowUp = false)
         {
             WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(
                 new WebApplicationOptions
@@ -1504,7 +1506,9 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
                 int? phase = provider._delegationStart is { } start ? count - start : null;
 
-                if (ordinaryPhase is >= 2 || ordinaryPhase is null && (phase is >= 3 || phase is null && count > 7))
+                bool isOrdinaryFollowUp = allowOrdinaryFollowUp && ordinaryPhase == 2 && prompt == OrdinaryToolFollowUp;
+
+                if (ordinaryPhase is >= 2 && !isOrdinaryFollowUp || ordinaryPhase is null && (phase is >= 3 || phase is null && count > 7))
                 {
                     context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
                     return;

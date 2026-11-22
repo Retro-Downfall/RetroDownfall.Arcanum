@@ -376,6 +376,8 @@ public sealed class InferenceContextBuilder(
             ordered.RemoveAt(ordered.Count - 1);
         }
 
+        OrderFinalizedAnswersAfterTools(ordered, session.Id);
+
         List<MeAiChatMessage> messages = new(ordered.Count + 1);
 
         bool Included(Entry entry) => watermarkExclusive is null || entry.IsPinned
@@ -430,6 +432,43 @@ public sealed class InferenceContextBuilder(
         messages.Add(new MeAiChatMessage(ChatRole.User, newUserPrompt));
 
         return messages;
+    }
+
+    private static void OrderFinalizedAnswersAfterTools(List<Entry> entries, Guid sessionId)
+    {
+        for (int answerIndex = 0; answerIndex < entries.Count; answerIndex++)
+        {
+            Entry answer = entries[answerIndex];
+
+            if (answer.FinalizedThroughSequence is not { } through || answer.Sequence <= 0 || through <= answer.Sequence
+                || answer.Role != MessageRole.Assistant || answer.SessionId != sessionId || answer.ToolName is not null)
+                continue;
+
+            // A reserved answer precedes its tool writes on disk. A frontier proves when it finished,
+            // but cannot establish ownership across deleted, filtered, interleaved or unpaired rows.
+            long distance = through - answer.Sequence;
+
+            if (distance >= entries.Count - answerIndex || distance % 2 != 0)
+                continue;
+
+            int lastResultIndex = answerIndex + (int)distance;
+
+            int callIndex = answerIndex + 1;
+
+            while (callIndex < lastResultIndex && entries[callIndex].Sequence == answer.Sequence + (callIndex - answerIndex)
+                && TurnContextGuards.IsPersistedToolExchange(entries[callIndex], entries[callIndex + 1], sessionId))
+                callIndex += 2;
+
+            if (callIndex < lastResultIndex)
+                continue;
+
+            for (int slot = answerIndex; slot < lastResultIndex; slot++)
+                entries[slot] = entries[slot + 1];
+
+            entries[lastResultIndex] = answer;
+
+            answerIndex = lastResultIndex;
+        }
     }
 
     private static (MeAiChatMessage Call, MeAiChatMessage Result)? TryMapRecoveryQuestion(Entry call, Entry result)

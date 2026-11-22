@@ -26,6 +26,9 @@ public sealed class Entry
     /// </summary>
     public long Sequence { get; set; }
 
+    /// <summary>The last physical entry sequence observed by this answer's native finalization transaction.</summary>
+    internal long? FinalizedThroughSequence { get; set; }
+
     public string? ToolCallId { get; set; }
 
     public string? ToolName { get; set; }
