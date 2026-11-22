@@ -223,6 +223,7 @@ internal static partial class HostedGrimoireProducerInventory
                         && identity == "M:System.Net.Http.HttpResponseMessage.EnsureSuccessStatusCode"
                     || IsExactFrameworkType(method.ContainingType, "System.Text.Json.JsonElement", typeof(System.Text.Json.JsonElement).Assembly.GetName())
                         && identity is "M:System.Text.Json.JsonElement.TryGetInt64(System.Int64@)" or "M:System.Text.Json.JsonElement.TryGetDecimal(System.Decimal@)"
+                            or "M:System.Text.Json.JsonElement.TryGetGuid(System.Guid@)"
                     || IsExactFrameworkType(method.ContainingType, "System.Threading.SpinWait", typeof(SpinWait).Assembly.GetName())
                         && identity == "M:System.Threading.SpinWait.SpinOnce");
         }

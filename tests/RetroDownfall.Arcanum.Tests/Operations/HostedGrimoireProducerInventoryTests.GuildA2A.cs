@@ -498,7 +498,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerDiscovery<HostedProducerSite> result = DiscoverGuildA2A(
             "var client = new System.Net.Http.HttpClient(); client.MaxResponseContentBufferSize = 4096; "
             + "client.DefaultRequestHeaders.Remove(\"X-Fixture\"); client.DefaultRequestHeaders.TryAddWithoutValidation(\"X-Fixture\", \"value\"); "
-            + "var element = default(System.Text.Json.JsonElement); element.TryGetInt64(out _); element.TryGetDecimal(out _); "
+            + "var element = default(System.Text.Json.JsonElement); element.TryGetInt64(out _); element.TryGetDecimal(out _); element.TryGetGuid(out _); "
             + "var spin = new System.Threading.SpinWait(); spin.SpinOnce(); await Task.CompletedTask;");
 
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"

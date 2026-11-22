@@ -329,10 +329,6 @@ internal sealed partial class GuildPortalStore
               OperationId=NULL,AcknowledgedAtUtc=$now WHERE Id=$inbox AND Revision=$revision AND DeliveryStateCode=1
             """;
 
-        command.Parameters.RemoveAt("$now");
-
-        Add(command, "$now", UtcInstantText.Format(now));
-
         if (await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) return ClaimConflict;
 
         Result<GuildEnvelope> stored = await ReadEnvelopeWithinAsync(connection, transaction, envelope, ct).ConfigureAwait(false);

@@ -44,6 +44,12 @@ public sealed partial class GuildPortalStoreTests
 
         Assert.Equal(1L, await f.CountAsync("guild_portal_inputs"));
 
+        Assert.Equal(1L, await PortalScalarAsync(f, """
+            SELECT count(*) FROM guild_portal_receipts r
+            JOIN guild_inbox i ON i.Id=r.InboxId AND i.AcknowledgedAtUtc=r.CreatedAtUtc
+            JOIN guild_portal_inputs input ON input.InboxId=i.Id AND input.CreatedAtUtc=r.CreatedAtUtc
+            """));
+
         Assert.Equal(second.MessageId, (await f.Portal.ClaimAsync(driver, default)).Value.EnvelopeId);
     }
 
