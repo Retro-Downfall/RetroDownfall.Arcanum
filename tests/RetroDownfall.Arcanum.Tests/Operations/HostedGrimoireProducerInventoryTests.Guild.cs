@@ -47,9 +47,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics);
 
-        (string RootType, string? Operation)[] selectors =
+        const string databaseHost = "GrimoireDatabaseHostedService";
+
+        const string databaseHostOperation = "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.";
+
+        const string ownershipOperation = databaseHostOperation + "OwnsStartedDatabase";
+
+        (string RootType, string Operation)[] transitionRoots =
         [
-            ("GrimoireDatabaseHostedService", null),
             ("RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery",
                 "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync"),
             ("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
@@ -58,17 +63,44 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync"),
         ];
 
-        foreach ((string root, string? operation) in selectors) Assert.NotEmpty(ObserveFullProductionRoot(discovery, root, operation));
+        Assert.NotEmpty(ObserveFullProductionRoot(discovery, databaseHost));
 
-        HostedProducerRootTraversalMetric[] observed = [.. metrics.RootTraversals.Where(root => selectors.Any(selector =>
-            root.RootType == selector.RootType && (selector.Operation is null || root.RootOperation == selector.Operation)))];
+        foreach ((string root, string operation) in transitionRoots) Assert.NotEmpty(ObserveFullProductionRoot(discovery, root, operation));
 
-        Assert.Equal(6, observed.Length);
+        HostedProducerRootTraversalMetric[] observed = [.. metrics.RootTraversals.Where(root => root.RootType == databaseHost
+            || transitionRoots.Contains((root.RootType, root.RootOperation)))];
+
+        HostedProducerRootTraversalMetric ownership = Assert.Single(observed,
+            root => root.RootType == databaseHost && root.RootOperation == ownershipOperation);
+
+        (string RootType, string Operation)[] expectedLegacyRoots =
+        [
+            (databaseHost, databaseHostOperation + "StartAsync"),
+            (databaseHost, databaseHostOperation + "StopAsync"),
+            (databaseHost, databaseHostOperation + "TakeGeneratedMasterApiKey"),
+            .. transitionRoots,
+        ];
+
+        Assert.Equal(
+            expectedLegacyRoots.OrderBy(root => root.Operation, StringComparer.Ordinal),
+            observed.Where(root => root != ownership)
+                .Select(root => (root.RootType, Operation: root.RootOperation))
+                .OrderBy(root => root.Operation, StringComparer.Ordinal));
+
+        Assert.Null(ownership.SelfAdmittedWorkKind);
+
+        Assert.DoesNotContain(discovery.Items,
+            site => site.RootType == databaseHost && site.AuthorityOperationId == ownershipOperation);
 
         foreach (string line in RenderRootTraversalMetrics(observed)) output.WriteLine(line);
 
         HeadroomCeiling[] selected = ProductionRootCeilings.Where(row => observed.Any(root =>
             root.RootType == row.RootType && HeadroomRootName(root.RootOperation) == row.RootOperation)).ToArray();
+
+        HeadroomCeiling ownershipCeiling = Assert.Single(selected,
+            row => row.RootType == databaseHost && row.RootOperation == ownershipOperation);
+
+        Assert.Equal(24, ownershipCeiling.Ceiling);
 
         string[] violations = HeadroomViolations(observed, selected,
             HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot);
