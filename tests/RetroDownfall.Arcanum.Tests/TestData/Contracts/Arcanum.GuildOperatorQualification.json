@@ -225,6 +225,7 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Maintenance_during_observer_open_is_refused_and_releases_work",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Maintenance_interrupts_real_busy_observer_without_waiting_for_provider_timeout",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Missing_installation_evidence_refuses_without_minting_a_parallel_generation",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_parent_transport_uses_the_named_provider_lifetime_and_observes_caller_cancellation",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_reports_persistent_windows_sharing_violation",
@@ -441,6 +442,7 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Maintenance_during_observer_open_is_refused_and_releases_work": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Maintenance_interrupts_real_busy_observer_without_waiting_for_provider_timeout": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Missing_installation_evidence_refuses_without_minting_a_parallel_generation": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_parent_transport_uses_the_named_provider_lifetime_and_observes_caller_cancellation": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_reports_persistent_windows_sharing_violation": 1,
@@ -735,6 +737,10 @@
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Maintenance_interrupts_real_busy_observer_without_waiting_for_provider_timeout": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Maintenance_interrupts_real_busy_observer_without_waiting_for_provider_timeout"
+        ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_parent_transport_uses_the_named_provider_lifetime_and_observes_caller_cancellation": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_parent_transport_uses_the_named_provider_lifetime_and_observes_caller_cancellation(cancel: False)",
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_parent_transport_uses_the_named_provider_lifetime_and_observes_caller_cancellation(cancel: True)"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process"

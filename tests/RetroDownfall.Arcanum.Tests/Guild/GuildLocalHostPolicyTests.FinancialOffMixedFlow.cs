@@ -15,9 +15,11 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
@@ -36,6 +38,74 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildLocalHostPolicyTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Mixed_parent_transport_uses_the_named_provider_lifetime_and_observes_caller_cancellation(bool cancel)
+    {
+        const string providerName = "OpenAiCompatibleProvider";
+
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+
+        ServiceCollection services = new();
+
+        services.AddSingleton(configuration);
+
+        services.AddLogging();
+
+        services.AddArcanumApiServices(configuration);
+
+        using ServiceProvider production = services.BuildServiceProvider();
+
+        using HttpClient productionClient = production.GetRequiredService<IHttpClientFactory>().CreateClient(providerName);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using MixedParentTransport transport = new() { BeforeFirstRound = release.Task, FirstRoundEntered = entered };
+
+        using HttpClient fixtureClient = transport.CreateClient(providerName);
+
+        using CancellationTokenSource caller = new();
+
+        using StringContent request = new("{}");
+
+        TimeSpan watchdog = TimeSpan.FromSeconds(10);
+
+        Task<HttpResponseMessage> pending = fixtureClient.PostAsync("https://example.test/v1/chat/completions", request, caller.Token);
+
+        try
+        {
+            await entered.Task.WaitAsync(watchdog);
+
+            Assert.False(pending.IsCompleted);
+
+            if (cancel)
+            {
+                await caller.CancelAsync();
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(watchdog));
+            }
+            else
+            {
+                release.SetResult();
+
+                using HttpResponseMessage response = await pending.WaitAsync(watchdog);
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, productionClient.Timeout);
+
+        Assert.Equal(productionClient.Timeout, fixtureClient.Timeout);
+    }
+
     [Fact]
     public async Task Financial_off_durable_parent_mixed_cohort_survives_authenticated_peer_restart()
     {
@@ -563,6 +633,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal Task? BeforeFirstRound;
 
+        internal TaskCompletionSource? FirstRoundEntered;
+
         internal TaskCompletionSource<long>? CloseRevision;
 
         internal TaskCompletionSource? FinalProviderRound;
@@ -579,7 +651,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal bool SawBothAnswers;
 
-        public HttpClient CreateClient(string name) => new(this, false);
+        public HttpClient CreateClient(string name) => new(this, false) { Timeout = Timeout.InfiniteTimeSpan };
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -603,7 +675,12 @@ public sealed partial class GuildLocalHostPolicyTests
                 return new(HttpStatusCode.OK) { Content = new StringContent(planner, Encoding.UTF8, "application/json") };
             }
 
-            if (ordinal == 1 && BeforeFirstRound is { } ready) await ready.WaitAsync(ct);
+            if (ordinal == 1 && BeforeFirstRound is { } ready)
+            {
+                FirstRoundEntered?.TrySetResult();
+
+                await ready.WaitAsync(ct);
+            }
 
             if (ordinal == 2)
             {
