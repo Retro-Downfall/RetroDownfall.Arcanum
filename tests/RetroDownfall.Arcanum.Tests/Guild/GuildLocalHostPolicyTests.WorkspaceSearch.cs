@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -15,23 +16,28 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildLocalHostPolicyTests
 {
     [Theory]
-    [InlineData(false, false, false)]
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    [InlineData(false, false, true)]
-    public async Task Workspace_search_reads_current_granted_file_without_transcript_authority_or_foreign_candidates(bool rewrite, bool registrationChange, bool attributeChange)
+    [InlineData("revocation")]
+    [InlineData("rewrite")]
+    [InlineData("replacement")]
+    [InlineData("registration")]
+    [InlineData("ineligible")]
+    public async Task Workspace_search_reads_current_granted_file_without_transcript_authority_or_foreign_candidates(string interruption)
     {
+        const string source = "needle allowed physical source";
+
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
         Guid workspace = await f.AddWorkspaceAsync();
 
         Directory.CreateDirectory(Path.Combine(f.WorkspaceRoot, "allowed"));
 
-        await File.WriteAllTextAsync(Path.Combine(f.WorkspaceRoot, "allowed", "read.txt"), "needle allowed physical source");
+        string path = Path.Combine(f.WorkspaceRoot, "allowed", "read.txt");
+
+        await File.WriteAllTextAsync(path, source);
 
         await File.WriteAllTextAsync(Path.Combine(f.WorkspaceRoot, "private.txt"), "needle PRIVATE-WORKSPACE-CANARY");
 
-        await SeedWorkspaceSearchChunkAsync(f, "allowed-chunk", "allowed/read.txt", "needle allowed physical source", "2026-01-01T00:00:00.0000000Z");
+        await SeedWorkspaceSearchChunkAsync(f, "allowed-chunk", "allowed/read.txt", source, "2026-01-01T00:00:00.0000000Z");
 
         await SeedWorkspaceSearchChunkAsync(f, "denied-chunk", "private.txt", "needle PRIVATE-WORKSPACE-CANARY", "2026-01-02T00:00:00.0000000Z");
 
@@ -61,7 +67,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.Equal("needle allowed physical source", Assert.Single(result.Value.Results).Content);
+        Assert.Equal(source, Assert.Single(result.Value.Results).Content);
 
         Assert.True(Assert.Single(result.Value.Scopes!).Available);
 
@@ -84,25 +90,42 @@ public sealed partial class GuildLocalHostPolicyTests
             "GuildWorkspaceMemorySearchReader.Disclosure:" + run.Execution!.SignetId.ToString("D"),
             async (_, token) => { ready.TrySetResult(); await release.Task.WaitAsync(token); });
 
-        var pending = search.SearchForInvocationAsync(new(registrationChange ? "no matching source" : "needle", MemorySearchScope.Workspace,
+        var pending = search.SearchForInvocationAsync(new(interruption == "registration" ? "no matching source" : "needle", MemorySearchScope.Workspace,
             root.Value.Quest.SessionId, f.WorkspaceRoot, 1), 8192, watchdog.Token);
 
         try
         {
             await ready.Task.WaitAsync(watchdog.Token);
 
-            if (rewrite)
+            if (interruption is "rewrite" or "replacement")
             {
-                await File.WriteAllTextAsync(Path.Combine(f.WorkspaceRoot, "allowed", "read.txt"), "changed physical content", watchdog.Token);
+                if (interruption == "rewrite" && OperatingSystem.IsWindows())
+                {
+                    IOException blocked = await Assert.ThrowsAsync<IOException>(() =>
+                        File.WriteAllTextAsync(path, "changed physical content", watchdog.Token));
+
+                    Assert.True(RetainedExclusiveFileLock.IsVerifiedSharingViolation(blocked), blocked.Message);
+                }
+
+                if (interruption == "replacement" || OperatingSystem.IsWindows())
+                {
+                    // The retained Windows handle allows delete sharing. Even identical bytes at the
+                    // same name cannot substitute for the file whose content was verified.
+                    File.Move(path, path + ".retained");
+
+                    await File.WriteAllTextAsync(path, source, watchdog.Token);
+                }
+                else
+                {
+                    await File.WriteAllTextAsync(path, "changed physical content", watchdog.Token);
+                }
             }
-            else if (registrationChange)
+            else if (interruption == "registration")
             {
                 await f.ExecuteAsync("UPDATE campaign_path_identities SET Revision=Revision+1");
             }
-            else if (attributeChange)
+            else if (interruption == "ineligible")
             {
-                string path = Path.Combine(f.WorkspaceRoot, "allowed", "read.txt");
-
                 if (OperatingSystem.IsWindows()) File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.Hidden);
                 else File.Move(path, path + ".removed");
             }
@@ -126,7 +149,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(denied.IsFailure);
 
-            if (!rewrite && !registrationChange && !attributeChange) Assert.Equal(RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.Guild.AuthorityRevoked, denied.Error.Code);
+            if (interruption == "revocation") Assert.Equal(RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.Guild.AuthorityRevoked, denied.Error.Code);
+
+            if (interruption is "rewrite" or "replacement") Assert.Equal(RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.Guild.Forbidden, denied.Error.Code);
         }
         finally
         {
