@@ -46,10 +46,8 @@ def _write_summary(path, summary):
             temporary.unlink(missing_ok=True)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("report")
-    parser.add_argument("required_class", nargs="+")
+def _add_requirements(parser, class_count):
+    parser.add_argument("required_class", nargs=class_count)
     parser.add_argument(
         "--required-case",
         dest="required_cases",
@@ -58,10 +56,33 @@ def main(argv=None):
         metavar="NAME",
         help="full className.methodName case that must pass in every data row (repeatable)",
     )
+
+
+def _read_requirements():
+    tokens = sys.stdin.buffer.read().decode("utf-8").split("\0")
+    if len(tokens) < 2 or tokens[-1] or not all(tokens[:-1]):
+        raise ValueError("Expected a nonempty, NUL-terminated selector stream.")
+
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    _add_requirements(parser, "+")
+    return parser.parse_args(tokens[:-1])
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("report")
+    _add_requirements(parser, "*")
     parser.add_argument("--summary-json", metavar="PATH", help="atomically publish validated evidence metadata")
-    arguments = parser.parse_args(argv)
+    parser.add_argument("--requirements-stdin", action="store_true", help="read NUL-terminated UTF-8 selector tokens from stdin")
+    arguments = parser.parse_intermixed_args(argv)
+    if arguments.requirements_stdin and (arguments.required_class or arguments.required_cases):
+        parser.error("--requirements-stdin cannot be combined with command-line selectors")
+    if not arguments.requirements_stdin and not arguments.required_class:
+        parser.error("the following arguments are required: required_class")
+
     try:
-        summary = validate_report(arguments.report, arguments.required_class, arguments.required_cases)
+        requirements = _read_requirements() if arguments.requirements_stdin else arguments
+        summary = validate_report(arguments.report, requirements.required_class, requirements.required_cases)
         if arguments.summary_json:
             destination = Path(arguments.summary_json)
             if destination.resolve() == Path(arguments.report).resolve():

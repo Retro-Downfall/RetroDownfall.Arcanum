@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -833,38 +835,16 @@ public sealed class CliCompletionTests
     /// <c>site-functions</c> directory, or a home directory. A completion script is not a secret, so
     /// installing one must never silently re-permission the directory it lands in.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public void Completion_install_leaves_an_existing_target_directory_permissions_alone()
     {
-
-        Skip.If(OperatingSystem.IsWindows(), "Owner-only Unix mode bits are what this asserts against.");
-
-        // Dead once Skip.If above has run, but kept so the platform-compatibility analyzer still
-        // recognizes the guard clause protecting the Unix-only calls below.
-        if (OperatingSystem.IsWindows())
-        {
-
-            return;
-
-        }
-
-        string directory = Path.Combine(
-            Path.GetTempPath(),
-            $"arcanum-completion-dir-{Guid.NewGuid():N}");
-
-        Directory.CreateDirectory(directory);
-
-        const UnixFileMode shared =
-            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
-            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
-            | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
-
-        File.SetUnixFileMode(directory, shared);
-
-        string target = Path.Combine(directory, "arcanum");
+        DirectoryInfo directory = Directory.CreateTempSubdirectory("arcanum-completion-dir-");
 
         try
         {
+            string before = PrepareSharedCompletionDirectory(directory);
+
+            string target = Path.Combine(directory.FullName, "arcanum");
 
             CliTestResult result = CliTestHarness.Run(
                 CreateServices(),
@@ -877,16 +857,62 @@ public sealed class CliCompletionTests
 
             Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
-            Assert.Equal(shared, File.GetUnixFileMode(directory));
+            Assert.True(File.Exists(target));
 
+            string after = OperatingSystem.IsWindows()
+                ? directory.GetAccessControl(AccessControlSections.Access)
+                    .GetSecurityDescriptorSddlForm(AccessControlSections.Access)
+                : File.GetUnixFileMode(directory.FullName).ToString();
+
+            Assert.Equal(before, after);
         }
         finally
         {
-
-            Directory.Delete(directory, recursive: true);
-
+            directory.Delete(recursive: true);
         }
 
+    }
+
+    private static string PrepareSharedCompletionDirectory(DirectoryInfo directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            SecurityIdentifier everyone = new(WellKnownSidType.WorldSid, domainSid: null);
+
+            DirectorySecurity access = directory.GetAccessControl(AccessControlSections.Access);
+
+            access.SetAccessRuleProtection(isProtected: false, preserveInheritance: true);
+
+            access.AddAccessRule(new FileSystemAccessRule(
+                everyone, FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+
+            directory.SetAccessControl(access);
+
+            DirectorySecurity configured = directory.GetAccessControl(AccessControlSections.Access);
+
+            Assert.False(configured.AreAccessRulesProtected);
+
+            bool readableByEveryone = false;
+
+            foreach (FileSystemAccessRule rule in configured.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+            {
+                readableByEveryone |= rule.IdentityReference.Equals(everyone) && rule.AccessControlType == AccessControlType.Allow
+                    && (rule.FileSystemRights & FileSystemRights.ReadAndExecute) == FileSystemRights.ReadAndExecute;
+            }
+
+            Assert.True(readableByEveryone);
+
+            return configured.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        }
+
+        const UnixFileMode shared =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+        File.SetUnixFileMode(directory.FullName, shared);
+
+        return shared.ToString();
     }
 
     private static ServiceCollection CreateServices()

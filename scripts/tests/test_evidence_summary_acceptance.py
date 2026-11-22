@@ -42,6 +42,34 @@ class EvidenceSummaryAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, json.loads(output.read_text())["passedTests"])
         self.assertEqual("", result.stderr)
 
+    def test_stdin_requirements_keep_the_same_exact_evidence_summary(self):
+        expected = self.root / "expected.json"
+        self.assertEqual(0, self.run_cli(expected).returncode)
+        output = self.root / "summary.json"
+        result = self.run_with_requirements(output, b"Required\0")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(expected.read_bytes(), output.read_bytes())
+
+    def test_stdin_requirements_refuse_truncation_or_output_options_without_publishing(self):
+        output = self.root / "summary.json"
+        for payload in (b"", b"Required", b"Required\0\0", b"Required\0--summary-json\0foreign.json\0"):
+            with self.subTest(payload=payload):
+                result = self.run_with_requirements(output, payload)
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertEqual(b"", result.stdout)
+                self.assertFalse(output.exists())
+
+    def test_stdin_requirements_still_refuse_a_missing_exact_required_case(self):
+        output = self.root / "summary.json"
+        result = self.run_with_requirements(output, b"Required\0--required-case\0Required.missing\0")
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn(b"required case 'Required.missing' has no results", result.stderr)
+        self.assertFalse(output.exists())
+
+    def run_with_requirements(self, output, payload):
+        return subprocess.run([sys.executable, "scripts/validate_guild_workspace_evidence.py", str(self.path),
+            "--summary-json", str(output), "--requirements-stdin"], input=payload, capture_output=True, check=False)
+
     def test_invalid_report_preserves_existing_summary_and_writes_no_stdout(self):
         self.path.write_text("<broken")
         output = self.root / "summary.json"

@@ -67,8 +67,8 @@ case "$(uname -s)" in
   *) printf '%s\n' 'Focused execution qualification requires macOS or Windows.' >&2; exit 1 ;;
 esac
 
-python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.trx" \
-  --summary-json "$results/evidence-summary.json" \
+# Bash writes each selector as a complete token without passing the list to the Windows process launcher.
+printf '%s\0' \
   RetroDownfall.Arcanum.Tests.Guild.GuildPerformanceSqlTraceTests \
   RetroDownfall.Arcanum.Tests.Api.ApiWireShapeInventoryTests \
   RetroDownfall.Arcanum.Tests.Api.Tower.MemoryErasureAdministrationEndpointTests \
@@ -420,4 +420,6 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Build.CheckerLimitPinTests.Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types \
   --required-case RetroDownfall.Arcanum.Tests.Build.CheckerLimitPinTests.Authored_disposals_that_reach_a_site_and_belong_to_the_container_are_exactly_the_reviewed_types \
   --required-case RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceProcessTests.Sdk_transport_refuses_before_connect_even_without_Guild_ambient \
-  --required-case RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceProcessTests.Installed_fence_refuses_workspace_check_before_jail_probe
+  --required-case RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceProcessTests.Installed_fence_refuses_workspace_check_before_jail_probe |
+  python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.trx" \
+    --summary-json "$results/evidence-summary.json" --requirements-stdin

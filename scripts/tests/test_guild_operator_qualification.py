@@ -238,22 +238,21 @@ class GuildOperatorQualificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate_evidence(self.report(rows), manifest, "core", "windows")
 
-    def test_unix_completion_permissions_fact_is_an_exact_windows_skip(self):
+    def test_completion_permissions_witness_cannot_skip_on_either_platform(self):
         module = self.tool()
         manifest = self.fixture_manifest()
         manifest["allowedSkips"] = self.manifest()["allowedSkips"]
         method = "Completion_install_leaves_an_existing_target_directory_permissions_alone"
         display = PREFIX + "Cli.CliCompletionTests." + method
         rows = [(PREFIX + "Fixture.Required", "passes", "Passed"),
-                (PREFIX + "Fixture.Other", "required_case", "Passed"),
-                (PREFIX + "Cli.CliCompletionTests", method, "NotExecuted", display)]
-        try:
-            summary = module.validate_evidence(self.report(rows), manifest, "core", "windows")
-        except ValueError as error:
-            self.fail(f"The exact Unix-only Windows skip must be accepted: {error}")
-        self.assertEqual([display], summary["allowedSkippedTests"])
-        with self.assertRaisesRegex(ValueError, "unexpected skipped operator witness"):
-            module.validate_evidence(self.report(rows), manifest, "core", "macos")
+                (PREFIX + "Fixture.Other", "required_case", "Passed")]
+        for platform in ("windows", "macos"):
+            with self.subTest(platform=platform):
+                passed = rows + [(PREFIX + "Cli.CliCompletionTests", method, "Passed", display)]
+                self.assertEqual(3, module.validate_evidence(self.report(passed), manifest, "core", platform)["passedTests"])
+                skipped = rows + [(PREFIX + "Cli.CliCompletionTests", method, "NotExecuted", display)]
+                with self.assertRaisesRegex(ValueError, "unexpected skipped operator witness"):
+                    module.validate_evidence(self.report(skipped), manifest, "core", platform)
 
     def test_allowlisted_fact_skip_refuses_forged_displays_and_definitions(self):
         module = self.tool()

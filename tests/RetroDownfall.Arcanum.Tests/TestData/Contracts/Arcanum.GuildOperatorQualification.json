@@ -870,8 +870,7 @@
       "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"symlinked-file\")",
       "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"symlinked-directory\")",
       "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"fifo\")",
-      "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"device-link\")",
-      "RetroDownfall.Arcanum.Tests.Cli.CliCompletionTests.Completion_install_leaves_an_existing_target_directory_permissions_alone"
+      "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"device-link\")"
     ]
   },
   "omissions": [

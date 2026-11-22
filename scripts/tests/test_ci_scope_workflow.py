@@ -6,6 +6,7 @@ import re
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -240,11 +241,32 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 commands = root / "commands"
                 commands.mkdir()
                 captured = root / "validator-arguments.txt"
+                collector = root / "validator-probe.py"
+                collector.write_text("""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+arguments = sys.argv[1:]
+windows_command = subprocess.list2cmdline(["python3.exe", *arguments])
+if os.environ["QUALIFIER_TEST_HOST"].startswith("MINGW") and len(windows_command.encode("utf-16-le")) // 2 + 1 > 32767:
+    sys.exit("The qualifier exceeded the Windows process argument limit.")
+
+if "--requirements-stdin" in arguments:
+    payload = sys.stdin.buffer.read()
+    if not payload.endswith(b"\\0"):
+        sys.exit("The selector list was not a complete NUL-delimited stream.")
+    arguments.extend(payload[:-1].decode("utf-8").split("\\0"))
+
+with Path(os.environ["QUALIFIER_TEST_CAPTURE"]).open("a", encoding="utf-8") as stream:
+    stream.writelines(argument + "\\n" for argument in arguments)
+""")
                 stubs = {
                     "dotnet": "#!/bin/sh\nexit 0\n",
                     "git": "#!/bin/sh\nexit 0\n",
                     "uname": '#!/bin/sh\nprintf "%s\\n" "$QUALIFIER_TEST_HOST"\n',
-                    "python3": '#!/bin/sh\nprintf "%s\\n" "$@" >> "$QUALIFIER_TEST_CAPTURE"\n',
+                    "python3": '#!/bin/sh\nexec "$QUALIFIER_TEST_PYTHON" "$QUALIFIER_TEST_COLLECTOR" "$@"\n',
                 }
                 for name, content in stubs.items():
                     command = commands / name
@@ -253,7 +275,8 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", str(harness)], cwd=root, capture_output=True, text=True,
                     env={"PATH": str(commands) + os.pathsep + os.defpath,
-                         "QUALIFIER_TEST_HOST": host, "QUALIFIER_TEST_CAPTURE": str(captured)},
+                         "QUALIFIER_TEST_HOST": host, "QUALIFIER_TEST_CAPTURE": str(captured),
+                         "QUALIFIER_TEST_PYTHON": sys.executable, "QUALIFIER_TEST_COLLECTOR": str(collector)},
                     timeout=10,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
