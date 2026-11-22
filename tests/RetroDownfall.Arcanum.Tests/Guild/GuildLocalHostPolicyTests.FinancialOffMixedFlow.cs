@@ -567,8 +567,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal TaskCompletionSource? FinalProviderRound;
 
-        internal readonly TaskCompletionSource ReleaseFinal = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
         internal readonly List<string> Bodies = [];
 
         internal Guid CohortId;
@@ -662,12 +660,7 @@ public sealed partial class GuildLocalHostPolicyTests
                     SawBothAnswers = body.Contains("actual cohort member answer", StringComparison.Ordinal)
                         && body.Contains("remote actual answer", StringComparison.Ordinal);
 
-                    if (FinalProviderRound is { } final)
-                    {
-                        final.TrySetResult();
-
-                        await ReleaseFinal.Task.WaitAsync(ct);
-                    }
+                    if (FinalProviderRound is { } final) final.TrySetResult();
                     else Assert.True(SawBothAnswers, "The parent provider did not receive both Cohort answers.");
                 }
 

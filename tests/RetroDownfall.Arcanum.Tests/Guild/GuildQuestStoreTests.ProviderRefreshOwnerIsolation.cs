@@ -110,14 +110,19 @@ public sealed partial class GuildQuestStoreTests
         Task<Result<GuildSpendRefreshResult>> firstRun = firstService.RefreshAsync(first.Fixture.Caller, first.QuestId,
             firstEffect, Guid.NewGuid(), default);
 
-        Task<Result<GuildSpendRefreshResult>> secondRun = secondService.RefreshAsync(second.Fixture.Caller, second.QuestId,
-            secondEffect, Guid.NewGuid(), default);
+        Task<Result<GuildSpendRefreshResult>>? secondRun = null;
 
         Task<Result<GuildCleanupOutcome>>? cleanup = null;
 
         try
         {
-            await Task.WhenAll(firstStream.Entered.Task, secondStream.Entered.Task).WaitAsync(TimeSpan.FromSeconds(15));
+            // Establish each admission before starting the next credential observation. Both live
+            // provider bodies are held together when owner cleanup starts.
+            await WaitForRefreshBodyAsync(firstStream, firstRun);
+
+            secondRun = secondService.RefreshAsync(second.Fixture.Caller, second.QuestId, secondEffect, Guid.NewGuid(), default);
+
+            await WaitForRefreshBodyAsync(secondStream, secondRun);
 
             await using SqliteCommand command = firstConnection.CreateCommand();
 
@@ -236,11 +241,22 @@ public sealed partial class GuildQuestStoreTests
 
             secondStream.ReleaseDispose.TrySetResult();
 
-            await Task.WhenAll(firstRun, secondRun);
-
-            if (cleanup is not null) await cleanup;
+            await Task.WhenAll(firstRun, secondRun ?? Task.CompletedTask, cleanup ?? Task.CompletedTask);
         }
     }
+
+    private static async Task WaitForRefreshBodyAsync(OwnerRefreshStream stream, Task<Result<GuildSpendRefreshResult>> run)
+    {
+        Task reached = await Task.WhenAny(stream.Entered.Task, run).WaitAsync(TimeSpan.FromSeconds(15));
+
+        if (reached == stream.Entered.Task) return;
+
+        Result<GuildSpendRefreshResult> early = await run;
+
+        Assert.Fail(early.IsFailure ? $"Refresh ended before the body read with {early.Error.Code}."
+            : $"Refresh ended before the body read. InFlight={early.Value.InFlight}, RequiresAttention={early.Value.RequiresAttention}, ErrorCode={early.Value.ErrorCode}.");
+    }
+
     private static async Task<(Guid Effect, Guid Source)> IssuedProviderEffectAsync(SqliteConnection connection, SpendScenario scenario)
     {
         await using SqliteCommand command = connection.CreateCommand();

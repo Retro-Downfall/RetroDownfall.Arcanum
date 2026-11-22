@@ -29,9 +29,24 @@ public sealed partial class GuildLocalHostPolicyTests
     [Fact]
     public async Task Financial_off_mixed_cohort_uses_two_running_Arcanum_hosts_and_replays_after_restart()
     {
-        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(4));
+        TimeSpan phaseTimeout = TimeSpan.FromMinutes(4);
+
+        using CancellationTokenSource deadline = new(phaseTimeout);
 
         CancellationToken ct = deadline.Token;
+
+        string phase = "starting the hosts";
+
+        string? lastParent = null;
+
+        void BeginPhase(string name)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            phase = name;
+
+            deadline.CancelAfter(phaseTimeout);
+        }
 
         await using MixedPeer peer = await MixedPeer.StartAsync(ct, prepareProcess: child =>
         {
@@ -105,6 +120,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
             await MixedPeer.VerifyEffectiveConfigurationAsync(originPort, masterKey, ct);
 
+            BeginPhase("admitting the two members");
+
             using HttpClient anonymous = NewMixedHostClient(originPort);
 
             const string discovery = "/api/guild/agents/remote/resolve";
@@ -166,6 +183,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(2, members.Items.Length);
 
+            BeginPhase("receiving both members' results and notices");
+
             releaseLocalResult.TrySetResult();
 
             Dictionary<string, Guid> answers = new(StringComparer.Ordinal);
@@ -199,6 +218,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(GuildCohortState.Open, open.State);
 
+            BeginPhase("closing the cohort and delivering both answers to the parent");
+
             closeRevision.TrySetResult(open.Revision);
 
             parentTransport.Release.TrySetResult();
@@ -207,10 +228,12 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 GuildQuestDto state = await ReadMixedDataAsync(origin, rootPath, GuildJsonContext.Default.GuildQuestDto, token);
 
+                if (finalProviderRound.Task.IsCompletedSuccessfully) return true;
+
                 Assert.False(state.ReconciliationRequired || state.State is QuestState.Completed or QuestState.Failed or QuestState.Canceled or QuestState.Rejected,
                     $"Parent stopped before receiving both results: {state.State} {state.ReasonCode}.");
 
-                return finalProviderRound.Task.IsCompletedSuccessfully;
+                return false;
             }, ready => ready, ct);
 
             Assert.True(parentTransport.SawBothAnswers,
@@ -247,11 +270,19 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(answers.Values.Order(), contributions.Items.Select(item => item.PrimaryVotingQuestId).Order());
 
-            parentTransport.ReleaseFinal.TrySetResult();
+            BeginPhase("committing the parent result");
 
             GuildQuestDto completed = await WaitMixedAsync(
-                token => ReadMixedDataAsync(origin, rootPath, GuildJsonContext.Default.GuildQuestDto, token),
-                value => value.ReconciliationRequired || value.State is QuestState.Completed or QuestState.Failed or QuestState.Rejected or QuestState.Canceled, ct);
+                async token =>
+                {
+                    GuildQuestDto value = await ReadMixedDataAsync(origin, rootPath, GuildJsonContext.Default.GuildQuestDto, token);
+
+                    lastParent = $"{value.State}, revision {value.Revision}, wait {value.WaitReason}, reason {value.ReasonCode}";
+
+                    return value;
+                },
+                value => value.ReconciliationRequired || value.State is QuestState.Completed or QuestState.Failed or QuestState.Rejected
+                    or QuestState.Canceled or QuestState.InputRequired, ct);
 
             Assert.True(completed.State == QuestState.Completed, completed.ReasonCode);
 
@@ -264,6 +295,8 @@ public sealed partial class GuildLocalHostPolicyTests
             int peerPosts = peer.ProviderPosts;
 
             Assert.True(parentPosts > 0 && localPosts > 0 && peerPosts > 0);
+
+            BeginPhase("restarting both hosts and replaying the original issuance");
 
             OperatingProcess stoppedOrigin = originProcess;
 
@@ -371,6 +404,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
             await peer.AssertCleanShutdownAsync();
         }
+        catch (OperationCanceledException error) when (deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Two-host Guild scenario timed out while {phase}. Last observed parent: {lastParent ?? "unobserved"}.", error);
+        }
         finally
         {
             streamReady.TrySetResult();
@@ -380,8 +417,6 @@ public sealed partial class GuildLocalHostPolicyTests
             releaseLocalResult.TrySetResult();
 
             parentTransport.Release.TrySetResult();
-
-            parentTransport.ReleaseFinal.TrySetResult();
 
             try
             {
