@@ -546,16 +546,6 @@ public sealed partial class ArcanumApiClient(
 
     #region Conclave / A2A
 
-    /// <summary>Today's spend against the configured daily budget, local and delegated (issue #69).</summary>
-    public Task<Result<BudgetSummaryDto>> GetBudgetAsync(CancellationToken cancellationToken = default) =>
-        SendRequestAsync(
-            HttpMethod.Get,
-            "api/budget",
-            null,
-            null,
-            ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto,
-            cancellationToken);
-
     public Task<Result<ConclaveStatusDto>> GetConclaveStatusAsync(CancellationToken cancellationToken = default) =>
         SendRequestAsync(
             HttpMethod.Get,

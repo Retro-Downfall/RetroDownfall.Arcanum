@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildQuestStoreTests
 {
     [Fact]
-    public async Task Enabling_daily_budget_after_preparation_refuses_unreserved_physical_dispatch()
+    public async Task Unmetered_preparation_exposes_the_exact_effect_without_a_reservation()
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -20,11 +20,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetPolicySettings policy = new() { Enabled = false, DailyLimitUsd = 10m };
-
-        ArcanumSettings settings = new() { Cost = new CostSettings { Budget = policy } };
-
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         GuildBudgetLedger ledger = new(daily);
 
@@ -55,25 +51,22 @@ public sealed partial class GuildQuestStoreTests
         GuildBudgetEffectRequest request = new(Guid.NewGuid(), row.Quest.Id, dispatch, accounting,
             GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, 3m, 30);
 
-        Result<GuildBudgetEffect> prepared = await GuildBudgetPhysicalAccounting.PrepareLocalWithinAsync(connection,
-            transaction, ledger, daily, request, DateTimeOffset.UtcNow.AddHours(1), default);
+        Result<GuildBudgetEffect> prepared = await ledger.PrepareEffectWithinAsync(connection, transaction, request, default);
 
         Assert.True(prepared.IsSuccess, prepared.Error.Message);
 
         Assert.Null(prepared.Value.Request.ReservationId);
 
-        policy.Enabled = true;
-
         Result<GuildBudgetEffectAdmission> admitted = await ledger.ExposeEffectWithinAsync(connection, transaction,
             request.EffectId, 1, default);
 
-        Assert.True(admitted.IsFailure, "Live daily policy must be rechecked even when preparation persisted no daily reservation.");
+        Assert.True(admitted.IsSuccess, admitted.Error.Message);
 
         GuildBudgetEffect pending = (await ledger.ReadEffectWithinAsync(connection, transaction, request.EffectId, default)).Value;
 
-        Assert.Equal(GuildBudgetEffectState.Prepared, pending.State);
+        Assert.Equal(GuildBudgetEffectState.PossiblyDispatched, pending.State);
 
-        Assert.Equal(1L, pending.Revision);
+        Assert.Equal(2L, pending.Revision);
 
         Assert.Null(pending.Request.ReservationId);
     }
@@ -91,7 +84,15 @@ public sealed partial class GuildQuestStoreTests
 
         GuildQuestStored root = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request with { Grant = f.Host.Grant }, default)).Value;
 
+        // The closed test resolver serves a fixed grant. Match production's attenuation of an
+        // omitted budget for this new child while retaining the historical finite root account.
+        f.Host.Grant = f.Host.Grant with { Budget = GuildBudgetGrant.Unmetered };
+
         GuildQuestStored child = await f.ChildAsync(root, await f.DriverAsync(root));
+
+        Assert.Equal(root.Quest.Id, child.Quest.ParentQuestId);
+
+        Assert.Equal(GuildBudgetGrant.Unmetered, child.Quest.ResolvedGrant.Budget);
 
         GuildQuestDriver driver = await f.DriverAsync(child);
 
@@ -131,7 +132,7 @@ public sealed partial class GuildQuestStoreTests
     }
 
     [Fact]
-    public async Task Provider_bound_violation_stops_new_authority_even_when_grant_has_remaining_capacity()
+    public async Task Historical_provider_bound_violation_is_recorded_without_stopping_new_work()
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -173,15 +174,15 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.Equal(6m, state.Remaining.Usd.Value);
 
-        Result<Guid> refused = await ledger.AllocateAccountWithinAsync(connection, transaction,
+        Assert.True((await ledger.AllocateAccountWithinAsync(connection, transaction,
             GuildBudgetOwnerKind.Cohort, Guid.NewGuid(), row.AllocationAccountId,
-            new(new(GuildBudgetMode.Finite, 1m), new(GuildBudgetMode.Finite, 1)), default);
+            GuildBudgetGrant.Unmetered, default)).IsSuccess);
 
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, refused.Error.Code);
-
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, (await ledger.AllocateAccountWithinAsync(connection, transaction,
+        Assert.True((await ledger.AllocateAccountWithinAsync(connection, transaction,
             GuildBudgetOwnerKind.Quest, Guid.NewGuid(), sibling,
-            new(new(GuildBudgetMode.Finite, 1m), new(GuildBudgetMode.Finite, 1)), default)).Error.Code);
+            GuildBudgetGrant.Unmetered, default)).IsSuccess);
+
+        Assert.True(state.CapabilityFault);
     }
 
     [Fact]
@@ -420,7 +421,7 @@ public sealed partial class GuildQuestStoreTests
     }
 
     [Fact]
-    public async Task Concurrent_own_call_and_child_allocation_cannot_spend_the_same_remainder()
+    public async Task Concurrent_effect_and_child_admission_are_independent_of_historical_grant_amounts()
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -477,15 +478,13 @@ public sealed partial class GuildQuestStoreTests
 
         Result[] results = await Task.WhenAll(own, child);
 
-        Assert.Single(results, result => result.IsSuccess);
-
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, Assert.Single(results, result => result.IsFailure).Error.Code);
+        Assert.All(results, result => Assert.True(result.IsSuccess, result.Error.Message));
 
         await using SqliteConnection read = await f.OpenAsync();
 
         await using SqliteTransaction snapshot = read.BeginTransaction(deferred: false);
 
-        Assert.Equal(3m, (await ledger.ReadWithinAsync(read, snapshot, row.AllocationAccountId, default)).Value.Remaining.Usd.Value);
+        Assert.Equal(0m, (await ledger.ReadWithinAsync(read, snapshot, row.AllocationAccountId, default)).Value.Remaining.Usd.Value);
     }
 
     [Fact]
@@ -571,7 +570,7 @@ public sealed partial class GuildQuestStoreTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Prepared_effect_cannot_cross_boundary_after_account_closed_or_overrun(bool overrun)
+    public async Task Prepared_effect_respects_account_closure_independently_of_a_historical_overrun(bool overrun)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -616,13 +615,12 @@ public sealed partial class GuildQuestStoreTests
             Assert.True((await ledger.CloseAccountWithinAsync(connection, transaction, row.AllocationAccountId, Guid.NewGuid(), default)).IsSuccess);
         }
 
-        Result refused = await ledger.ExposeAsync(connection, transaction, row.Quest.Id, row.AllocationAccountId, dispatch, accounting, default);
+        Result exposed = await ledger.ExposeAsync(connection, transaction, row.Quest.Id, row.AllocationAccountId, dispatch, accounting, default);
 
-        Assert.True(refused.IsFailure, "A prepared hold must be rechecked at the physical boundary.");
+        if (overrun) Assert.True(exposed.IsSuccess, exposed.Error.Message);
+        else Assert.Equal(ErrorCodes.Guild.Forbidden, exposed.Error.Code);
 
-        Assert.Equal(overrun ? ErrorCodes.Guild.GrantExceeded : ErrorCodes.Guild.Forbidden, refused.Error.Code);
-
-        Assert.Equal(GuildBudgetEffectState.Prepared,
+        Assert.Equal(overrun ? GuildBudgetEffectState.PossiblyDispatched : GuildBudgetEffectState.Prepared,
             (await ledger.ReadEffectWithinAsync(connection, transaction, pending.EffectId, default)).Value.State);
     }
 
@@ -690,21 +688,6 @@ public sealed partial class GuildQuestStoreTests
 
             Assert.Equal(2m, (await ledger.ReadWithinAsync(connection, transaction, row.AllocationAccountId, default)).Value.Remaining.Usd.Value);
 
-            Result<Guid> sibling = await ledger.AllocateAccountWithinAsync(connection, transaction,
-                GuildBudgetOwnerKind.Cohort, Guid.NewGuid(), row.AllocationAccountId,
-                new(new(GuildBudgetMode.Finite, 3m), new(GuildBudgetMode.Finite, 30)), default);
-
-            Assert.Equal(ErrorCodes.Guild.GrantExceeded, sibling.Error.Code);
-
-            Assert.Equal(ErrorCodes.Guild.PriceUnavailable, (await ledger.PrepareEffectWithinAsync(connection, transaction,
-                request with { EffectId = Guid.NewGuid(), SourceId = Guid.NewGuid(), UsdBound = null }, default)).Error.Code);
-
-            Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, (await ledger.PrepareEffectWithinAsync(connection, transaction,
-                request with { EffectId = Guid.NewGuid(), SourceId = Guid.NewGuid(), TokenBound = null }, default)).Error.Code);
-
-            Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, (await ledger.PrepareEffectWithinAsync(connection, transaction,
-                request with { EffectId = Guid.NewGuid(), SourceId = Guid.NewGuid(), Kind = GuildBudgetEffectKind.External }, default)).Error.Code);
-
             await transaction.CommitAsync();
         }
 
@@ -760,9 +743,6 @@ public sealed partial class GuildQuestStoreTests
             Assert.Equal(12m, snapshot.KnownUsd);
 
             Assert.Equal(0m, snapshot.Remaining.Usd.Value);
-
-            Assert.Equal(ErrorCodes.Guild.GrantExceeded, (await ledger.PrepareEffectWithinAsync(connection, transaction,
-                request with { EffectId = Guid.NewGuid(), SourceId = Guid.NewGuid(), UsdBound = 0m, TokenBound = 0 }, default)).Error.Code);
 
             Assert.True((await ledger.ApplyEvidenceWithinAsync(connection, transaction, request.EffectId,
                 new(Guid.NewGuid(), ReceiptDigest("maximum-overrun"), decimal.MaxValue, long.MaxValue, false, false, true), default)).IsSuccess);

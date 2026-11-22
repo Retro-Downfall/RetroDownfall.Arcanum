@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -34,8 +35,12 @@ public sealed partial class TapestrySummarizerTests
 
         Assert.Equal(TapestryHash.OfParts(ping.StatelessMessages!.Select(message => message.Content)), prepared.InputFingerprint);
 
-        Assert.Equal(TapestryHash.OfParts(["raptor-summary-prompt-v1", ping.StatelessMessages![0].Content,
-            ping.MaxOutputTokens!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)]), prepared.RecipeFingerprint);
+        Assert.Null(ping.MaxOutputTokens);
+
+        int reserved = 2 * settings.ResolveEmbeddings().Tapestry.MaxSummaryTokens;
+
+        Assert.Equal(TapestryHash.OfParts(["raptor-summary-prompt-v2", ping.StatelessMessages![0].Content,
+            reserved.ToString(System.Globalization.CultureInfo.InvariantCulture)]), prepared.RecipeFingerprint);
 
         settings.Providers[0].Name = "other-provider";
 

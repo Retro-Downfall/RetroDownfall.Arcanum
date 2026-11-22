@@ -32,7 +32,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
 
-        BudgetReservationService daily = new(db, f.Settings);
+        BudgetReservationService daily = new(db);
 
         GuildQuestStore store = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, new PortAdmission(), f.Readiness);
@@ -102,8 +102,6 @@ public sealed partial class GuildLocalHostPolicyTests
         bool paidCall = frontier != "unpaid-parked-wait";
 
         PaidWaitEvidence? beforeEvidence = null;
-
-        Assert.False(daily.RequiresReservation);
 
         if (paidCall)
         {

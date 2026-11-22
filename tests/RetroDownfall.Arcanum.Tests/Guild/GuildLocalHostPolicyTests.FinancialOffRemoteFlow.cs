@@ -43,7 +43,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.Conclave = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Settings.CurrentValue.Features.A2AClient = true;
 
@@ -80,19 +79,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         var issued = await f.Store.IssueAsync(caller,
             new(f.Generation, null, caller.InvocationId, caller.InvocationId, root.IdempotencyKey), root, default);
-
-        if (scenario is "finite-usd" or "finite-tokens")
-        {
-            Assert.True(issued.IsFailure);
-
-            Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, issued.Error.Code);
-
-            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
-
-            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects"));
-
-            return;
-        }
 
         Assert.True(issued.IsSuccess, issued.Error.Message);
 
@@ -473,7 +459,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.Conclave = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Settings.CurrentValue.Features.A2AClient = true;
 

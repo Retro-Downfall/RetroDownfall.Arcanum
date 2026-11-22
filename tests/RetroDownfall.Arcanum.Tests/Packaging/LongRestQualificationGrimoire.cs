@@ -142,19 +142,19 @@ internal sealed class LongRestQualificationGrimoire
             cancellationToken);
     }
 
-    /// <summary>The budget reservations still held open (status zero), which the budget counts as spend until they expire: how many, and how much they reserve.</summary>
-    public async Task<(int Count, decimal ReservedUsd)> ReadOutstandingReservationsAsync(CancellationToken cancellationToken)
+    /// <summary>Reads the isolated installation's exact recorded provider cost.</summary>
+    public async Task<decimal> ReadMeasuredSpendAsync(CancellationToken cancellationToken)
     {
-        IReadOnlyList<string[]> rows = await DumpAsync(
-            "SELECT COUNT(*), COALESCE(SUM(ReservedUsd), 0) FROM BudgetReservations WHERE Status = 0;",
+        IReadOnlyList<decimal> rows = await QueryAsync(
+            "SELECT ActualCostUsd FROM BillableOperations;",
+            static reader => ExactUsdText.Read(reader, 0),
             cancellationToken);
 
-        string[] row = Assert.Single(rows);
-
-        return (
-            int.Parse(row[0], CultureInfo.InvariantCulture),
-            decimal.Parse(row[1], NumberStyles.Float, CultureInfo.InvariantCulture));
+        return rows.Sum();
     }
+
+    public async Task<long> ReadReservationCountAsync(CancellationToken cancellationToken) =>
+        Convert.ToInt64(await ScalarAsync("SELECT count(*) FROM BudgetReservations;", cancellationToken), CultureInfo.InvariantCulture);
 
     public async Task<IReadOnlyList<LongRestEffectRow>> ReadEffectsAsync(CancellationToken cancellationToken) =>
         await QueryAsync(

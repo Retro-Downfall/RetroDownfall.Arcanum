@@ -181,6 +181,6 @@ public sealed class LongRestPromptLayoutTests
         Assert.Equal("""{"type":"object","properties":{"memories":{"type":"array","items":{"type":"object","properties":{"memory":{"type":"integer"},"fact":{"type":"string"},"sameAs":{"type":"array","items":{"type":"integer"}}},"required":["memory","fact","sameAs"],"additionalProperties":false}}},"required":["memories"],"additionalProperties":false}""",
             LongRestPromptLayout.DecisionSchema);
 
-        Assert.Equal(2048, LongRestPromptLayout.ReservedAnswerTokens);
+        Assert.Equal(2048, LongRestPromptLayout.OutputHeadroomTokens);
     }
 }

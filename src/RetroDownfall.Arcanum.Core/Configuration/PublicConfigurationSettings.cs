@@ -359,20 +359,11 @@ public sealed record ExecutionSettings
 }
 
 /// <summary>
-/// Provider pricing and daily budget policy.
+/// Provider pricing for passive usage reporting.
 /// </summary>
 public sealed record CostSettings
 {
     public PricingSettings Pricing { get; set; } = new();
-
-    public BudgetPolicySettings Budget { get; set; } = new();
-}
-
-public sealed record BudgetPolicySettings
-{
-    public bool Enabled { get; set; }
-
-    public decimal DailyLimitUsd { get; set; }
 }
 
 public sealed record HostAuditPolicySettings

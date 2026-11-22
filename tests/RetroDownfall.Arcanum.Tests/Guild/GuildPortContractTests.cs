@@ -60,7 +60,7 @@ public sealed class GuildPortContractTests
             "LeaseConflict", "LeaseLapsed", "WorkspaceIdentityUnavailable", "LeaseReconciliationRequired",
             "SourceConflict", "ContentErased", "CursorGone", "PayloadTooLarge", "Unavailable",
             "StoragePressure", "MaintenanceDeferred", "Rejected",
-            "RefreshCancelled", "SourceExpired", "InitialEvidenceUnavailable",
+            "RefreshCancelled", "SpendRefreshRetired", "SourceExpired", "InitialEvidenceUnavailable",
             "SpendSourceMissing", "SpendSourceInvalid", "SpendGenerationMissing", "SpendGenerationInvalid", "SpendConfigurationChanged", "SpendCredentialChanged", "SpendAuthorityRetired"
         };
 

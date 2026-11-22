@@ -32,7 +32,7 @@ internal sealed partial class LongRestQualificationRun
 
         int proxyStart = Proxy.Position;
 
-        decimal spendBefore = await Api.LocalSpendUsdAsync(cancellationToken);
+        decimal spendBefore = await Grimoire.ReadMeasuredSpendAsync(cancellationToken);
 
         LongRestPublishedHost doomed = _host ?? throw new InvalidOperationException("There is no host to kill.");
 
@@ -215,22 +215,12 @@ internal sealed partial class LongRestQualificationRun
 
         GradeConsolidations("Scenario B", await Api.ListMemoriesAsync(cancellationToken));
 
-        decimal spendAfter = await Api.LocalSpendUsdAsync(cancellationToken);
+        decimal spendAfter = await Grimoire.ReadMeasuredSpendAsync(cancellationToken);
 
-        // A send that ended without a result is unknown usage and is never estimated or written as zero, so its accounting run is left open and
-        // its reservation stays held until it expires: the budget counts that hold as spend. One hold per interrupted unit is the design;
-        // the figure is reconciled with it and reported, and a hold beyond the interrupted units is a finding.
-        (int heldReservations, decimal heldUsd) = await Grimoire.ReadOutstandingReservationsAsync(cancellationToken);
+        Check(await Grimoire.ReadReservationCountAsync(cancellationToken) == 0,
+            "Scenario B: the isolated installation created a cost reservation.");
 
-        Observe(string.Create(
-            CultureInfo.InvariantCulture,
-            $"Scenario B: {heldReservations} budget reservation(s) held open for unknown usage, {heldUsd:0.000000} USD reserved (the interrupted send)"));
-
-        Check(
-            heldReservations <= unsettled.Length,
-            $"Scenario B: {heldReservations} budget reservations are held open but only {unsettled.Length} unit(s) were interrupted.");
-
-        AssertAccounting("Scenario B", effects, traffic, spendAfter - spendBefore, killed, heldUsd);
+        AssertAccounting("Scenario B", effects, traffic, spendAfter - spendBefore, killed);
 
         await AssertNeverSentAsync(traffic, LongRestCorpusRole.Retired, cancellationToken);
 

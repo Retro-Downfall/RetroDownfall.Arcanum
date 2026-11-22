@@ -319,7 +319,8 @@ public static class MemoryEvaluationDigests
 
         writer.WriteOptional(options.Seed, static (target, value) => target.WriteInt64(value));
 
-        writer.WriteInt32(options.MaxOutputTokens);
+        // Zero was never an admissible explicit limit. Preserve every historical positive request digest.
+        writer.WriteInt32(options.MaxOutputTokens ?? 0);
 
         writer.WriteOptional(options.ReasoningEffort, static (target, value) => target.WriteInt32((int)value));
     }

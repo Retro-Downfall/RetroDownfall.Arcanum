@@ -2,6 +2,7 @@ using System.Text;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -9,12 +10,10 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Tool-result materializer bounded by UTF-8 bytes and a ceiling-of-length/4 token estimate.
+/// Keeps complete tool pages within the physical UTF-8 response allocation.
 /// </summary>
 public sealed class ToolResultMaterializer : IToolResultMaterializer
 {
-    public const int DefaultMaxTokens = 2048;
-
     private const string TruncationMarkerBody =
         "[truncated: tool result exceeded token/byte budget]";
 
@@ -129,8 +128,10 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
 
     private static (int MaxTokens, int MaxBytes) ResolveBudgets(ToolResultMaterializerOptions? options)
     {
-        int maxTokens = Math.Max(0, options?.MaxTokens ?? DefaultMaxTokens);
-        int defaultBytes = SaturatingTokenCharBudget(maxTokens);
+        int maxTokens = Math.Max(0, options?.MaxTokens ?? int.MaxValue);
+        int defaultBytes = options?.MaxTokens is null
+            ? IntelligenceSettings.DefaultToolOutputCapBytes
+            : SaturatingTokenCharBudget(maxTokens);
         int maxBytes = Math.Max(0, options?.MaxUtf8Bytes ?? defaultBytes);
 
         return (maxTokens, maxBytes);

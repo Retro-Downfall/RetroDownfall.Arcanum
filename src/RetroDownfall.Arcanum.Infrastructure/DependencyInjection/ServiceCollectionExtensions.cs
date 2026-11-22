@@ -1541,7 +1541,6 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISanctumBreachRepository, SanctumBreachRepository>();
 
-        services.AddScoped<IBudgetAlertRepository, BudgetAlertRepository>();
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 

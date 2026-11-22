@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>Closed physical dispatch and normal paid accounting, independent of effect/publication CAS.</summary>
 public sealed class LongRestProvider(LongRestProviderClientFactory factory, IModelCallExecutor executor, LongRestConfigurationEpoch epoch,
-    ITurnRunWriter runs, IBudgetReservationService reservations, IInferenceAuditLogger? audit = null,
+    ITurnRunWriter runs, IInferenceAuditLogger? audit = null,
     ILogger<LongRestProvider>? logger = null) : ILongRestProvider
 {
     public async Task<Result<LongRestProviderResult>> ExecuteAsync(LongRestProviderPayload payload, ITurnBudget budget,
@@ -25,8 +25,6 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
         ArgumentNullException.ThrowIfNull(budget);
 
         ArgumentNullException.ThrowIfNull(beforeSend);
-
-        ArgumentNullException.ThrowIfNull(reservations);
 
         LongRestConfigurationSnapshot snapshot = epoch.Capture();
 
@@ -70,16 +68,6 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
             _ => "long-rest-embedding",
         };
 
-        PricingSettings pricing = new() { DefaultPricing = selected.Pricing };
-
-        decimal reservation = frozen switch
-        {
-            LongRestProviderAdmission.Embedding value => BudgetReservationService.EstimateWorstCaseEmbeddingUsd(selected.Pricing, value.ReservedInputTokens),
-            LongRestProviderAdmission.Chat value => BudgetReservationService.EstimateWorstCaseTurnUsd(selected.Pricing, value.Context.ReservedAnswerTokens,
-                value.Context.ReservedReasoningTokens, value.Context.PrecomputedBreakdown?.InputTokens ?? 0),
-            _ => 0m,
-        };
-
         TurnAccountingHandle? accounting = null;
 
         LongRestBeforeSendRefusal? beforeSendRefusal = null;
@@ -101,15 +89,8 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
         try
         {
-            Result<TurnAccountingHandle> opened = await TurnAccountingHandle.BeginAsync(runs, reservations, pricing, selected.Model,
-                sessionId: null, surface: "long-rest", purpose, Guid.NewGuid().ToString("N"), ct, reservedUsdOverride: reservation).ConfigureAwait(false);
-
-            if (opened.IsFailure)
-            {
-                return opened.Error;
-            }
-
-            accounting = opened.Value;
+            accounting = await TurnAccountingHandle.BeginAsync(runs,
+                sessionId: null, surface: "long-rest", purpose, Guid.NewGuid().ToString("N"), ct).ConfigureAwait(false);
 
             return await DispatchAsync().ConfigureAwait(false);
         }
@@ -283,7 +264,7 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
             {
                 try
                 {
-                    await accounting!.CompleteAsync(runs, reservations, status, CancellationToken.None).ConfigureAwait(false);
+                    await accounting!.CompleteAsync(runs, status, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
                 {

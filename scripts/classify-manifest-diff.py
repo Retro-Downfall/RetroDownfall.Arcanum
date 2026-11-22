@@ -30,7 +30,7 @@ capsule id of the acquisition or group site it names, and a capsule id is the SH
 reference resolves inside the manifest that carries it. A row changed by the regeneration is a removed row and an added row that
 share their site.
 
-Classes (the first that applies; the order is the order below)
+Classes (the first that applies, except exact call retirement is tested ahead of a and b)
   v1-provenance  a v1 row with unknown registered-root Work pairs through its unique exact resolved v2 parity witness
   b-format  the added and the removed row are equal once the "@lease:<origin>" marker an Effect id carries is normalised away
   l         an added complete row absent from the committed ledger appears exactly in both --baseline-observation and --parity:
@@ -40,10 +40,12 @@ Classes (the first that applies; the order is the order below)
   a         the row's own site is in an edited source
   b         its physical Work, Effect or registered-root Work reference resolves to an edited acquisition, group or formal,
             in its own manifest or that of the row paired by site
-  r         (only with --parity) the source alone introduced or removed the row, its site and frames are all in unedited sources,
+  r         with --parity, the source alone introduced or removed the row, its site and frames are all in unedited sources,
             and a REACHED_THROUGH entry names the edited call that reaches it: the entry's caller is an edited source whose text
             gained (for an added row) or lost (for a removed one) the entry's marker between the base and the head. A row of
-            this kind with no entry, or whose marker did not change, is d: the tool does not infer a call chain
+            this kind with no entry, or whose marker did not change, is d: the tool does not infer a call chain.
+            The retired budget paths pin the complete removed row and the former and replacement calls in one edited member.
+            Where parity is supplied this exact retirement proof also requires a source-stage removal.
   c         introduced or removed by a named checker rule of this branch: the row matches the mechanical predicate of one rule in
             RULES below (with --parity, only a row that the checker alone introduced or removed is tested, and it is tested
             before any source class, so a row of an edited file that the checker yields over the unchanged base source is
@@ -55,8 +57,8 @@ regenerated one. N and P share a checker, so a row in N and not in P is source-d
 pre-existing baseline discovery: additions in P enter the checker comparison stage until an exact baseline observation B
 separates those omissions. An added complete row already in both B and P is labelled l with stage baseline-ledger before
 source/checker attribution. Other added rows in P remain in the checker stage; additions outside P are source-derived. Removed
-rows absent from P enter the checker stage and other removals the source stage. Without --parity the classes a, b and c are tried in that order on every row, so a
-row that an edit and a rule could both explain is credited to the edit and a row only an edit on the call chain explains is d.
+rows absent from P enter the checker stage and other removals the source stage. Without --parity the exact retirement proof
+is still available, followed by the classes a, b and c. A source call-chain change without exact retirement remains unexplained.
 
 The rules (see RULES; each names the DESIGN paragraph that states its lane)
   workspace-lease-closed-dispatch           exact reviewed workspace lease validation/recovery and downstream store/read closure
@@ -79,7 +81,8 @@ Invariants of a regeneration, checked whatever the labels are: no ProviderCall r
 no rows to compare with, and every later regeneration holds it to the committed manifest like any other root),
 the ProviderCall rows that have neither are the reviewed set (each under a root whose authority needs no Work, see
 UNFRAMED_PROVIDER_CALL_ROOTS), and the Long Rest roots hold none; no ProviderCall row is removed unless its own file was edited,
-a rule explains it or a ProviderCall row with both frames replaces it at the same site; a root the committed manifest did not have
+an exact retirement proof or named rule explains it, or a ProviderCall row with both frames replaces it at the same site;
+a root the committed manifest did not have
 is a Long Rest root or one NEW_ROOTS names; every root of the committed manifest still has rows; the Long Rest roots admit the Long Rest kind and only
 the handoff root reaches a provider; every Root Lease Formal row names a root that a Lease-Handoff binding row ties to its caller.
 
@@ -755,23 +758,32 @@ class Reach:
 
 @dataclasses.dataclass(frozen=True)
 class ExactSourceReach:
-    """One added call in a named member and its exact reviewed capsule rows."""
+    """One changed call in a named member and its exact reviewed capsule rows."""
 
     rows: frozenset[Row]
     caller: str
     caller_member: str
     marker: str
     reason: str
+    side: str = "+"
+    replacement: str | None = None
 
     def covers(self, row: Row, side: str) -> bool:
-        return side == "+" and row in self.rows
+        return side == self.side and row in self.rows
 
 
 GUILD_SCHEDULER_REACH_PATH = WORKSPACE_LEASE_CONTRACT_DIRECTORY / "hosted-producer-guild-scheduler-source-reach-v1.tsv"
 
 GUILD_SCHEDULER_REACH_HEADER = "# arcanum-guild-scheduler-source-reach v1"
 
-GUILD_SCHEDULER_REACH_COLUMNS = "# cause\t" + COLUMNS[2:]
+SOURCE_REACH_COLUMNS = "# cause\t" + COLUMNS[2:]
+
+
+RETIRED_BUDGET_REACH_PATH = WORKSPACE_LEASE_CONTRACT_DIRECTORY / "hosted-producer-retired-budget-source-reach-v1.tsv"
+
+RETIRED_BUDGET_REACH_HEADER = "# arcanum-retired-budget-source-reach v1"
+
+RETIRED_SOURCE_REACH_RULE = "exact-retired-source-reach"
 
 
 def read_guild_scheduler_reaches(path: Path) -> tuple[ExactSourceReach, ...]:
@@ -783,24 +795,57 @@ def read_guild_scheduler_reaches(path: Path) -> tuple[ExactSourceReach, ...]:
             "RunAdmittedAsync",
             "_ = await portal.DrainOutboxAsync(caller.Value, pending.Value.Quest.Quest.RootQuestId, ct).ConfigureAwait(false);",
             "terminal local work now drains the durable outbox through the ordinary Portal publication transaction",
+            None,
         ),
         "terminal-remote-receipt": (
             guild + "GuildLocalQuestScheduler.cs",
             "RunRemoteAdmittedAsync",
             "_ = await services.GetRequiredService<GuildRemotePort>().ReconcileTerminalPortalAsync(caller, questId, ct).ConfigureAwait(false);",
             "terminal remote work now reconciles an existing Portal receipt through current recipient and recovery authority",
+            None,
         ),
         "connected-portal-pulse": (
             guild + "GuildRemotePort.cs",
             "PulseAsync",
             "portal = DrainConnectedPortalAsync(run, ct);",
             "the remote lease pulse starts a joined Portal drain before the driver scope ends, reaching recipient and delivery evidence",
+            None,
         ),
     }
 
+    return read_exact_source_reaches(path, GUILD_SCHEDULER_REACH_HEADER,
+        {cause: ("GuildLocalQuestScheduler", *evidence) for cause, evidence in causes.items()}, "+")
+
+
+def read_retired_budget_reaches(path: Path) -> tuple[ExactSourceReach, ...]:
+    """Bind retired metadata and quota-gate descendants to their former exact callers."""
+    causes = {
+        "startup-provider-spend-refresh": (
+            "LongRunningOperationStartupHostedService",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshService.cs",
+            "RecoverClaimedAsync",
+            "Result<GuildSpendRefreshResult> result = await RunClaimedAsync(caller, checkpoint.QuestId, checkpoint.EffectId,",
+            "startup recovery retires the historical refresh attempt, including physical owner retention, OpenRouter DNS and correction SQL",
+            "Result<bool> receipt = await quests.ReadHistoricalSpendRefreshAsync(caller, checkpoint, ct).ConfigureAwait(false);",
+        ),
+        "campaign-daily-budget-check": (
+            "Loremaster",
+            "src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupMaintenance.cs",
+            "ProcessPageAsync",
+            "Result dailyBudget = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);",
+            "Campaign maintenance no longer reads paid and reserved totals before its qualified provider request",
+            "new(provider, model, CampaignMaintenancePayload.ReservedAnswerTokens, 0, breakdown)",
+        ),
+    }
+
+    return read_exact_source_reaches(path, RETIRED_BUDGET_REACH_HEADER, causes, "-")
+
+
+def read_exact_source_reaches(path: Path, header: str,
+    causes: dict[str, tuple[str, str, str, str, str, str | None]], side: str) -> tuple[ExactSourceReach, ...]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    if lines[:2] != [GUILD_SCHEDULER_REACH_HEADER, GUILD_SCHEDULER_REACH_COLUMNS]:
-        raise ManifestError(f"{path}: invalid Scheduler reach table headers")
+    if lines[:2] != [header, SOURCE_REACH_COLUMNS]:
+        raise ManifestError(f"{path}: invalid source reach table headers")
 
     seen: set[Row] = set()
     by_cause: dict[str, set[Row]] = {cause: set() for cause in causes}
@@ -810,16 +855,19 @@ def read_guild_scheduler_reaches(path: Path) -> tuple[ExactSourceReach, ...]:
             raise ManifestError(f"{path}:{number}: unknown cause or malformed capsule fields")
 
         row = Row(*fields)
-        if row in seen or row.root_type != "GuildLocalQuestScheduler":
-            raise ManifestError(f"{path}:{number}: duplicate row or row outside the Scheduler")
+        if row in seen or row.root_type != causes[cause][0]:
+            raise ManifestError(f"{path}:{number}: duplicate row or row outside its reviewed root")
 
         seen.add(row)
         by_cause[cause].add(row)
 
-    return tuple(ExactSourceReach(frozenset(rows), *causes[cause]) for cause, rows in by_cause.items())
+    return tuple(ExactSourceReach(frozenset(by_cause[cause]), caller, member, marker, reason, side, replacement)
+        for cause, (_, caller, member, marker, reason, replacement) in causes.items())
 
 
 EXACT_SOURCE_REACHES: tuple[ExactSourceReach, ...] = read_guild_scheduler_reaches(GUILD_SCHEDULER_REACH_PATH)
+
+RETIRED_SOURCE_REACHES: tuple[ExactSourceReach, ...] = read_retired_budget_reaches(RETIRED_BUDGET_REACH_PATH)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1181,9 +1229,8 @@ GUILD_LEGACY_WAIT_DIAGNOSTIC_REACHES = tuple(
 
 
 # Exact reviewed startup/background recovery sites reached by the new spend-refresh path.
-# Each tuple pins the operation, downstream site and one of the three audited new callers.
+# Each tuple pins the operation, downstream site and its retained identity or quest-read caller.
 _GUILD_SPEND_REACH_SITES = (
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Coordination/RetainedExclusiveFileLock.cs', 'Dispose', 'System.IO.Stream.Dispose', 'physical'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Data/Covenant/ArtifactSensitivityLedger.cs', 'ReadLabelWithinAsync', 'Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync', 'quest'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Data/Covenant/ArtifactSensitivityLedger.cs', 'ReadLabelWithinAsync', 'System.Data.Common.DbDataReader.ReadAsync', 'quest'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Data/Covenant/CovenantConnectionDrain.cs', 'ClearExactPoolAfterClose', 'Microsoft.Data.Sqlite.SqliteConnection.ClearPool', 'quest'),
@@ -1245,18 +1292,6 @@ _GUILD_SPEND_REACH_SITES = (
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Guild/GuildWorkspaceLeaseStore.cs', 'GetNativeOperatorPrincipalWithinAsync', 'System.Data.Common.DbCommand.ExecuteNonQueryAsync', 'identity'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Guild/GuildWorkspaceLeaseStore.cs', 'GetNativeOperatorPrincipalWithinAsync', 'System.Data.Common.DbCommand.ExecuteScalarAsync', 'identity'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Guild/SignetAuthority.cs', 'WithInstallationAsync', 'RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease', 'quest'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentity.cs', 'TryGetUnixPathMetadataNoFollow', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentity.cs', 'TryGetWindowsFileIdInfo', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentity.cs', 'TryGetWindowsHandleMetadata', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentity.cs', 'TryGetWindowsPathMetadataNoFollow', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentity.cs', 'TryOpenDirectoryMetadata', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentity.cs', 'TryOpenDirectoryMetadata', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenUnix', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentityInterop.CaseSensitivity.cs', 'TryGetDirectoryCaseSensitivity', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.DirectoryPathConf', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentityInterop.CaseSensitivity.cs', 'TryGetDirectoryCaseSensitivity', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetDirectoryCaseSensitiveInfo', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentityInterop.KernelPath.cs', 'TryGetLinuxHandleKernelPath', 'System.IO.FileInfo.LinkTarget', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentityInterop.KernelPath.cs', 'TryGetMacOsHandleKernelPath', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync', 'Security/FileHandleIdentityInterop.KernelPath.cs', 'TryGetWindowsHandleKernelPath', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Coordination/RetainedExclusiveFileLock.cs', 'Dispose', 'System.IO.Stream.Dispose', 'physical'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Data/LongRunningOperationStore.RequestAdmission.cs', 'ReadWithinAsync', 'System.Data.Common.DbCommand.ExecuteReaderAsync', 'quest'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Data/LongRunningOperationStore.RequestAdmission.cs', 'ReadWithinAsync', 'System.Data.Common.DbDataReader.ReadAsync', 'quest'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Data/Schema/GrimoireSchemaManifestInspector.cs', 'ReadCatalogAsync', 'Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync', 'identity'),
@@ -1312,19 +1347,11 @@ _GUILD_SPEND_REACH_SITES = (
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Guild/GuildWorkspaceLeaseStore.cs', 'GetNativeOperatorPrincipalWithinAsync', 'System.Data.Common.DbCommand.ExecuteNonQueryAsync', 'identity'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Guild/GuildWorkspaceLeaseStore.cs', 'GetNativeOperatorPrincipalWithinAsync', 'System.Data.Common.DbCommand.ExecuteScalarAsync', 'identity'),
     ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Guild/SignetAuthority.cs', 'WithInstallationAsync', 'RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease', 'quest'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentity.cs', 'TryOpenDirectoryMetadata', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentity.cs', 'TryOpenDirectoryMetadata', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenUnix', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentityInterop.CaseSensitivity.cs', 'TryGetDirectoryCaseSensitivity', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.DirectoryPathConf', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentityInterop.CaseSensitivity.cs', 'TryGetDirectoryCaseSensitivity', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetDirectoryCaseSensitiveInfo', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentityInterop.KernelPath.cs', 'TryGetLinuxHandleKernelPath', 'System.IO.FileInfo.LinkTarget', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentityInterop.KernelPath.cs', 'TryGetMacOsHandleKernelPath', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo', 'physical'),
-    ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3', 'Security/FileHandleIdentityInterop.KernelPath.cs', 'TryGetWindowsHandleKernelPath', 'RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle', 'physical'),
  )
 
 _GUILD_SPEND_CALLERS = {
     "identity": ("Guild/GuildSpendRefreshRecoveryHandler.cs", "policy.CreateNativeOperatorAsync("),
     "quest": ("Guild/GuildQuestStore.SpendReads.cs", "await GetAsync(caller, questId, ct)"),
-    "physical": ("Guild/GuildSpendRefreshService.cs", "readiness.RetainPhysicalWorkOwnership()"),
 }
 
 GUILD_SPEND_REFRESH_REACHES = tuple(
@@ -1332,7 +1359,7 @@ GUILD_SPEND_REFRESH_REACHES = tuple(
           "src/RetroDownfall.Arcanum.Infrastructure/" + path, member, callee, "+",
           "src/RetroDownfall.Arcanum.Infrastructure/" + _GUILD_SPEND_CALLERS[group][0],
           _GUILD_SPEND_CALLERS[group][1],
-          "the exact spend-refresh recovery caller reaches this reviewed identity, quest-read or physical-ownership site")
+          "the exact spend-refresh recovery caller reaches this reviewed identity or quest-read site")
     for operation, path, member, callee, group in _GUILD_SPEND_REACH_SITES
 )
 
@@ -1711,7 +1738,7 @@ REACHED_THROUGH = (
 def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceTexts | None,
     regenerated: Manifest | None = None) -> tuple[Reach | ExactSourceReach | None, str]:
     """The entry that explains the row as class r, or None and why not."""
-    candidates = [entry for entry in (*REACHED_THROUGH, *EXACT_SOURCE_REACHES) if entry.covers(row, side)]
+    candidates = [entry for entry in (*RETIRED_SOURCE_REACHES, *REACHED_THROUGH, *EXACT_SOURCE_REACHES) if entry.covers(row, side)]
 
     if not candidates:
         return None, "no reviewed call chain reaches this site"
@@ -1737,13 +1764,20 @@ def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceText
         if isinstance(entry, ExactSourceReach):
             head_members = member_bodies(head or "", entry.caller_member)
             base_members = member_bodies(base or "", entry.caller_member)
-            in_head = len(head_members) == 1 and head_members[0].count(entry.marker) == 1
-            in_base = any(entry.marker in body for body in base_members)
+            head_count = sum(body.count(entry.marker) for body in head_members)
+            base_count = sum(body.count(entry.marker) for body in base_members)
+            if side == "+":
+                matched = len(head_members) == 1 and head_count == 1 and base_count == 0
+            else:
+                matched = (len(base_members) == len(head_members) == 1 and base_count == 1 and head_count == 0
+                    and entry.replacement is not None and entry.replacement not in base_members[0]
+                    and head_members[0].count(entry.replacement) == 1)
         else:
             in_head = head is not None and entry.marker in head
             in_base = base is not None and entry.marker in base
+            matched = (side == "+" and in_head and not in_base) or (side == "-" and in_base and not in_head)
 
-        if (side == "+" and in_head and not in_base) or (side == "-" and in_base and not in_head):
+        if matched:
             return entry, entry.reason
 
         problems.append(f"{entry.marker!r} did not {'appear' if side == '+' else 'disappear'} in {entry.caller}")
@@ -1762,7 +1796,7 @@ CLASS_TITLES = {
     "n": "row of a root the reviewed catalog added (NEW_ROOTS)",
     "a": "own site in an edited source",
     "b": "physical Work, Effect or registered-root Work names an edited acquisition, group or formal site",
-    "r": "unedited site and frames reached through a reviewed edited call (parity)",
+    "r": "source reach through a reviewed edited call or exact retirement",
     "c": "introduced or removed by a named checker rule",
     "d": "UNEXPLAINED",
 }
@@ -1996,6 +2030,12 @@ def classify(
         reference_edit = references_edited_source(manifest, row, edited) or any(
             references_edited_source(other_manifest, partner, edited) for partner in partners
         )
+
+        if side == "-" and stage != "checker" and any(entry.covers(row, side) for entry in RETIRED_SOURCE_REACHES):
+            reach, why = prove_reach(row, side, edited, sources, regenerated)
+            if isinstance(reach, ExactSourceReach):
+                labelled.append(Labelled(side, row, "r", rule=RETIRED_SOURCE_REACH_RULE, stage=stage, detail=why))
+                continue
 
         if parity is None:
             if own_edit:
@@ -2341,42 +2381,6 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
 
     old_roots = {row.root for row in committed.rows}
 
-    def reviewed_startup_spend_effect(row: Row) -> bool:
-        startup = ("RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:"
-                   "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0")
-        sites = {
-            ("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOpenRouterSpendReader.cs", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendObservation", "ReadAsync"),
-            ("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceAuthority.cs", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendSourceCredential.VerifiedSource", "SendAsync"),
-            ("src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundUrlGuard.cs", "RetroDownfall.Arcanum.Infrastructure.Security.OutboundUrlGuard", "ResolveValidatedAddressesCoreAsync"),
-        }
-        callees = {
-            ("ReadAsync", "System.Net.Http.HttpClient.Dispose"),
-            ("ReadAsync", "System.Net.Http.Headers.HttpContentHeaders.ContentLength"),
-            ("ReadAsync", "System.Net.Http.HttpResponseMessage.Dispose"),
-            ("ReadAsync", "System.IO.Stream.ReadAsync"),
-            ("ReadAsync", "System.Net.Http.HttpContent.ReadAsStreamAsync"),
-            ("ReadAsync", "System.Net.Http.HttpMessageHandler.Dispose"),
-            ("ReadAsync", "System.IO.Stream.DisposeAsync"),
-            ("SendAsync", "System.Net.Http.HttpRequestMessage.Dispose"),
-            ("SendAsync", "System.Net.Http.HttpClient.SendAsync"),
-            ("ResolveValidatedAddressesCoreAsync", "RetroDownfall.Arcanum.Core.Security.IDnsResolver.GetHostAddressesAsync"),
-        }
-        if (row.member, row.callee) not in callees:
-            return False
-        if (row.root_type != "LongRunningOperationStartupHostedService" or selection_root(row)[1] != startup
-            or row.work != "-" or row.registered_root_work != "-" or row.effect == "-"
-            or unresolved_references(regenerated, row)
-            or (row.source_path, row.enclosing_type, row.member) not in sites):
-            return False
-        return any(
-            witness.root == row.root and witness.kind == "EffectFrontier"
-            and witness.source_path == "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshService.cs"
-            and witness.enclosing_type == "RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendRefreshService"
-            and witness.member == "RunClaimedAsync"
-            and witness.callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"
-            for witness in regenerated.resolve(row.effect)
-        )
-
     if committed.version == 1 and regenerated.version == 2:
         # A v1 omitted field is unknown, not an explicit v2 '-'. Consume each old and
         # exact, unambiguous parity occurrence at most once for an unchanged new row.
@@ -2406,7 +2410,6 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
     added_unframed = sorted(
         row for row in additions
         if not (selection_root(row) in new_root_keys and row.root not in old_roots)
-        and not reviewed_startup_spend_effect(row)
     )
 
     long_rest_unframed = [row for row in unframed(regenerated) if is_long_rest_root(row.root)]
@@ -2415,7 +2418,7 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
 
     unreviewed_unframed = sorted(row for row in unframed(regenerated) if selection_root(row) not in reviewed)
 
-    # No ProviderCall row goes away unexplained: its own file was edited, a rule explains it, or a row with both frames replaced it.
+    # A removed ProviderCall needs edited ownership, an exact retired call chain, a named rule or a framed replacement.
     replaced_sites = {
         item.row.site
         for item in (labelled or [])
@@ -2425,7 +2428,9 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
     vanished_provider_calls = [
         item.row
         for item in (labelled or [])
-        if item.side == "-" and item.row.kind == "ProviderCall" and item.label not in ("a", "c", "v1-provenance") and item.row.site not in replaced_sites
+        if item.side == "-" and item.row.kind == "ProviderCall" and item.label not in ("a", "c", "v1-provenance")
+        and (item.label != "r" or item.rule != RETIRED_SOURCE_REACH_RULE)
+        and item.row.site not in replaced_sites
     ]
 
     new_roots = {row.root for row in regenerated.rows}
@@ -2472,7 +2477,7 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
         ),
         Invariant(
             "provider-call-removals",
-            "no ProviderCall row is removed unless its own file was edited, a named rule explains it or a framed row replaces it",
+            "no ProviderCall row is removed unless its own file was edited, its exact call chain was retired, a named rule explains it or a framed row replaces it",
             [describe(row) for row in vanished_provider_calls],
         ),
         Invariant(

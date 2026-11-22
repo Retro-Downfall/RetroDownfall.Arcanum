@@ -9,6 +9,20 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 
 public sealed class SettingDescriptorParityTests
 {
+    [Theory]
+    [InlineData("providers.models.reasoning.maxBudgetTokens")]
+    [InlineData("providers.guildUsageReconciliation")]
+    [InlineData("cost.budget.enabled")]
+    [InlineData("cost.budget.dailyLimitUsd")]
+    [InlineData("integrations.a2A.inboundPeers.grant.budget.usd.mode")]
+    [InlineData("integrations.a2A.inboundPeers.grant.budget.usd.value")]
+    [InlineData("integrations.a2A.inboundPeers.grant.budget.tokens.mode")]
+    [InlineData("integrations.a2A.inboundPeers.grant.budget.tokens.value")]
+    public void Retired_budget_authority_has_no_editable_setting(string key)
+    {
+        Assert.Null(SettingDescriptors.Find(key));
+    }
+
     [Fact]
     public void Buffered_logging_editor_explains_the_host_floor_and_offers_only_effective_levels()
     {
@@ -132,19 +146,6 @@ public sealed class SettingDescriptorParityTests
 
         Assert.Equal(SettingKind.Enum, descriptor.Kind);
         Assert.Equal(enumType, descriptor.EnumType);
-    }
-
-    [Fact]
-    public void Reasoning_budget_descriptor_matches_global_request_bounds()
-    {
-        SettingDescriptor descriptor = Assert.Single(
-            SettingDescriptors.All,
-            static d => d.Key == "providers.models.reasoning.maxBudgetTokens");
-
-        Assert.Equal(SettingKind.Int, descriptor.Kind);
-        Assert.Equal(1, descriptor.Min);
-        Assert.Equal(2_097_152, descriptor.Max);
-        Assert.Equal(nameof(ArcanumSettingClamps.ReasoningBudgetTokens), descriptor.ClampName);
     }
 
     [Fact]

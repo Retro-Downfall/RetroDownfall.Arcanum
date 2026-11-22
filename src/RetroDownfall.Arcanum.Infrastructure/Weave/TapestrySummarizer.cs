@@ -60,7 +60,7 @@ internal sealed class TapestrySummarizer(
     }
 
     internal static string RecipeFingerprint(ArcanumSettings settings) => TapestryHash.OfParts(
-        ["raptor-summary-prompt-v1", SystemPrompt, ReservedOutputTokens(settings).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+        ["raptor-summary-prompt-v2", SystemPrompt, ReservedOutputTokens(settings).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
 
     public string? ResolveSummaryModel() => ResolveSummaryModel(options.CurrentValue);
 
@@ -116,10 +116,7 @@ internal sealed class TapestrySummarizer(
     }
 
     /// <summary>
-    /// The output allowance the fit estimate reserves and the request is capped at: twice
-    /// <c>MaxSummaryTokens</c>, because reasoning tokens count against the same output limit as the
-    /// summary text. One definition serves both, so the estimate can never promise room the cap does not
-    /// leave, nor the cap allow more than the estimate reserved.
+    /// Reserves room for reasoning and summary text when deciding whether a cluster fits.
     /// </summary>
     private static int ReservedOutputTokens(ArcanumSettings settings) =>
         2 * ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(
@@ -167,7 +164,6 @@ internal sealed class TapestrySummarizer(
             DisableMcpTools: true,
             StatelessMessages: messages,
             SkipSpellRouting: true,
-            MaxOutputTokens: ReservedOutputTokens(settings),
             DisableAllTools: true);
 
         Result<PromptTurnResult> result;
@@ -209,14 +205,13 @@ internal sealed class TapestrySummarizer(
 
         string summary = result.Value.Text.Trim();
 
-        // A summary cut at the output cap is still a summary of the cluster, and refusing it would fail
+        // A summary truncated by the provider is still a summary of the cluster, and refusing it would fail
         // the whole generation and re-bill it on the next sweep, so it is used and the cut is logged.
         if (string.Equals(result.Value.FinishReason, "length", StringComparison.Ordinal))
         {
             logger.LogInformation(
-                "Tapestry summary for a layer {Layer} cluster reached its output cap of {Cap} tokens; the truncated text is used.",
-                request.Layer,
-                ping.MaxOutputTokens);
+                "Tapestry summary for a layer {Layer} cluster reached the provider output limit. The available text is used.",
+                request.Layer);
         }
 
         return summary.Length == 0

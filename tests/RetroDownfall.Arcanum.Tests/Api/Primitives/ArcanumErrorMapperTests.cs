@@ -209,7 +209,6 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Sending.MaxTasksReached, StatusCodes.Status429TooManyRequests)]
     [InlineData(ErrorCodes.StructuredOutput.ValidationFailed, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.StructuredOutput.SchemaInvalid, StatusCodes.Status400BadRequest)]
-    [InlineData(ErrorCodes.Budget.Exceeded, StatusCodes.Status429TooManyRequests)]
     [InlineData(ErrorCodes.WebBrowsing.SsrfBlocked, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.WebBrowsing.InvalidUrl, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.WebBrowsing.TooLarge, StatusCodes.Status400BadRequest)]

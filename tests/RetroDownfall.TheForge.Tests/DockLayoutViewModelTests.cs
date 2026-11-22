@@ -11,6 +11,14 @@ public class DockLayoutViewModelTests
 {
 
     [Fact]
+    public void Retired_treasury_is_absent_from_the_operator_dock()
+    {
+        using DockLayoutViewModel layout = new();
+
+        Assert.Null(layout.FindTool("treasury"));
+    }
+
+    [Fact]
     public void DefaultLayout_MatchesCurrentShell()
     {
 
@@ -19,7 +27,7 @@ public class DockLayoutViewModelTests
         Assert.Equal([DockToolId.Atelier], layout.Left.Tools.Select(t => t.ToolId));
 
         Assert.Equal(
-            [DockToolId.Gatehouse, DockToolId.Treasury, DockToolId.Arsenal, DockToolId.WarTable],
+            [DockToolId.Gatehouse, DockToolId.Arsenal, DockToolId.WarTable],
             layout.Right.Tools.Select(t => t.ToolId));
 
         Assert.Equal(
@@ -146,7 +154,7 @@ public class DockLayoutViewModelTests
 
         using DockLayoutViewModel layout = new();
 
-        layout.Right.SelectedTool = layout.FindTool(DockToolId.Treasury);
+        layout.Right.SelectedTool = layout.FindTool(DockToolId.Arsenal);
 
         layout.ShowTool(DockToolId.Gatehouse);
 
@@ -173,7 +181,7 @@ public class DockLayoutViewModelTests
         Assert.Equal([DockToolId.Atelier], layout.Left.Tools.Select(t => t.ToolId));
 
         Assert.Equal(
-            [DockToolId.Gatehouse, DockToolId.Treasury, DockToolId.Arsenal, DockToolId.WarTable],
+            [DockToolId.Gatehouse, DockToolId.Arsenal, DockToolId.WarTable],
             layout.Right.Tools.Select(t => t.ToolId));
 
         Assert.Equal(

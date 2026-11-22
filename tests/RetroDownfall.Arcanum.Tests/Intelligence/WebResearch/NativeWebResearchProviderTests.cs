@@ -136,6 +136,7 @@ public sealed class NativeWebResearchProviderTests
         Assert.Equal("secret-value", bearer);
         Assert.Contains("\"model\":\"sonar-pro\"", requestJson);
         Assert.Contains("\"stream\":false", requestJson);
+        Assert.DoesNotContain("\"max_tokens\":", requestJson);
         Assert.Contains("\"search_recency_filter\":\"week\"", requestJson);
         Assert.Contains(
             "\"search_domain_filter\":[\"example.test\",\"-ads.example.test\"]",

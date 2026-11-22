@@ -29,13 +29,6 @@ public sealed class GuildCommandTests
     [InlineData("guild task tree task --cursor next --page-size 2")]
     [InlineData("guild task message task --text hello --expected-revision 1 --continue")]
     [InlineData("guild task cancel task --expected-revision 1")]
-    [InlineData("guild task spend task")]
-    [InlineData("guild spend list task --cursor next --page-size 2")]
-    [InlineData("guild spend show task --effect 33333333-3333-3333-3333-333333333333")]
-    [InlineData("guild spend correct task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333 --expected-revision 1 --input-tokens 0 --output-tokens 0 --cached-tokens 0 --reasoning-tokens 0 --usd 1e-28 --evidence-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
-    [InlineData("guild spend refresh task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333")]
-    [InlineData("guild spend receipts task --effect 33333333-3333-3333-3333-333333333333")]
-    [InlineData("guild spend receipt task --effect 33333333-3333-3333-3333-333333333333 --receipt 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild signet revoke signet --expected-revision 1")]
     [InlineData("guild content show content --revision 1")]
     [InlineData("guild watch tree task --ndjson --after next")]
@@ -190,217 +183,21 @@ public sealed class GuildCommandTests
         Assert.Equal(string.Empty, Assert.Single(handler.Requests).Query);
     }
 
-    [Fact]
-    public void Guild_spend_correction_sends_exact_attestation_and_explicit_key()
-    {
-        RecordingHandler handler = new(_ => DomainRefusal());
-
-        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id, "--idempotency-key", Id,
-            "--expected-revision", "2", "--input-tokens", "3", "--output-tokens", "4", "--cached-tokens", "0",
-            "--reasoning-tokens", "0", "--usd", "1e-28", "--evidence-digest", new string('a', 64), "--json"]);
-
-        Assert.Equal(1, result.ExitCode);
-
-        RecordedRequest request = Assert.Single(handler.Requests);
-
-        Assert.Equal($"/api/guild/quests/{Id}/spend/effects/{Id}/corrections", request.Path);
-
-        using JsonDocument body = JsonDocument.Parse(request.Body!);
-
-        Assert.Equal("operatorAttested", body.RootElement.GetProperty("origin").GetString());
-
-        Assert.Equal(Id, body.RootElement.GetProperty("idempotencyKey").GetString());
-
-        Assert.Equal(0.0000000000000000000000000001m, body.RootElement.GetProperty("amounts").GetProperty("usd").GetDecimal());
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-    }
-
-    [Fact]
-    public void Guild_spend_correction_success_writes_one_generated_json_document()
-    {
-        string response = "{\"data\":{\"receipt\":{\"receiptId\":\"" + Id + "\",\"questId\":\"" + Id
-            + "\",\"effectId\":\"" + Id + "\",\"origin\":\"operatorAttested\",\"evidenceDigest\":\"" + new string('a', 64)
-            + "\",\"facts\":{\"knownUsd\":0.1,\"knownTokens\":0,\"unknownUsd\":false,\"unknownTokens\":false,\"complete\":true,\"localTokens\":{\"inputTokens\":0,\"outputTokens\":0,\"cachedTokens\":0,\"reasoningTokens\":0}},\"evidenceRevision\":2,\"eventSequence\":3,\"acceptedAt\":\"2026-01-01T00:00:00Z\"},\"replayed\":false},\"isSuccess\":true,\"error\":null}";
-
-        RecordingHandler handler = new(_ => JsonResponse(response, HttpStatusCode.Created));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id, "--idempotency-key", Id,
-            "--expected-revision", "1", "--input-tokens", "0", "--output-tokens", "0", "--cached-tokens", "0",
-            "--reasoning-tokens", "0", "--usd", "0.1", "--evidence-digest", new string('a', 64), "--json"]);
-
-        Assert.True(result.ExitCode == 0, result.Error);
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-
-        Assert.Equal(Id, output.RootElement.GetProperty("receipt").GetProperty("receiptId").GetString());
-
-        Assert.False(output.RootElement.GetProperty("replayed").GetBoolean());
-
-        Assert.Single(handler.Requests);
-    }
-
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public void Guild_spend_refresh_reports_admitted_operation_with_nonzero_exit(bool inFlight, bool attention)
+    [InlineData("task spend")]
+    [InlineData("spend list")]
+    [InlineData("spend show")]
+    [InlineData("spend correct")]
+    [InlineData("spend refresh")]
+    [InlineData("spend receipts")]
+    [InlineData("spend receipt")]
+    public void Retired_financial_commands_are_rejected_before_any_http_request(string path)
     {
-        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":null,\"replayed\":false,\"inFlight\":"
-            + (inFlight ? "true" : "false") + ",\"requiresAttention\":" + (attention ? "true" : "false")
-            + ",\"errorCode\":null},\"isSuccess\":true,\"error\":null}";
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("Retired finance command reached HTTP."));
 
-        RecordingHandler handler = new(_ => JsonResponse(response, HttpStatusCode.Accepted));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
-
-        Assert.Equal(1, result.ExitCode);
-
-        RecordedRequest request = Assert.Single(handler.Requests);
-
-        Assert.Equal($"/api/guild/quests/{Id}/spend/effects/{Id}/refreshes", request.Path);
-
-        using JsonDocument body = JsonDocument.Parse(request.Body!);
-
-        Assert.Equal(Guid.Parse(Id), body.RootElement.GetProperty("idempotencyKey").GetGuid());
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-
-        Assert.Equal(Guid.Parse(Id), output.RootElement.GetProperty("operationId").GetGuid());
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Guild_spend_refresh_cancelled_exits_130_and_prints_result(bool replayed)
-    {
-        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":null,\"replayed\":"
-            + (replayed ? "true" : "false") + ",\"inFlight\":false,\"requiresAttention\":false,\"cancelled\":true,\"errorCode\":\"Guild.RefreshCancelled\"},\"isSuccess\":true,\"error\":null}";
-
-        RecordingHandler handler = new(_ => JsonResponse(response));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
-
-        Assert.Equal(130, result.ExitCode);
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-
-        Assert.True(output.RootElement.GetProperty("cancelled").GetBoolean());
-
-        Assert.Equal(JsonValueKind.Null, output.RootElement.GetProperty("receipt").ValueKind);
-    }
-
-    [Theory]
-    [InlineData("--json")]
-    [InlineData("--plain")]
-    public void Guild_spend_refresh_completed_prints_one_typed_result_and_exits_zero(string mode)
-    {
-        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":{\"receiptId\":\"" + Id
-            + "\",\"questId\":\"" + Id + "\",\"effectId\":\"" + Id + "\",\"origin\":\"providerReported\",\"evidenceDigest\":null,"
-            + "\"facts\":{\"knownUsd\":0.1,\"knownTokens\":0,\"unknownUsd\":false,\"unknownTokens\":false,\"complete\":true,\"localTokens\":null},"
-            + "\"evidenceRevision\":2,\"eventSequence\":3,\"acceptedAt\":\"2026-01-01T00:00:00Z\"},"
-            + "\"replayed\":false,\"inFlight\":false,\"requiresAttention\":false,\"errorCode\":null},\"isSuccess\":true,\"error\":null}";
-
-        RecordingHandler handler = new(_ => JsonResponse(response));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, mode]);
-
-        Assert.Equal(0, result.ExitCode);
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-
-        Assert.Equal(Id, output.RootElement.GetProperty("receipt").GetProperty("receiptId").GetString());
-
-        Assert.Single(handler.Requests);
-    }
-
-    [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public void Guild_spend_refresh_requires_nonempty_effect_and_key(bool emptyEffect, bool emptyKey)
-    {
-        RecordingHandler handler = new(_ => throw new InvalidOperationException("Invalid request reached HTTP."));
-
-        string[] args = emptyEffect ? ["guild", "spend", "refresh", Id, "--effect", "", "--idempotency-key", Id, "--json"]
-            : emptyKey ? ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", "", "--json"]
-            : ["guild", "spend", "refresh", Id, "--effect", Id, "--json"];
-
-        CliTestResult result = Run(handler, args);
+        CliTestResult result = Run(handler, ["guild", .. path.Split(' '), Id, "--json"]);
 
         Assert.Equal(2, result.ExitCode);
-
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
-    public void Guild_spend_refresh_requires_effect_option()
-    {
-        RecordingHandler handler = new(_ => throw new InvalidOperationException("Missing effect reached HTTP."));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--idempotency-key", Id, "--json"]);
-
-        Assert.Equal(2, result.ExitCode);
-
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
-    public void Guild_spend_refresh_reports_ordinary_domain_error()
-    {
-        RecordingHandler handler = new(_ => DomainRefusal());
-
-        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
-
-        Assert.Equal(1, result.ExitCode);
-
-        Assert.Single(handler.Requests);
-
-        using JsonDocument output = JsonDocument.Parse(result.Output);
-
-        Assert.False(output.RootElement.TryGetProperty("operationId", out _));
-    }
-
-    [Fact]
-    public void Guild_spend_refresh_help_describes_required_key()
-    {
-        RecordingHandler handler = new(_ => throw new InvalidOperationException("Help reached HTTP."));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "refresh", "--help"]);
-
-        Assert.Contains("Required explicit refresh UUID", result.Output, StringComparison.Ordinal);
-
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
-    public void Guild_spend_correction_requires_explicit_attestation_key()
-    {
-        RecordingHandler handler = new(_ => throw new InvalidOperationException("Missing key reached HTTP."));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id,
-            "--expected-revision", "1", "--input-tokens", "0", "--output-tokens", "0", "--cached-tokens", "0",
-            "--reasoning-tokens", "0", "--usd", "0", "--evidence-digest", new string('a', 64), "--json"]);
-
-        Assert.Equal(2, result.ExitCode);
-
-        Assert.Empty(handler.Requests);
-    }
-
-    [Theory]
-    [InlineData("1e-29")]
-    [InlineData("79228162514264337593543950336")]
-    [InlineData("null")]
-    [InlineData("-1")]
-    public void Guild_spend_correction_rejects_inexact_or_negative_usd_before_http(string usd)
-    {
-        RecordingHandler handler = new(_ => throw new InvalidOperationException("Invalid input reached HTTP."));
-
-        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id, "--idempotency-key", Id,
-            "--expected-revision", "2", "--input-tokens", "3", "--output-tokens", "4", "--cached-tokens", "0",
-            "--reasoning-tokens", "0", "--usd", usd, "--evidence-digest", new string('a', 64), "--json"]);
-
-        Assert.Equal(2, result.ExitCode);
-
         Assert.Empty(handler.Requests);
     }
 
@@ -474,8 +271,6 @@ public sealed class GuildCommandTests
     }
 
     [Theory]
-    [InlineData("spend list ID --page-size 2 --cursor opaque", "/api/guild/quests/ID/spend/effects", "cursor=opaque")]
-    [InlineData("spend receipts ID --effect ID", "/api/guild/quests/ID/spend/effects/ID/receipts", "pageSize=100")]
     [InlineData("cohort list --root ID --state open", "/api/guild/cohorts", "rootId=ID")]
     [InlineData("cohort members ID", "/api/guild/cohorts/ID/members", "pageSize=100")]
     [InlineData("cohort contributions ID --selected", "/api/guild/cohorts/ID/contributions", "selected=true")]
@@ -524,7 +319,15 @@ public sealed class GuildCommandTests
 
             Assert.NotEqual(Guid.Empty, body.RootElement.GetProperty("idempotencyKey").GetGuid());
 
-            Assert.Equal("unlimited", body.RootElement.GetProperty("grant").GetProperty("budget").GetProperty("tokens").GetProperty("mode").GetString());
+            JsonElement legacyBudget = body.RootElement.GetProperty("grant").GetProperty("budget");
+
+            foreach (string dimension in new[] { "usd", "tokens" })
+            {
+                JsonElement axis = legacyBudget.GetProperty(dimension);
+
+                Assert.Equal("unlimited", axis.GetProperty("mode").GetString());
+                Assert.False(axis.TryGetProperty("value", out _));
+            }
 
             Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("agentId").ValueKind);
         }
@@ -864,7 +667,7 @@ public sealed class GuildCommandTests
         }
     }
 
-    private const string GrantJson = """{"workspaces":[],"tools":[],"memory":[],"budget":{"usd":{"mode":"unlimited"},"tokens":{"mode":"unlimited"}},"delegation":[],"expiresAtUtc":null}""";
+    private const string GrantJson = """{"workspaces":[],"tools":[],"memory":[],"delegation":[],"expiresAtUtc":null}""";
 
     private static readonly string QuestJson = """{"id":"33333333-3333-3333-3333-333333333333","name":"Quest","operationId":"33333333-3333-3333-3333-333333333333","agentId":"33333333-3333-3333-3333-333333333333","cardId":"33333333-3333-3333-3333-333333333333","cardRevision":1,"runId":"33333333-3333-3333-3333-333333333333","parentQuestId":null,"rootQuestId":"33333333-3333-3333-3333-333333333333","sessionId":null,"campaignId":null,"workspaceId":null,"signetId":"33333333-3333-3333-3333-333333333333","signetRevision":1,"revision":1,"issuedSequence":1,"state":"working","waitReason":null,"cancellationRequested":false,"cancellationConverged":false,"reconciliationRequired":false,"deliveryState":"none","accountingState":"settled","goalRef":{"contentId":"33333333-3333-3333-3333-333333333333","kind":"questGoal","revision":1,"digest":"digest","mimeType":"text/plain","byteLength":4,"contentErased":false},"resultRef":null,"resultReceiptId":null,"resolvedGrant":ROLE_GRANT,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","eventWatermark":7,"receipt":null}""".Replace("ROLE_GRANT", GrantJson, StringComparison.Ordinal);
 

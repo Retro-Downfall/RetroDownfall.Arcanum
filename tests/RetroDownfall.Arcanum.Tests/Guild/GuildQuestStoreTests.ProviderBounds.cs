@@ -35,11 +35,11 @@ public sealed partial class GuildQuestStoreTests
             new(ChatRole.Assistant, [new FunctionCallContent("call-1", "delegate_task", new Dictionary<string, object?> { ["prompt"] = "child" })]),
             new(ChatRole.Tool, [new FunctionResultContent("call-1", "child result")])];
 
-        var prepared = GuildProviderWirePolicy.Prepare(lease.ChatClient, "qualified", model, messages, [function], 30, new());
+        var prepared = GuildProviderWirePolicy.Prepare(lease.ChatClient, "qualified", model, messages, [function], 30);
 
         Assert.NotNull(prepared);
 
-        Assert.Equal(400030, prepared.TokenBound);
+        Assert.Equal(30, prepared.MaxOutputTokens);
 
         using IDisposable scope = prepared.Enter();
 
@@ -65,7 +65,7 @@ public sealed partial class GuildQuestStoreTests
 
         using JsonDocument body = JsonDocument.Parse(transport.Body!);
 
-        Assert.Equal("default", body.RootElement.GetProperty("service_tier").GetString());
+        Assert.False(body.RootElement.TryGetProperty("service_tier", out _));
 
         Assert.False(body.RootElement.GetProperty("parallel_tool_calls").GetBoolean());
 
@@ -114,14 +114,14 @@ public sealed partial class GuildQuestStoreTests
 
         using ChatClientLease lease = await factory.ResolveClientAsync(provider, model, default);
 
-        var prepared = GuildProviderWirePolicy.Prepare(lease.ChatClient, "qualified", model, "accepted", 30, new());
+        var prepared = GuildProviderWirePolicy.Prepare(lease.ChatClient, "qualified", model, "accepted", 30);
 
         Assert.NotNull(prepared);
 
         // Mutating the caller's config after client creation cannot change the sealed endpoint or catalogue.
         provider.Endpoint = "https://example.test/v1";
 
-        Assert.Equal(400030, prepared.TokenBound);
+        Assert.Equal(30, prepared.MaxOutputTokens);
 
         using IDisposable scope = prepared.Enter();
 
@@ -145,15 +145,11 @@ public sealed partial class GuildQuestStoreTests
     }
 
     [Theory]
-    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", 1, 400030, 30, true)]
-    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", 0.1, 400030, 30, false)]
-    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", 1, 400029, 30, false)]
-    [InlineData("gpt-5.4-mini", "https://api.openai.com/v1", 1, 400030, 30, false)]
-    [InlineData("gpt-5.4-mini-2026-03-17", "https://example.test/v1", 1, 400030, 30, false)]
-    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", 1, 528000, null, true)]
-    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", 1, 528000, 600000, true)]
-    public async Task Qualified_finite_provider_binds_actual_wire_and_catalogue_price_floor(
-        string model, string endpoint, double usd, long tokens, int? maxOutput, bool allowed)
+    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", 30)]
+    [InlineData("gpt-5.4-mini-2026-03-17", "https://api.openai.com/v1", null)]
+    [InlineData("local", "https://example.test/v1", null)]
+    public async Task Stored_finite_grants_do_not_require_pricing_or_change_output_options(
+        string model, string endpoint, int? maxOutput)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -167,11 +163,11 @@ public sealed partial class GuildQuestStoreTests
             Providers = [new() { Name = "qualified", Type = AiProviderKind.OpenAICompatible, Endpoint = endpoint, Models = [model], ContextWindowLimit = 400000 }],
         };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         f.UseBudgetParticipant(new GuildBudgetLedger(daily));
 
-        f.Host.Grant = f.Host.Grant with { Budget = new(new(GuildBudgetMode.Finite, (decimal)usd), new(GuildBudgetMode.Finite, tokens)) };
+        f.Host.Grant = f.Host.Grant with { Budget = new(new(GuildBudgetMode.Finite, 0), new(GuildBudgetMode.Finite, 0)) };
 
         GuildQuestStored quest = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request with { Grant = f.Host.Grant }, default)).Value;
 
@@ -199,25 +195,22 @@ public sealed partial class GuildQuestStoreTests
 
             var result = await runtime.Runtime.ExecuteAsync(new(f.Store, driver, dispatch), input, default);
 
-            if (allowed) Assert.True(result.IsSuccess, result.Error.Message);
+            Assert.True(result.IsSuccess, result.Error.Message);
 
-            else Assert.True(result.IsFailure);
+            Assert.Equal(1, transport.Calls);
 
-            Assert.Equal(allowed ? 1 : 0, transport.Calls);
-
-            Assert.Equal(allowed ? 1L : 0L, await f.CountAsync("BillableOperations"));
-
-            if (!allowed) return;
+            Assert.Equal(1L, await f.CountAsync("BillableOperations"));
 
             using JsonDocument body = JsonDocument.Parse(transport.Body!);
 
-            Assert.Equal("default", body.RootElement.GetProperty("service_tier").GetString());
+            Assert.False(body.RootElement.TryGetProperty("service_tier", out _));
 
             Assert.Equal(1, body.RootElement.GetProperty("n").GetInt32());
 
-            int hardOutput = Math.Min(maxOutput ?? settings.ResolveIntelligence().ReservedOutputTokens, 128000);
-
-            Assert.Equal(hardOutput, body.RootElement.GetProperty("max_completion_tokens").GetInt32());
+            if (maxOutput is { } selected)
+                Assert.Equal(selected, body.RootElement.GetProperty("max_completion_tokens").GetInt32());
+            else
+                Assert.False(body.RootElement.TryGetProperty("max_completion_tokens", out _));
 
             Assert.Equal(model, body.RootElement.GetProperty("model").GetString());
 
@@ -225,21 +218,23 @@ public sealed partial class GuildQuestStoreTests
 
             await using SqliteCommand effect = connection.CreateCommand();
 
-            effect.CommandText = "SELECT UsdBound,TokenBound,KnownUsd,UnknownUsd,UnknownTokens FROM guild_budget_effects";
+            effect.CommandText = "SELECT UsdBound,TokenBound,KnownUsd,UnknownUsd,UnknownTokens,ReservationId FROM guild_budget_effects";
 
             await using SqliteDataReader reader = await effect.ExecuteReaderAsync();
 
             Assert.True(await reader.ReadAsync());
 
-            Assert.Equal(0.3m + hardOutput * 4.5m / 1000000m, reader.GetDecimal(0));
+            Assert.True(reader.IsDBNull(0));
 
-            Assert.Equal(400000 + hardOutput, reader.GetInt64(1));
+            Assert.True(reader.IsDBNull(1));
 
-            Assert.Equal(0.00001875m, reader.GetDecimal(2));
+            Assert.Equal(0m, reader.GetDecimal(2));
 
-            Assert.Equal(0, reader.GetInt64(3));
+            Assert.Equal(1, reader.GetInt64(3));
 
             Assert.Equal(0, reader.GetInt64(4));
+
+            Assert.True(reader.IsDBNull(5));
         }
         finally
         {

@@ -118,10 +118,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private OutputTokenLimitWireDialect _outputTokenLimitWireDialect;
 
-        [ObservableProperty] private GuildUsageReconciliationSource _guildUsageReconciliation;
-
-        public IReadOnlyList<GuildUsageReconciliationSource> GuildUsageReconciliationValues { get; } = Enum.GetValues<GuildUsageReconciliationSource>();
-
         public IReadOnlyList<OutputTokenLimitWireDialect> OutputTokenLimitWireDialectValues { get; } = Enum.GetValues<OutputTokenLimitWireDialect>();
 
         /// <summary>
@@ -189,8 +185,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             if (FamiliarProviders.IsFamiliar(value))
             {
-                GuildUsageReconciliation = GuildUsageReconciliationSource.None;
-
                 LocalRuntimeId = string.Empty;
             }
 
@@ -296,10 +290,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             OutputTokenLimitWireDialect = snapshot.OutputTokenLimitWireDialect;
 
-            GuildUsageReconciliation = IsHttpProvider
-                ? snapshot.GuildUsageReconciliation
-                : GuildUsageReconciliationSource.None;
-
             Command = snapshot.Command ?? string.Empty;
 
             HiddenModels = string.Join(", ", snapshot.HiddenModels ?? []);
@@ -352,7 +342,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 Models = [.. Models.Select(static model => model.Build())],
                 HiddenModels = familiar ? SplitList(HiddenModels) : [],
                 ContextWindowLimit = ContextWindowLimit,
-                GuildUsageReconciliation = familiar ? GuildUsageReconciliationSource.None : GuildUsageReconciliation,
                 OutputTokenLimitWireDialect = familiar ? OutputTokenLimitWireDialect.MaxCompletionTokens : OutputTokenLimitWireDialect,
             };
         }
@@ -401,10 +390,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         /// <summary>
         /// Tri-state, matching <see cref="ModelEntry.SupportsTools"/> exactly: <see langword="null"/>
         /// (unset) means undeclared, and must stay expressible as such rather than default to
-        /// <see langword="false"/> — an unset model may still support tools fine. Bound directly to a
-        /// three-state control rather than split into a separate "declared?" flag plus a plain bool
-        /// (the shape <see cref="HasReasoningMaxBudgetTokens"/> below uses for a nullable int), since
-        /// the nullable bool already has exactly the three states the control needs.
+        /// <see langword="false"/> — an unset model may still support tools.
         /// </summary>
         [ObservableProperty] private bool? _supportsTools;
 
@@ -412,10 +398,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private ReasoningWireDialect _reasoningDialect =
             ReasoningWireDialect.Standard;
-
-        [ObservableProperty] private bool _hasReasoningMaxBudgetTokens;
-
-        [ObservableProperty] private int _reasoningMaxBudgetTokens = 1;
 
         private ModelEntry _snapshot;
 
@@ -450,11 +432,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             ReasoningDialect = snapshot.Reasoning?.WireDialect
                 ?? ReasoningWireDialect.Standard;
-
-            HasReasoningMaxBudgetTokens = snapshot.Reasoning?.MaxBudgetTokens is not null;
-
-            ReasoningMaxBudgetTokens = snapshot.Reasoning?.MaxBudgetTokens ?? 1;
-
         }
 
         public ModelEntry Build() => _snapshot with
@@ -467,9 +444,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 : new ModelReasoningSettings
                 {
                     WireDialect = ReasoningDialect,
-                    MaxBudgetTokens = HasReasoningMaxBudgetTokens
-                        ? ReasoningMaxBudgetTokens
-                        : null,
                 },
         };
 

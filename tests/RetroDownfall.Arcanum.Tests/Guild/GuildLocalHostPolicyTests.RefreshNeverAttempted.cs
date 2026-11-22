@@ -21,7 +21,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildLocalHostPolicyTests
 {
     [Fact]
-    public async Task Registered_reconciler_recovers_actual_never_attempted_refresh_after_admission()
+    public async Task Registered_reconciler_retires_never_attempted_historical_refresh_without_provider_dispatch()
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
@@ -77,12 +77,11 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(dispatch.IsSuccess, dispatch.IsFailure ? dispatch.Error.Message : null);
 
         ProviderSettings provider = new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = ["provider/model"],
-            GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration,
             CredentialEnvironmentVariable = "ARCANUM_TEST_REFRESH_" + Guid.NewGuid().ToString("N") };
 
         f.Settings.CurrentValue.Providers = [provider];
 
-        BudgetReservationService daily = new(db, f.Settings);
+        BudgetReservationService daily = new(db);
 
         GuildQuestStore store = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, readiness: f.Readiness);
@@ -101,43 +100,15 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(sent.IsSuccess, sent.IsFailure ? sent.Error.Message : null);
 
-        InMemoryOsCredentialStore os = new();
-
-        os.Set(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("router"), "private-provider-key-sentinel");
-
-        using ProviderCredentialStore credentialStore = new(os, new EphemeralDataProtectionProvider());
-
-        ProviderApiKeyResolver resolver = new(credentialStore);
-
-        using GuildSpendRefreshConfiguration config = new(f.Settings);
-
-        var currentness = await GuildSpendRefreshCurrentness.CaptureAsync(config, resolver, "router", "provider/model", default);
-
-        Assert.True(currentness.IsSuccess, currentness.IsFailure ? currentness.Error.Message : null);
-
-        int gets = 0;
-
-        GuildOpenRouterSpendReader reader = new(new RefreshRecoveryDns(), () =>
-        {
-            gets++;
-
-            return new RefreshRecoveryTransport();
-        });
-
         LongRunningOperationOwnership ownership = new();
 
-        GuildSpendRefreshService service = new(store, config, resolver, reader, readiness, f.Gate, operations, ownership,
-            TimeProvider.System, tracker);
+        GuildSpendRefreshService service = new(store, ownership, TimeProvider.System);
 
-        Guid refreshId = Guid.NewGuid();
-
-        var admitted = await store.AdmitProviderSpendRefreshAsync(caller, quest.Id, effect.EffectId, refreshId, currentness.Value, default);
-
-        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
-
-        Guid operationId = admitted.Value.OperationId!.Value;
+        Guid operationId = await HistoricalGuildRefreshFixture.SeedAsync(opened.Connection, caller, quest.Id, effect.EffectId, Guid.NewGuid());
 
         Assert.Equal(0, (await operations.GetAsync(operationId))!.AttemptCount);
+
+        f.Settings.CurrentValue.Providers = [];
 
         GuildSpendRefreshRecoveryHandler handler = new(f.Policy, service);
 
@@ -148,11 +119,11 @@ public sealed partial class GuildLocalHostPolicyTests
 
         LongRunningOperation final = (await operations.GetAsync(operationId))!;
 
-        Assert.True(final.State == LongRunningOperationState.Completed, $"State={final.State}, error={final.TerminalErrorCode}, GETs={gets}");
+        Assert.Equal(LongRunningOperationState.Abandoned, final.State);
+
+        Assert.Equal(ErrorCodes.Guild.SpendRefreshRetired, final.TerminalErrorCode);
 
         Assert.Equal(1, final.AttemptCount);
-
-        Assert.Equal(1, gets);
 
         Assert.False(ownership.IsClaimed(operationId));
     }

@@ -32,19 +32,17 @@ public sealed partial class WeaveServiceTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(ArcanumRuntimeDefaults.Embeddings.BatchSize);
 
         string[] inputs = Enumerable.Repeat("aaaa", batchSize + 1).ToArray();
 
-        var result = await CreateService(options.CurrentValue, factory, writer, reservations, options: options).EmbedBatchAsync(inputs, CancellationToken.None);
+        var result = await CreateService(options.CurrentValue, factory, writer, options: options).EmbedBatchAsync(inputs, CancellationToken.None);
 
         string stamps = result.IsSuccess ? string.Join(",", result.Value.Select(vector => (EmbeddingProvenance)vector.AdditionalProperties![EmbeddingProvenance.MetadataKey]!).Select(proof => proof.Provider + "/" + proof.Model).Distinct()) : result.Error.Code;
 
         string rows = string.Join(",", writer.Operations.Select(row => FormattableString.Invariant($"{row.Provider}/{row.Model}:{row.InputTokens}:{row.ActualCostUsd}")));
 
-        Assert.True(result.IsFailure, FormattableString.Invariant($"Physical SDK sends={http.RequestedModels.Count}; requested models={string.Join(",", http.RequestedModels)}; returned stamps={stamps}; ledger={rows}; original reservation={reservations.LastRequest?.ReservedUsd}"));
+        Assert.True(result.IsFailure, FormattableString.Invariant($"Physical SDK sends={http.RequestedModels.Count}; requested models={string.Join(",", http.RequestedModels)}; returned stamps={stamps}; ledger={rows}"));
 
         Assert.Single(http.RequestedModels);
 
@@ -56,11 +54,6 @@ public sealed partial class WeaveServiceTests
 
         Assert.Equal((decimal)batchSize, billed.ActualCostUsd);
 
-        Assert.Equal((decimal)(batchSize + 1), reservations.LastRequest?.ReservedUsd);
-
-        Assert.Equal((decimal)batchSize, reservations.ReconciledUsd);
-
-        Assert.Equal(1, reservations.ReconcileCount);
     }
 
     [Fact]
@@ -102,9 +95,7 @@ public sealed partial class WeaveServiceTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new();
-
-        Task<Result<Microsoft.Extensions.AI.Embedding<float>>> running = CreateService(IdentitySettings(), factory, writer, reservations, logger: logger).EmbedAsync("aaaa", caller.Token);
+        Task<Result<Microsoft.Extensions.AI.Embedding<float>>> running = CreateService(IdentitySettings(), factory, writer, logger: logger).EmbedAsync("aaaa", caller.Token);
 
         OperationCanceledException failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
 
@@ -115,8 +106,6 @@ public sealed partial class WeaveServiceTests
         Assert.Empty(factory.Generator.CallSizes);
 
         Assert.Empty(writer.Operations);
-
-        Assert.Equal(1, reservations.ReleaseCount);
 
         Assert.Empty(logger.Entries);
     }
@@ -147,11 +136,9 @@ public sealed partial class WeaveServiceTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         int size = ArcanumSettingClamps.EmbeddingsBatchSize(ArcanumRuntimeDefaults.Embeddings.BatchSize);
 
-        var result = await CreateService(options.CurrentValue, factory, writer, reservations, options: options).EmbedBatchAsync(Enumerable.Repeat("aaaa", size + 1).ToArray(), CancellationToken.None);
+        var result = await CreateService(options.CurrentValue, factory, writer, options: options).EmbedBatchAsync(Enumerable.Repeat("aaaa", size + 1).ToArray(), CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
@@ -163,11 +150,10 @@ public sealed partial class WeaveServiceTests
 
         Assert.Equal((decimal)(size + 1), writer.Operations.Sum(row => row.ActualCostUsd));
 
-        Assert.Equal((decimal)(size + 1), reservations.ReconciledUsd);
     }
 
     [Fact]
-    public async Task EmbeddingIdentity_InitialSnapshotSuppliesBothReservationAndBilledPricing()
+    public async Task EmbeddingIdentity_InitialSnapshotSuppliesBilledPricing()
     {
         ArcanumSettings first = IdentitySettings();
 
@@ -182,15 +168,11 @@ public sealed partial class WeaveServiceTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new();
-
-        var result = await CreateService(first, factory, writer, reservations, options: options).EmbedAsync("aaaa", CancellationToken.None);
+        var result = await CreateService(first, factory, writer, options: options).EmbedAsync("aaaa", CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
         Assert.Equal(1, options.Reads);
-
-        Assert.Equal(1m, reservations.LastRequest?.ReservedUsd);
 
         Assert.Equal(1m, Assert.Single(writer.Operations).ActualCostUsd);
     }

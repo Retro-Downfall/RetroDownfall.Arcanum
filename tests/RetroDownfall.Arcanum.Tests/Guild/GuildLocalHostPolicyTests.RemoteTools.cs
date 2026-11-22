@@ -57,7 +57,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Qualified_dispatch_sending_refuses_finite_grants_before_card_discovery_or_child_issuance(bool usd)
+    public async Task Qualified_dispatch_sending_ignores_historical_finite_grants(bool usd)
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
@@ -97,13 +97,14 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
 
-        var denied = await context.InvokeBoundAsync(function, new() { ["goal"] = "Remote", ["agent"] = RemoteDiscovery }, default);
+        var child = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(function,
+            new() { ["goal"] = "Remote", ["agent"] = RemoteDiscovery }, default));
 
-        Assert.Contains(ErrorCodes.Guild.BudgetCapabilityUnavailable, Assert.IsType<string>(denied));
+        Assert.Equal(parent.Value.Quest.Id, child.Quest.ParentQuestId);
 
-        Assert.Equal(0, http.Requests);
+        Assert.Equal(1, http.Requests);
 
-        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
     }
 
     [Fact]

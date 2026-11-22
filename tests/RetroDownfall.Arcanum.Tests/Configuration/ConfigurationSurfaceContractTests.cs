@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
@@ -37,7 +38,6 @@ public sealed class ConfigurationSurfaceContractTests
         "apprentices",
         "attachments",
         "batches",
-        "budget",
         "campaigns",
         "clientToolForwarding",
         "codex",
@@ -66,6 +66,49 @@ public sealed class ConfigurationSurfaceContractTests
         "ward",
         "webBrowsing",
     ];
+
+    [Fact]
+    public void Legacy_budget_controls_load_without_returning_to_saved_configuration()
+    {
+        const string json = """
+            {
+              "budget": {"enabled": true, "dailyLimitUsd": 1},
+              "cost": {"budget":{"enabled":true,"dailyLimitUsd":1},"pricing":{"defaultPricing":{"inputPer1M":3}}},
+              "providers": [{"name":"router","guildUsageReconciliation":"OpenRouterGeneration",
+                "models":[{"name":"model","reasoning":{"wireDialect":"openRouter","maxBudgetTokens":1}}]}]
+            }
+            """;
+
+        using JsonDocument file = JsonDocument.Parse($"{{\"Arcanum\":{json}}}");
+        ConfigurationValidator validator = new();
+
+        Assert.True(validator.ValidateConfigurationFileJson(file.RootElement).IsSuccess);
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Budget:Enabled"] = "true",
+                ["Arcanum:Cost:Budget:Enabled"] = "true",
+                ["Arcanum:Providers:0:GuildUsageReconciliation"] = "OpenRouterGeneration",
+                ["Arcanum:Providers:0:Models:0:Reasoning:MaxBudgetTokens"] = "1",
+            })
+            .Build();
+
+        Assert.True(validator.RejectObsoleteKeys(configuration).IsSuccess);
+
+        ArcanumSettings settings = JsonSerializer.Deserialize(json, ConfigurationJsonContext.Default.ArcanumSettings)!;
+
+        Assert.Equal(3m, settings.Cost.Pricing.DefaultPricing.InputPer1M);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, settings.Providers[0].Models[0].Reasoning?.WireDialect);
+
+        using JsonDocument saved = JsonDocument.Parse(JsonSerializer.Serialize(settings, ConfigurationJsonContext.Default.ArcanumSettings));
+        JsonElement provider = saved.RootElement.GetProperty("providers")[0];
+
+        Assert.False(saved.RootElement.TryGetProperty("budget", out _));
+        Assert.False(saved.RootElement.GetProperty("cost").TryGetProperty("budget", out _));
+        Assert.False(provider.TryGetProperty("guildUsageReconciliation", out _));
+        Assert.False(provider.GetProperty("models")[0].GetProperty("reasoning").TryGetProperty("maxBudgetTokens", out _));
+    }
 
     [Fact]
     public void ArcanumSettings_root_properties_match_minimal_taxonomy()

@@ -119,8 +119,8 @@ internal sealed partial class LongRestQualificationRun
 
         await CheckHealthAsync("Scenario C", cancellationToken);
 
-        decimal outstanding = await Api.LocalSpendUsdAsync(cancellationToken);
+        decimal measured = await Grimoire.ReadMeasuredSpendAsync(cancellationToken);
 
-        Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario C: the budget snapshot ends the run at {outstanding:0.000000} USD of local spend"));
+        Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario C: measured local spend ends the run at {measured:0.000000} USD of local spend"));
     }
 }

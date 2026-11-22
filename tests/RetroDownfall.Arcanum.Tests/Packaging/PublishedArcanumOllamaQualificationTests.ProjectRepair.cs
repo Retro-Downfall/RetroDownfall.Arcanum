@@ -91,7 +91,6 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
             settings.Arcanum.Security.PerceptionWorkspaceRoots = [workspace];
             settings.Arcanum.Security.CampaignRoots = [workspace];
             settings.Arcanum.Integrations.WorkspaceChecks.ExecutableCatalog.DotNet.Path = ProjectRepairDotNet;
-            settings.Arcanum.Cost.Budget.Enabled = false;
 
             await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(settings, ConfigurationJsonContext.Default.ArcanumConfigurationFile), ct);
 

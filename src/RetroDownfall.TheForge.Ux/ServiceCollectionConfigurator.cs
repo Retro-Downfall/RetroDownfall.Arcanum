@@ -22,7 +22,6 @@ using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
 using RetroDownfall.TheForge.Ux.ViewModels.Ledger;
 using RetroDownfall.TheForge.Ux.ViewModels.Setup;
-using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 using RetroDownfall.TheForge.Ux.ViewModels.Archive;
@@ -218,7 +217,6 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IModelsProvidersDataSource, ModelsProvidersDataSource>();
 
-        services.AddSingleton<ITreasuryDataSource, TreasuryDataSource>();
 
         services.AddSingleton<ILoreDataSource, LoreDataSource>();
 
@@ -275,7 +273,6 @@ internal static class ServiceCollectionConfigurator
 
         services.AddTransient<GatehouseViewModel>();
 
-        services.AddTransient<TreasuryViewModel>();
 
         services.AddTransient<ArsenalViewModel>();
 
@@ -315,7 +312,6 @@ internal static class ServiceCollectionConfigurator
     {
         services.AddSingleton<HealthService>();
 
-        services.AddSingleton<BudgetService>();
 
         services.AddSingleton<CampaignService>();
 

@@ -304,7 +304,7 @@ public sealed class WebResearchWorkflowService(
             Type = WebResearchStreamFrameType.Limits,
 
             Message =
-                $"Policy: continue while new sources are discovered; {FormatSourceTarget(request.SourceTarget)}, {request.TokenBudget} synthesis tokens, {FormatCostLimit(request.CostBudgetUsd)}.",
+                $"Policy: continue while new sources are discovered; {FormatSourceTarget(request.SourceTarget)}.",
         };
 
         List<WebSearchResult> searches = [];
@@ -402,19 +402,6 @@ public sealed class WebResearchWorkflowService(
                 {
                     newCitationCount++;
                 }
-            }
-
-            if (request.CostBudgetUsd is decimal costLimit
-                && hasReportedCost
-                && totalCost > costLimit)
-            {
-                yield return ErrorFrame(
-                    new Error(
-                        ErrorCodes.WebResearch.BudgetExceeded,
-                        $"Research stopped after reported search cost exceeded the ${costLimit:0.####} limit. No partial research answer was retained."),
-                    SnapshotUsage());
-
-                yield break;
             }
 
             if (request.SourceTarget is int target
@@ -653,7 +640,7 @@ public sealed class WebResearchWorkflowService(
 
         if (synthesisTruncated)
         {
-            warnings.Add("The synthesis reached its output-token limit and may be incomplete. Rerun with a larger --token-budget (API tokenBudget).");
+            warnings.Add("The provider reached its output limit before finishing the synthesis.");
         }
 
         foreach (string warning in warnings)
@@ -1024,11 +1011,7 @@ public sealed class WebResearchWorkflowService(
                 ? $"question must be at most {MaxResearchQuestionChars} characters so every follow-up pass stays within the provider's {WebResearchConstants.MaxInputQueryChars}-character query limit."
                 : request.SourceTarget is < 1
                     ? "sourceTarget must be a positive integer when supplied."
-                    : request.TokenBudget < 1
-                        ? "tokenBudget must be a positive integer."
-                        : request.CostBudgetUsd is < 0
-                            ? "costBudgetUsd must be nonnegative when supplied."
-                            : null;
+                    : null;
 
         if (validationError is not null)
         {
@@ -1051,7 +1034,6 @@ public sealed class WebResearchWorkflowService(
             Temperature: request.Temperature,
             TopP: request.TopP,
             DisableAllTools: true,
-            MaxOutputTokens: request.TokenBudget,
             Stop: request.Stop,
             Seed: request.Seed,
             ResponseFormat: request.ResponseFormat,
@@ -1449,11 +1431,6 @@ public sealed class WebResearchWorkflowService(
 
         return null;
     }
-
-    private static string FormatCostLimit(decimal? costBudget) =>
-        costBudget is decimal value
-            ? $"${value:0.####}"
-            : "no explicit cost ceiling";
 
     private static string FormatSourceTarget(int? sourceTarget) =>
         sourceTarget is int value

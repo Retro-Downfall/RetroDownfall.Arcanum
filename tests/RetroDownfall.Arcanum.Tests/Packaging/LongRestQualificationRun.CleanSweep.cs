@@ -36,7 +36,7 @@ internal sealed partial class LongRestQualificationRun
 
         int proxyStart = Proxy.Position;
 
-        decimal spendBefore = await Api.LocalSpendUsdAsync(cancellationToken);
+        decimal spendBefore = await Grimoire.ReadMeasuredSpendAsync(cancellationToken);
 
         LongRestOperationSnapshot requested = await Api.RequestGlobalSweepAsync(cancellationToken);
 
@@ -170,7 +170,7 @@ internal sealed partial class LongRestQualificationRun
 
         AssertEffectsSettled(_cleanSweepEffects);
 
-        decimal spendAfter = await Api.LocalSpendUsdAsync(cancellationToken);
+        decimal spendAfter = await Grimoire.ReadMeasuredSpendAsync(cancellationToken);
 
         AssertAccounting("Scenario A", _cleanSweepEffects, traffic, spendAfter - spendBefore, killedRequest: null);
 

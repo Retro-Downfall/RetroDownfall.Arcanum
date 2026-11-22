@@ -24,7 +24,7 @@ public sealed class LongRestProviderCallTests
         LongRestProviderSelection selected = f.Epoch.Capture().ResolveChat().Value;
 
         LongRestProviderAdmission admission = embedding
-            ? new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, 2048, 0))
+            ? new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, LongRestPromptLayout.OutputHeadroomTokens, 0))
             : new LongRestProviderAdmission.Embedding(selected.Provider, selected.Model, 64, 1, new(new byte[32]));
         int fences = 0;
 
@@ -194,28 +194,6 @@ public sealed class LongRestProviderCallTests
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM InferenceRuns;"));
     }
 
-    [Fact]
-    public async Task Budget_refusal_prevents_disclosure_and_send()
-    {
-        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync();
-
-        LongRestProvider provider = new(f.ClientFactory, new ModelCallExecutor(f.Estimator), f.Epoch,
-            new RetroDownfall.Arcanum.Infrastructure.Data.TurnRunWriter(f.H.Saga.Context), new RefusedBudget());
-        int callbacks = 0;
-
-        Result<LongRestProviderResult> result = await provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
-            _ => { callbacks++; return Task.CompletedTask; }, f.Admission(), CancellationToken.None);
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(0, callbacks);
-
-        Assert.Equal(0, f.Handler.SendCount);
-
-        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM external_disclosure_receipts;"));
-
-        Assert.Equal(2L, await f.H.ScalarAsync("SELECT Status FROM InferenceRuns;"));
-    }
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -336,26 +314,5 @@ public sealed class LongRestProviderCallTests
     {
         public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken) =>
             Task.FromException<string?>(new InvalidOperationException("protected-resolver-body"));
-    }
-
-    private sealed class RefusedBudget : IBudgetReservationService
-    {
-        public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken cancellationToken = default) => Task.FromResult(Result<BudgetReservation>.Failure(new("Budget.Exceeded", "Refused")));
-
-        public Task<Result> AdjustAsync(Guid reservationId, decimal reservedUsd, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 }

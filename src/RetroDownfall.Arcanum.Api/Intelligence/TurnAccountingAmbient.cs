@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
 /// Ambient turn accounting for nested billable work (batch lines, in-turn embeddings) that must
-/// ledger against a parent run without starting a second reservation.
+/// ledger against a parent run.
 /// </summary>
 internal static class TurnAccountingAmbient
 {
@@ -17,10 +17,8 @@ internal static class TurnAccountingAmbient
     /// or its run has already settled.
     /// </summary>
     /// <remarks>
-    /// A settled run reads as no run. A tool task abandoned past the turn's grace keeps running in a
-    /// flow that still holds the turn's handle; once that run has written its status and reconciled
-    /// or released its reservation, work there must account for itself rather than ledger against a
-    /// run whose totals are already final.
+    /// A tool task can outlive the parent and retain its handle in its async flow. Once the parent
+    /// settles, a later operation must record its usage under its own run.
     /// </remarks>
     public static TurnAccountingHandle? Current
     {
@@ -40,10 +38,7 @@ internal static class TurnAccountingAmbient
         Current = handle;
         Writer = writer;
 
-        // Work this turn delegates outside the process — an outbound A2A Sending — records which
-        // reservation paid for the turn it came from, so a delegated cost is traceable to a budget
-        // rather than floating unattached (issue #69).
-        DelegatedSpendAttribution.BudgetReservationId = handle.ReservationId;
+        DelegatedSpendAttribution.BudgetReservationId = null;
     }
 
     public static IDisposable Push(TurnAccountingHandle handle, ITurnRunWriter? writer)
@@ -57,9 +52,8 @@ internal static class TurnAccountingAmbient
     /// Hides the current turn's accounting from work that must account for itself, then restores it.
     /// </summary>
     /// <remarks>
-    /// A delegated child turn begins its own run and reservation. Seeing the parent's handle it would
-    /// adopt it instead, and on completion settle the parent's run and reservation while the parent is
-    /// still mid-turn.
+    /// A delegated child turn needs its own run. Without suspension it would adopt and
+    /// settle the parent run while the parent is still active.
     /// </remarks>
     public static IDisposable Suspend()
     {

@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -9,7 +10,6 @@ using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
-using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.Operations;
 
@@ -207,32 +207,17 @@ internal static class LongRunningOperationEndpoints
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
-            bool changed;
-
             if (operation.Kind == LongRunningOperationKinds.GuildSpendRefresh)
             {
-                GuildNativeHost? host = httpContext.RequestServices.GetService<GuildNativeHost>();
-
-                GuildSpendRefreshService? refresh = httpContext.RequestServices.GetService<GuildSpendRefreshService>();
-
-                if (host is null || refresh is null)
-                    return Error<LongRunningOperationDto>(httpContext, StatusCodes.Status409Conflict, ErrorCodes.Operation.StateConflict,
-                        "The refresh cannot be retried while its authority is unavailable.", ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
-
-                var caller = await host.CreateCallerAsync(Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
-
-                if (caller.IsFailure)
-                    return Error<LongRunningOperationDto>(httpContext, StatusCodes.Status409Conflict, ErrorCodes.Operation.StateConflict,
-                        "The refresh cannot be retried while its authority is unavailable.", ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
-
-                Result<bool> retried = await refresh.RetryAsync(caller.Value, operation, cancellationToken).ConfigureAwait(false);
-
-                changed = retried.IsSuccess && retried.Value;
+                return Error<LongRunningOperationDto>(
+                    httpContext,
+                    StatusCodes.Status409Conflict,
+                    ErrorCodes.Operation.StateConflict,
+                    "Spend refresh has been retired. Existing provider evidence remains available to installation recovery.",
+                    ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
-            else
-            {
-                changed = await store.ResetForRetryAsync(id, operation.Revision, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
-            }
+
+            bool changed = await store.ResetForRetryAsync(id, operation.Revision, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
 
             if (!changed)
             {

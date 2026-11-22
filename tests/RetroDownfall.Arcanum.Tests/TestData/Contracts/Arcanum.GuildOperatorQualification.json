@@ -10,24 +10,13 @@
         "RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationViewModelNotificationTests"
       ],
       "requiredCases": [
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.FamiliarProviderEditorTests.Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar",
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsPreservationTests.Editing_guild_gate_publishes_the_opt_in_without_changing_other_settings",
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsSectionViewTests.Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page"
+        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsPreservationTests.Editing_guild_gate_publishes_the_opt_in_without_changing_other_settings"
       ],
       "caseSources": [],
       "requiredCaseRows": {
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.FamiliarProviderEditorTests.Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar": 1,
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsPreservationTests.Editing_guild_gate_publishes_the_opt_in_without_changing_other_settings": 1,
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsSectionViewTests.Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page": 1
+        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsPreservationTests.Editing_guild_gate_publishes_the_opt_in_without_changing_other_settings": 1
       },
-      "requiredCaseDisplays": {
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.FamiliarProviderEditorTests.Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar": [
-          "RetroDownfall.Compendium.Ux.Tests.Compendium.FamiliarProviderEditorTests.Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar"
-        ],
-        "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsSectionViewTests.Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page": [
-          "RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsSectionViewTests.Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page"
-        ]
-      }
+      "requiredCaseDisplays": {}
     },
     "core": {
       "requiredClasses": [
@@ -44,7 +33,6 @@
         "RetroDownfall.Arcanum.Tests.Api.Streaming.SseStreamWriterQuiescenceTests",
         "RetroDownfall.Arcanum.Tests.Api.Streaming.SseStreamWriterTests",
         "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests",
-        "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreRefreshRecoveryTests",
         "RetroDownfall.Arcanum.Tests.Build.AiReflectionBoundaryTests",
         "RetroDownfall.Arcanum.Tests.Build.ApiErrorCatalogDocumentationTests",
         "RetroDownfall.Arcanum.Tests.Build.ArcanumConventionTests",
@@ -73,7 +61,6 @@
         "RetroDownfall.Arcanum.Tests.Cli.WatchSseParserTests",
         "RetroDownfall.Arcanum.Tests.Cli.WatchSseTransportTests",
         "RetroDownfall.Arcanum.Tests.Configuration.ConstraintInventoryTests",
-        "RetroDownfall.Arcanum.Tests.Configuration.GuildUsageReconciliationConfigurationTests",
         "RetroDownfall.Arcanum.Tests.Data.Covenant.CovenantProtectedArtifactErasureContentTests",
         "RetroDownfall.Arcanum.Tests.Data.Covenant.CovenantProtectedArtifactErasureKernelTests",
         "RetroDownfall.Arcanum.Tests.Data.ExactUsdTextAccumulationTests",
@@ -107,7 +94,6 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildSerializationRoundTripTests",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSignetAuthorityTests",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSpendCorrectionPolicyTests",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildSpendRefreshConfigurationTests",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSpendRefreshTrackerCleanupScopeTests",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSpendRefreshTrackerOperationTests",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSpendSerializationTests",
@@ -126,15 +112,16 @@
         "RetroDownfall.Arcanum.Tests.Packaging.ContinuousIntegrationWorkflowTests",
         "RetroDownfall.Arcanum.Tests.Repositories.ApprenticeRepositoryConcurrencyTests",
         "RetroDownfall.Arcanum.Tests.Repositories.ApprenticeRepositoryTests",
-        "RetroDownfall.Arcanum.Tests.Security.GuildSpendRefreshCredentialMutationTests",
         "RetroDownfall.Arcanum.Tests.Workspaces.CampaignBackedWorkspaceRegistryTests"
       ],
       "requiredCases": [
-        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_no_refresh_control_with_same_capture_fixture_reaches_commit",
-        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat",
+        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_with_historical_guild_spend_evidence_reaches_commit",
+        "RetroDownfall.Arcanum.Tests.Api.GuildRefreshRetryEndpointTests.Retry_explains_that_legacy_spend_refresh_is_retired_and_leaves_operation_unchanged",
+        "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Encrypted_archive_parks_real_admitted_refresh_with_restored_authority",
         "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Restore_keeps_refresh_checkpoint_and_clears_old_lease_even_without_quest_table",
         "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Restore_refuses_invalid_leased_refresh_revision_before_changing_other_operations",
         "RetroDownfall.Arcanum.Tests.Build.AiReflectionProductionClosureTests.Every_compiled_production_project_is_free_of_unsafe_ai_reflection_entry_points",
+        "RetroDownfall.Arcanum.Tests.Configuration.ConfigurationSurfaceContractTests.Legacy_budget_controls_load_without_returning_to_saved_configuration",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Accepted_refresh_receipt_keeps_its_terminal_operation_history",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Corrupt_noncanonical_refresh_operation_identity_retains_its_accounting",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Corrupt_refresh_effect_alias_retains_its_accounting",
@@ -173,9 +160,10 @@
         "RetroDownfall.Arcanum.Tests.Data.Schema.WorkspaceResetScopeIndexSchemaTests.Core30_is_the_exact_captured_predecessor_without_the_new_access_paths",
         "RetroDownfall.Arcanum.Tests.Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site",
         "RetroDownfall.Arcanum.Tests.Guild.GuildDormancyTests.Native_HTTP_and_peer_configuration_records_do_not_register_host_authority",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.New_root_grants_may_omit_the_historical_budget",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.Retained_signed_grants_round_trip_the_exact_historical_bytes",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_commits_one_child_and_exact_replay_survives_cohort_close",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Canceled_live_parent_retains_ownership_until_its_child_has_stopped",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Canonical_session_requires_binding_and_exact_campaign_agreement",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_live_seal_cancels_and_joins_running_primary_without_a_successful_vote",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_snapshot_exposes_members_and_scoped_resume_watermark",
@@ -193,12 +181,9 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_scheduler_stop_joins_the_actual_generation_wait_without_reopening_admission",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_settled_scheduler_reuses_its_observer_across_twenty_acknowledged_ticks",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Draining_cohort_watch_includes_current_members_admitted_work",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_cancel_before_operation_binding_refuses_provider_get",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_daily_obligation_or_post_response_fault_after_reconstruction",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Expired_refresh_lease_cannot_start_second_get_while_original_reader_or_disposal_is_owned",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_post_response_fault_after_reconstruction",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_native_identity_commit_does_not_publish_a_rolled_back_principal",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_observer_construction_releases_work_even_when_connection_disposal_throws",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_daily_gate_changes_preserve_physical_obligations",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_actual_local_cohort_members_converge",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_durable_parent_mixed_cohort_survives_authenticated_peer_restart",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_first_cohort_waits_for_started_loser_to_stop_after_received_response",
@@ -208,8 +193,6 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_real_parent_and_child_ports_commit_actual_provider_results",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Forged_admission_and_recovery_claims_are_refused_even_with_matching_ids",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Guild_defaults_off_and_configuration_binding_can_enable_it",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_cancel_signals_only_matching_refresh_and_keeps_physical_claim_until_join",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Legacy_signet_receipt_with_no_acceptance_evidence_remains_unknown_on_replay",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_child_uses_canonical_campaign_and_narrows_the_explicit_parent_grant",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_cleanup_for_erased_owner_refuses_restore_inert_or_changed_authority_epoch",
@@ -233,6 +216,7 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_model_card_selection_refuse_protected_erased_and_foreign_sources",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_tool_offers_award_work_despite_historical_finite_capacity",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_child_tool_coordinator_refuses_unqualified_input_without_creating_work",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_child_tool_coordinator_uses_one_Quest_and_delegate_waits_for_its_durable_summary",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_identity_is_durable_but_copied_context_ids_never_authenticate",
@@ -241,6 +225,7 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_leases_conflict_across_registered_aliases_without_canonical_Run_records",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_workspace_authority_rechecks_current_path_policy_and_owner_liveness",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_workspace_authority_uses_current_registration_without_minting_canonical_Run_pins",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_root_issue_accepts_a_grant_with_only_nonfinancial_authority",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_disposal_fault_stops_hosted_siblings_and_releases_work",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_error_probe_does_not_block_native_trace_publication",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_revoked_during_currentness_check_waits_for_reopen_without_polling",
@@ -268,20 +253,17 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Persisted_paid_input_wait_cancels_after_restart_only_at_the_exact_stopped_frontier",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Pre_dispatch_lease_cleanup_refuses_unproven_or_foreign_ownership",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Production_Guild_registration_supplies_the_Cohort_tool_and_reconciliation_store",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_cannot_allocate_a_finite_parent_envelope_already_held_by_a_sibling",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_refuses_revoked_signet_without_creating_work_or_allocation",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_refuses_rotated_stale_signet_without_creating_work_or_allocation",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_schedules_despite_an_active_siblings_historical_allocation",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Quest_admission_uses_global_watermark_after_a_cohort_is_created",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Real_host_readiness_stop_joins_refresh_tracker_even_when_stop_is_cancelled",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Real_root_preserves_explicit_grant_and_replay_authenticates_before_disclosure",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Reconciler_wins_claim_after_committed_admission_without_second_provider_get",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Refused_initial_observation_requires_cadence_before_recovery_retry",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_recovers_actual_never_attempted_refresh_after_admission",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_refresh_handler_and_readiness_own_actual_reader",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_retires_never_attempted_historical_refresh_without_provider_dispatch",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_port_owns_one_Quest_and_retains_unknown_cost_without_a_second_lifecycle",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Restore_inert_and_installation_changes_refuse_old_authority",
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Revoked_signet_refuses_new_inference_but_preserves_authenticated_provider_spend",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduled_completion_retains_claim_while_child_work_is_unfinished",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduler_retries_a_failed_pre_dispatch_commit_without_a_stale_operation_lease",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Selected_card_empty_tool_subset_differs_from_omitted_subset",
@@ -294,7 +276,6 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildPortalStoreTests.Claimed_prompt_uses_host_relationship_and_fences_operator_claims_in_body",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSerializationRoundTripTests.Reviewed_inventory_covers_all_public_records_and_each_enum_has_named_metadata",
         "RetroDownfall.Arcanum.Tests.Guild.GuildSignetAuthorityTests.Intermediate_revocation_denies_its_subtree_and_preserves_siblings",
-        "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit",
         "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Closed_refresh_tracker_task_publication_requires_the_actual_population_and_bindings",
         "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Guild_workspace_boundary_names_on_unreviewed_declaring_types_stay_unclassified",
         "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Guild_workspace_native_imports_have_exact_physical_effect_kinds",
@@ -305,6 +286,8 @@
         "RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceProcessTests.Sdk_transport_refuses_before_connect_even_without_Guild_ambient"
       ],
       "caseSources": [
+        "tests/RetroDownfall.Arcanum.Tests/Api/GrimoireMaintenanceAdmissionTests.LiveGuildRefresh.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Api/LongRunningOperationEndpoints.GuildRefreshRetry.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/DataRetentionServiceTests.GuildCleanup.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/DataRetentionServiceTests.GuildCohorts.cs",
         "tests/RetroDownfall.Arcanum.Tests/Data/DataRetentionServiceTests.GuildRefreshPins.cs",
@@ -320,6 +303,7 @@
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.FinancialOffMixedFlow.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.FinancialOffTwoHosts.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.Market.cs",
+        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.MarketBudget.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.OperatorCohortReceipts.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.OperatorMembers.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.OperatorSequence.cs",
@@ -329,14 +313,7 @@
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.PortCancellation.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.PortPaid.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.ProviderDelegation.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshAdmissionClaimRace.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshCancelBeforeBind.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshCancelHttp.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshCancelRecovered.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshNeverAttempted.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshRecovery.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshRecoveryClaimRace.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshRetryHttp.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RefreshShutdown.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.RemotePort.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.Scheduler.cs",
@@ -349,20 +326,20 @@
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.SchedulerReadiness.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.SchedulerRecovery.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.SpendCorrections.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.SpendRefreshAfterRevocation.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.StreamSnapshot.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.WaitCancellation.cs",
         "tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests.cs",
-        "tests/RetroDownfall.Arcanum.Tests/Operations/HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinally.cs",
         "tests/RetroDownfall.Arcanum.Tests/Operations/HostedGrimoireProducerInventoryTests.NestedHeartbeatAdmission.cs",
         "tests/RetroDownfall.Arcanum.Tests/Operations/HostedGrimoireProducerInventoryTests.RefreshTrackerSelector.cs"
       ],
       "requiredCaseRows": {
-        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_no_refresh_control_with_same_capture_fixture_reaches_commit": 1,
-        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat": 1,
+        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_with_historical_guild_spend_evidence_reaches_commit": 1,
+        "RetroDownfall.Arcanum.Tests.Api.GuildRefreshRetryEndpointTests.Retry_explains_that_legacy_spend_refresh_is_retired_and_leaves_operation_unchanged": 1,
+        "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Encrypted_archive_parks_real_admitted_refresh_with_restored_authority": 1,
         "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Restore_keeps_refresh_checkpoint_and_clears_old_lease_even_without_quest_table": 1,
         "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Restore_refuses_invalid_leased_refresh_revision_before_changing_other_operations": 3,
         "RetroDownfall.Arcanum.Tests.Build.AiReflectionProductionClosureTests.Every_compiled_production_project_is_free_of_unsafe_ai_reflection_entry_points": 1,
+        "RetroDownfall.Arcanum.Tests.Configuration.ConfigurationSurfaceContractTests.Legacy_budget_controls_load_without_returning_to_saved_configuration": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Accepted_refresh_receipt_keeps_its_terminal_operation_history": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Corrupt_noncanonical_refresh_operation_identity_retains_its_accounting": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Corrupt_refresh_effect_alias_retains_its_accounting": 3,
@@ -390,9 +367,10 @@
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Reset_lineage_child_lookup_uses_parent_index": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Terminal_refresh_releases_accounting_but_preserves_linked_operation_history": 1,
         "RetroDownfall.Arcanum.Tests.Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.New_root_grants_may_omit_the_historical_budget": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.Retained_signed_grants_round_trip_the_exact_historical_bytes": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_commits_one_child_and_exact_replay_survives_cohort_close": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Canceled_live_parent_retains_ownership_until_its_child_has_stopped": 2,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal": 4,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Canonical_session_requires_binding_and_exact_campaign_agreement": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_live_seal_cancels_and_joins_running_primary_without_a_successful_vote": 3,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_snapshot_exposes_members_and_scoped_resume_watermark": 1,
@@ -410,12 +388,9 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_scheduler_stop_joins_the_actual_generation_wait_without_reopening_admission": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_settled_scheduler_reuses_its_observer_across_twenty_acknowledged_ticks": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Draining_cohort_watch_includes_current_members_admitted_work": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_cancel_before_operation_binding_refuses_provider_get": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_daily_obligation_or_post_response_fault_after_reconstruction": 2,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Expired_refresh_lease_cannot_start_second_get_while_original_reader_or_disposal_is_owned": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_post_response_fault_after_reconstruction": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_native_identity_commit_does_not_publish_a_rolled_back_principal": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_observer_construction_releases_work_even_when_connection_disposal_throws": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_daily_gate_changes_preserve_physical_obligations": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_actual_local_cohort_members_converge": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_durable_parent_mixed_cohort_survives_authenticated_peer_restart": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_first_cohort_waits_for_started_loser_to_stop_after_received_response": 1,
@@ -425,8 +400,6 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_real_parent_and_child_ports_commit_actual_provider_results": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Forged_admission_and_recovery_claims_are_refused_even_with_matching_ids": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Guild_defaults_off_and_configuration_binding_can_enable_it": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_cancel_signals_only_matching_refresh_and_keeps_physical_claim_until_join": 3,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh": 4,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Legacy_signet_receipt_with_no_acceptance_evidence_remains_unknown_on_replay": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_child_uses_canonical_campaign_and_narrows_the_explicit_parent_grant": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_cleanup_for_erased_owner_refuses_restore_inert_or_changed_authority_epoch": 2,
@@ -450,6 +423,7 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure": 4,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_model_card_selection_refuse_protected_erased_and_foreign_sources": 6,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_tool_offers_award_work_despite_historical_finite_capacity": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_child_tool_coordinator_refuses_unqualified_input_without_creating_work": 9,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_child_tool_coordinator_uses_one_Quest_and_delegate_waits_for_its_durable_summary": 4,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_identity_is_durable_but_copied_context_ids_never_authenticate": 1,
@@ -458,6 +432,7 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_leases_conflict_across_registered_aliases_without_canonical_Run_records": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_workspace_authority_rechecks_current_path_policy_and_owner_liveness": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_workspace_authority_uses_current_registration_without_minting_canonical_Run_pins": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_root_issue_accepts_a_grant_with_only_nonfinancial_authority": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_disposal_fault_stops_hosted_siblings_and_releases_work": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_error_probe_does_not_block_native_trace_publication": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_revoked_during_currentness_check_waits_for_reopen_without_polling": 1,
@@ -485,20 +460,17 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Persisted_paid_input_wait_cancels_after_restart_only_at_the_exact_stopped_frontier": 6,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Pre_dispatch_lease_cleanup_refuses_unproven_or_foreign_ownership": 8,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Production_Guild_registration_supplies_the_Cohort_tool_and_reconciliation_store": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_cannot_allocate_a_finite_parent_envelope_already_held_by_a_sibling": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_refuses_revoked_signet_without_creating_work_or_allocation": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_refuses_rotated_stale_signet_without_creating_work_or_allocation": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Prompt_only_child_schedules_despite_an_active_siblings_historical_allocation": 2,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Quest_admission_uses_global_watermark_after_a_cohort_is_created": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Real_host_readiness_stop_joins_refresh_tracker_even_when_stop_is_cancelled": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Real_root_preserves_explicit_grant_and_replay_authenticates_before_disclosure": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Reconciler_wins_claim_after_committed_admission_without_second_provider_get": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Refused_initial_observation_requires_cadence_before_recovery_retry": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_recovers_actual_never_attempted_refresh_after_admission": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_refresh_handler_and_readiness_own_actual_reader": 2,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_retires_never_attempted_historical_refresh_without_provider_dispatch": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_port_owns_one_Quest_and_retains_unknown_cost_without_a_second_lifecycle": 23,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Restore_inert_and_installation_changes_refuse_old_authority": 1,
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Revoked_signet_refuses_new_inference_but_preserves_authenticated_provider_spend": 2,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduled_completion_retains_claim_while_child_work_is_unfinished": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduler_retries_a_failed_pre_dispatch_commit_without_a_stale_operation_lease": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Selected_card_empty_tool_subset_differs_from_omitted_subset": 2,
@@ -507,16 +479,18 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Unlabelled_roots_do_not_depend_on_optional_covenant_health": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Unrelated_observer_open_cancellation_propagates_and_releases_work": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Workspace_root_resolves_canonical_campaign_and_live_physical_registration": 1,
-        "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit": 4,
         "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Closed_refresh_tracker_task_publication_requires_the_actual_population_and_bindings": 10,
         "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.NestedHeartbeatKeepsPhysicalWorkUntilAnActualInvalidation": 10
       },
       "requiredCaseDisplays": {
-        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_no_refresh_control_with_same_capture_fixture_reaches_commit": [
-          "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_no_refresh_control_with_same_capture_fixture_reaches_commit"
+        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_with_historical_guild_spend_evidence_reaches_commit": [
+          "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_with_historical_guild_spend_evidence_reaches_commit"
         ],
-        "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat": [
-          "RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat"
+        "RetroDownfall.Arcanum.Tests.Api.GuildRefreshRetryEndpointTests.Retry_explains_that_legacy_spend_refresh_is_retired_and_leaves_operation_unchanged": [
+          "RetroDownfall.Arcanum.Tests.Api.GuildRefreshRetryEndpointTests.Retry_explains_that_legacy_spend_refresh_is_retired_and_leaves_operation_unchanged"
+        ],
+        "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Encrypted_archive_parks_real_admitted_refresh_with_restored_authority": [
+          "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Encrypted_archive_parks_real_admitted_refresh_with_restored_authority"
         ],
         "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Restore_keeps_refresh_checkpoint_and_clears_old_lease_even_without_quest_table": [
           "RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.Restore_keeps_refresh_checkpoint_and_clears_old_lease_even_without_quest_table"
@@ -528,6 +502,9 @@
         ],
         "RetroDownfall.Arcanum.Tests.Build.AiReflectionProductionClosureTests.Every_compiled_production_project_is_free_of_unsafe_ai_reflection_entry_points": [
           "RetroDownfall.Arcanum.Tests.Build.AiReflectionProductionClosureTests.Every_compiled_production_project_is_free_of_unsafe_ai_reflection_entry_points"
+        ],
+        "RetroDownfall.Arcanum.Tests.Configuration.ConfigurationSurfaceContractTests.Legacy_budget_controls_load_without_returning_to_saved_configuration": [
+          "RetroDownfall.Arcanum.Tests.Configuration.ConfigurationSurfaceContractTests.Legacy_budget_controls_load_without_returning_to_saved_configuration"
         ],
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Accepted_refresh_receipt_keeps_its_terminal_operation_history": [
           "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Accepted_refresh_receipt_keeps_its_terminal_operation_history"
@@ -611,11 +588,11 @@
         "RetroDownfall.Arcanum.Tests.Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site": [
           "RetroDownfall.Arcanum.Tests.Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site"
         ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal(cancelAfterHandler: False, expireBeforeSettlement: False, eraseAncestor: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal(cancelAfterHandler: False, expireBeforeSettlement: False, eraseAncestor: True)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal(cancelAfterHandler: False, expireBeforeSettlement: True, eraseAncestor: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal(cancelAfterHandler: True, expireBeforeSettlement: False, eraseAncestor: False)"
+        "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.New_root_grants_may_omit_the_historical_budget": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.New_root_grants_may_omit_the_historical_budget"
+        ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.Retained_signed_grants_round_trip_the_exact_historical_bytes": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildGrantSerializationTests.Retained_signed_grants_round_trip_the_exact_historical_bytes"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_scheduler_becomes_quiet_with_an_unstarted_metadata_only_quest_without_an_execution_receipt": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_scheduler_becomes_quiet_with_an_unstarted_metadata_only_quest_without_an_execution_receipt"
@@ -650,22 +627,11 @@
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_settled_scheduler_reuses_its_observer_across_twenty_acknowledged_ticks(activeVm: False)",
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Disabled_settled_scheduler_reuses_its_observer_across_twenty_acknowledged_ticks(activeVm: True)"
         ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_cancel_before_operation_binding_refuses_provider_get": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_cancel_before_operation_binding_refuses_provider_get"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_daily_obligation_or_post_response_fault_after_reconstruction": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_daily_obligation_or_post_response_fault_after_reconstruction(receiptFault: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_daily_obligation_or_post_response_fault_after_reconstruction(receiptFault: True)"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Expired_refresh_lease_cannot_start_second_get_while_original_reader_or_disposal_is_owned": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Expired_refresh_lease_cannot_start_second_get_while_original_reader_or_disposal_is_owned"
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_post_response_fault_after_reconstruction": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_local_port_retains_post_response_fault_after_reconstruction"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_observer_construction_releases_work_even_when_connection_disposal_throws": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_observer_construction_releases_work_even_when_connection_disposal_throws"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_daily_gate_changes_preserve_physical_obligations": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_daily_gate_changes_preserve_physical_obligations(enableBeforeDispatch: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_daily_gate_changes_preserve_physical_obligations(enableBeforeDispatch: True)"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_actual_local_cohort_members_converge": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_actual_local_cohort_members_converge(first: False)",
@@ -699,17 +665,6 @@
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_real_parent_and_child_ports_commit_actual_provider_results": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Financial_off_real_parent_and_child_ports_commit_actual_provider_results"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_cancel_signals_only_matching_refresh_and_keeps_physical_claim_until_join": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_cancel_signals_only_matching_refresh_and_keeps_physical_claim_until_join(leaseLost: False, callbackFails: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_cancel_signals_only_matching_refresh_and_keeps_physical_claim_until_join(leaseLost: False, callbackFails: True)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_cancel_signals_only_matching_refresh_and_keeps_physical_claim_until_join(leaseLost: True, callbackFails: False)"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh(missingBill: False, unrelatedBacklog: False, optOut: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh(missingBill: False, unrelatedBacklog: False, optOut: True)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh(missingBill: False, unrelatedBacklog: True, optOut: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Http_retry_revalidates_real_parked_never_attempted_refresh(missingBill: True, unrelatedBacklog: False, optOut: False)"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_scheduler_discovery_fault_cancels_and_joins_its_waiting_pump": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_scheduler_discovery_fault_cancels_and_joins_its_waiting_pump"
@@ -758,13 +713,20 @@
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"Failed to bind to address http://127.0.0.1:1234: p\"\u00b7\u00b7\u00b7, expected: False)",
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"Failed to bind to address http://127.0.0.1:1234: p\"···, expected: False)",
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"Peer credential unavailable\", expected: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"System.Net.Sockets.SocketException: Address alread\"\u00b7\u00b7\u00b7, expected: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"Unhandled exception. System.IO.IOException: Failed\"\u00b7\u00b7\u00b7, expected: True)"
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"System.Net.Sockets.SocketException: Address alread\"···, expected: False)",
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure(output: \"Unhandled exception. System.IO.IOException: Failed\"···, expected: True)"
+        ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_tool_offers_award_work_despite_historical_finite_capacity": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_tool_offers_award_work_despite_historical_finite_capacity(toolOffer: False)",
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_tool_offers_award_work_despite_historical_finite_capacity(toolOffer: True)"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_can_correct_after_revocation_but_spoofed_caller_cannot": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_operator_can_correct_after_revocation_but_spoofed_caller_cannot"
+        ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_root_issue_accepts_a_grant_with_only_nonfinancial_authority": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_root_issue_accepts_a_grant_with_only_nonfinancial_authority"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_disposal_fault_stops_hosted_siblings_and_releases_work": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Observer_disposal_fault_stops_hosted_siblings_and_releases_work"
@@ -792,27 +754,17 @@
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Pre_dispatch_lease_cleanup_refuses_unproven_or_foreign_ownership(scenario: \"revision\")"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt"
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt(historicalFiniteGrant: False)",
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt(historicalFiniteGrant: True)"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Real_host_readiness_stop_joins_refresh_tracker_even_when_stop_is_cancelled": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Real_host_readiness_stop_joins_refresh_tracker_even_when_stop_is_cancelled"
         ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Reconciler_wins_claim_after_committed_admission_without_second_provider_get": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Reconciler_wins_claim_after_committed_admission_without_second_provider_get"
-        ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Refused_initial_observation_requires_cadence_before_recovery_retry": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Refused_initial_observation_requires_cadence_before_recovery_retry"
         ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_recovers_actual_never_attempted_refresh_after_admission": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_recovers_actual_never_attempted_refresh_after_admission"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_refresh_handler_and_readiness_own_actual_reader": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_refresh_handler_and_readiness_own_actual_reader(stopDuringBody: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_refresh_handler_and_readiness_own_actual_reader(stopDuringBody: True)"
-        ],
-        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Revoked_signet_refuses_new_inference_but_preserves_authenticated_provider_spend": [
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Revoked_signet_refuses_new_inference_but_preserves_authenticated_provider_spend(recover: False)",
-          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Revoked_signet_refuses_new_inference_but_preserves_authenticated_provider_spend(recover: True)"
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_retires_never_attempted_historical_refresh_without_provider_dispatch": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Registered_reconciler_retires_never_attempted_historical_refresh_without_provider_dispatch"
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduled_completion_retains_claim_while_child_work_is_unfinished": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduled_completion_retains_claim_while_child_work_is_unfinished"
@@ -822,12 +774,6 @@
         ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Unrelated_observer_open_cancellation_propagates_and_releases_work": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Unrelated_observer_open_cancellation_propagates_and_releases_work"
-        ],
-        "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit": [
-          "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit(fault: False, wrongTask: False)",
-          "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit(fault: False, wrongTask: True)",
-          "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit(fault: True, wrongTask: False)",
-          "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualGuildHeartbeatFinallyRetainsExactCompletionAcrossNormalAndFaultExit(fault: True, wrongTask: True)"
         ],
         "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Closed_refresh_tracker_task_publication_requires_the_actual_population_and_bindings": [
           "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Closed_refresh_tracker_task_publication_requires_the_actual_population_and_bindings(shape: \"actual\", safe: True)",

@@ -38,22 +38,6 @@ internal static partial class CliCommandTree
 
         Add(task, "cancel", "Request durable subtree cancellation.", ["task"], ["expected-revision!", "idempotency-key"]);
 
-        Add(task, "spend", "Inspect exact subtree spend and remaining authority.", ["task"], []);
-
-        Command spend = Family("spend", "Inspect physical spend and attest corrected local totals.");
-
-        Add(spend, "list", "List one page of physical effects.", ["task"], ["cursor", "page-size"]);
-
-        Add(spend, "show", "Show one exact physical effect.", ["task"], ["effect!"]);
-
-        Add(spend, "correct", "Attest corrected local physical totals.", ["task"], ["effect!", "idempotency-key!", "expected-revision!", "input-tokens!", "output-tokens!", "cached-tokens!", "reasoning-tokens!", "usd!", "evidence-digest!"]);
-
-        Add(spend, "refresh", "Refresh local spend from its bound provider.", ["task"], ["effect!", "idempotency-key!"]);
-
-        Add(spend, "receipts", "List one page of effect receipts.", ["task"], ["effect!", "cursor", "page-size"]);
-
-        Add(spend, "receipt", "Show one exact effect receipt.", ["task"], ["effect!", "receipt!"]);
-
         Command signet = Family("signet", "Revoke stored authority without exposing credentials.");
 
         Add(signet, "revoke", "Revoke a stored Signet and request cancellation.", ["signet"], ["expected-revision!", "idempotency-key"]);
@@ -171,7 +155,7 @@ internal static partial class CliCommandTree
                 {
                     option = new Option<bool>(optionName) { Description = Description(key) };
                 }
-                else if (key is "expected-revision" or "expected-cohort-revision" or "revision" or "epoch" or "card-revision" or "quorum" or "page-size" or "input-tokens" or "output-tokens" or "cached-tokens" or "reasoning-tokens")
+                else if (key is "expected-revision" or "expected-cohort-revision" or "revision" or "epoch" or "card-revision" or "quorum" or "page-size")
                 {
                     option = new Option<long?>(optionName) { Required = required, Description = Description(key) };
                 }
@@ -181,10 +165,7 @@ internal static partial class CliCommandTree
                 }
                 else
                 {
-                    Option<string?> text = new(optionName) { Required = required, Description = parent.Name == "spend" && key == "idempotency-key"
-                        ? name == "correct" ? "Required explicit attestation UUID; reused for exact replay."
-                            : name == "refresh" ? "Required explicit refresh UUID; reused for exact replay." : Description(key)
-                        : Description(key) };
+                    Option<string?> text = new(optionName) { Required = required, Description = Description(key) };
 
                     if (key == "policy") text.AcceptOnlyFromAmong("all", "first", "quorum");
 
@@ -238,10 +219,6 @@ internal static partial class CliCommandTree
         "goal-file" or "text-file" => "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
         "grant-file" => "Bounded JSON grant file; complete GuildGrant at a root, GuildRequestedGrant when narrowing.",
         "idempotency-key" => "Mutation UUID; generated once when omitted and reused by transport retries.",
-        "effect" or "receipt" => "Exact nonempty UUID; selection does not grant authority.",
-        "usd" => "Exact nonnegative JSON decimal number, without rounding.",
-        "evidence-digest" => "SHA-256 evidence digest as 64 hexadecimal characters.",
-        "input-tokens" or "output-tokens" or "cached-tokens" or "reasoning-tokens" => "Explicit nonnegative token total.",
         "expected-revision" => "Required current resource revision; conflicts are reported without retrying the changed action.",
         "expected-cohort-revision" => "Required current Cohort aggregate revision.",
         "page-size" => "Requested records per page, 1 through 100; the byte limit may return fewer.",

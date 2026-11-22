@@ -47,7 +47,7 @@ public sealed partial class GuildLocalHostPolicyTests
         await using var connection = opened.Value;
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        BudgetReservationService daily = new(db);
 
         int sends = 0;
 

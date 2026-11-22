@@ -81,7 +81,6 @@ public sealed partial class WizardIntelligenceProviderTests
             settings.Providers = [local];
             settings.LocalRuntimes = [new() { Id = runtimeId, Adapter = LocalRuntimeAdapterCatalog.Ollama, ManagementEndpoint = managementEndpoint }];
             settings.Features = DefaultSettings().Features with { Embeddings = false, Saga = false, Covenant = false, Reasoning = false };
-            settings.Cost.Budget.Enabled = false;
         });
 
         var previous = host.ServiceOverrides;

@@ -18,9 +18,6 @@ public static class DisabledSettingPaths
 
     public const string AllowMemoryManagement = "Arcanum:Features:MemoryManagement";
 
-    public const string BudgetEnabled = "Arcanum:Cost:Budget:Enabled";
-
-    public const string BudgetDailyLimitUsd = "Arcanum:Cost:Budget:DailyLimitUsd";
 
     public const string InferenceAuditLogEnabled = "Arcanum:Host:AuditLog:Enabled";
 
@@ -37,8 +34,6 @@ public static class DisabledSettingPaths
     public static readonly string[] WorkspaceFileWrite = [EnableFileWrite];
 
     public static readonly string[] SessionMemoryManagement = [AllowMemoryManagement];
-
-    public static readonly string[] Budget = [BudgetEnabled, BudgetDailyLimitUsd];
 
     public static readonly string[] InferenceAudit = [InferenceAuditLogEnabled];
 

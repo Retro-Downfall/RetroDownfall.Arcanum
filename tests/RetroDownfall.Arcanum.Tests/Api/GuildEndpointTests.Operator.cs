@@ -65,52 +65,6 @@ public sealed partial class GuildEndpointTests
     }
 
     [SkippableFact]
-    public async Task Operator_can_read_spend_for_an_accepted_quest()
-    {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
-
-        await using ArcanumWebApplicationFactory factory = new()
-        {
-            SettingsOverride = settings =>
-            {
-                settings.Features.Guild = true;
-
-                settings.Features.Apprentices = true;
-
-                return settings;
-            },
-            ServiceOverrides = HoldExecution,
-        };
-
-        using HttpClient client = factory.CreateAuthenticatedClient();
-
-        GuildIssueRootRequest request = new(Guid.NewGuid(), null, "Spend root", "Inspect spend",
-            new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [], null));
-
-        using HttpResponseMessage issued = await client.PostAsync("/api/guild/quests",
-            Json(JsonSerializer.Serialize(request, GuildJsonContext.Default.GuildIssueRootRequest)));
-
-        Assert.Equal(HttpStatusCode.Created, issued.StatusCode);
-
-        using JsonDocument accepted = JsonDocument.Parse(await issued.Content.ReadAsStringAsync());
-
-        Guid questId = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
-
-        using HttpResponseMessage response = await client.GetAsync($"/api/guild/quests/{questId:D}/spend");
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-
-        Assert.Equal(questId, body.RootElement.GetProperty("data").GetProperty("questId").GetGuid());
-
-        Assert.Equal(0, body.RootElement.GetProperty("data").GetProperty("knownTokens").GetInt64());
-    }
-
-
-    [SkippableFact]
     public async Task Operator_child_issue_replays_before_parent_revision_check()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

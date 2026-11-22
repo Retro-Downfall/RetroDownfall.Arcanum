@@ -20,10 +20,6 @@ internal sealed partial class GuildQuestStore
 
                 if (policy is not GuildLocalHostPolicy host) return GuildLocalToolRegistry.Unavailable;
 
-                if (GuildTaskArguments.IsRemote(admission.Arguments) && requested is { Budget.IsSpecified: true, Budget.Value: { } budget }
-                    && (budget.Usd.Mode != GuildBudgetMode.Unlimited || budget.Tokens.Mode != GuildBudgetMode.Unlimited))
-                    return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "The remote transport cannot enforce finite requested spending authority.");
-
                 var grant = await host.ValidateTaskGrantWithinAsync(connection, transaction,
                     allowed.Value.Quest.ResolvedGrant, requested, token).ConfigureAwait(false);
 

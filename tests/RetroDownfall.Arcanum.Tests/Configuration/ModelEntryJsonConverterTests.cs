@@ -179,7 +179,6 @@ public sealed class ModelEntryJsonConverterTests
         ModelEntry? entry = _converter.Read(ref reader, typeof(ModelEntry), Options);
 
         Assert.Equal(ReasoningWireDialect.OpenRouter, entry?.Reasoning?.WireDialect);
-        Assert.Equal(65_536, entry?.Reasoning?.MaxBudgetTokens);
     }
 
     [Theory]
@@ -257,7 +256,6 @@ public sealed class ModelEntryJsonConverterTests
             Reasoning = new ModelReasoningSettings
             {
                 WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
-                MaxBudgetTokens = 32_768,
             },
         };
 
@@ -273,7 +271,7 @@ public sealed class ModelEntryJsonConverterTests
         JsonElement reasoning = document.RootElement.GetProperty("reasoning");
 
         Assert.Equal("topLevelReasoningBudget", reasoning.GetProperty("wireDialect").GetString());
-        Assert.Equal(32_768, reasoning.GetProperty("maxBudgetTokens").GetInt32());
+        Assert.False(reasoning.TryGetProperty("maxBudgetTokens", out _));
         Assert.False(reasoning.TryGetProperty("controlSupport", out _));
     }
 

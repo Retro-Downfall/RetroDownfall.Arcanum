@@ -91,7 +91,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 Endpoint = "https://example.test/v1", Models = ["accepted-model"] }],
         };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         using ChildToolTransport transport = new() { UsageVariant = readinessLoss, PromptOnly = readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage"
             or "cached-only" or "reasoning-only" or "both-details" or "bad-cached" or "bad-reasoning" or "duplicate-detail"

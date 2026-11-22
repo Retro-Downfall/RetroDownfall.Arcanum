@@ -610,8 +610,6 @@ public static class ApiBootstrapper
 
         services.AddSingleton<StructuredOutputValidator>();
 
-        services.AddSingleton<BudgetMonitor>();
-
         services.AddSingleton<PromptCacheDispatchValidator>();
 
         services.AddSingleton<TapestryInvocationValidator>();
@@ -1493,8 +1491,6 @@ public static class ApiBootstrapper
         apiGroup.MapServerLifecycleEndpoints();
 
         apiGroup.MapRepairActivationDrain();
-
-        apiGroup.MapBudgetEndpoints();
 
         apiGroup.MapLongRunningOperationEndpoints();
 

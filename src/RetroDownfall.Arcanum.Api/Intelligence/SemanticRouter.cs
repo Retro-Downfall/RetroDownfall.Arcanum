@@ -23,12 +23,13 @@ internal sealed record SemanticSpellRoutingResult(
 
 internal static class SemanticRouter
 {
+    internal const int ReservedAnswerTokens = 128;
+
     internal static async Task<SemanticSpellRoutingResult?> DetermineActiveSpellAsync(
         IChatClient client,
         string userPrompt,
         IReadOnlyList<SpellMetadata> availableSpells,
         TimeSpan preflightTimeout,
-        int maxOutputTokens,
         float temperature,
         CancellationToken cancellationToken,
         ILogger? logger = null,
@@ -90,7 +91,6 @@ internal static class SemanticRouter
 
         var routerOptions = new ChatOptions
         {
-            MaxOutputTokens = maxOutputTokens,
             Temperature = temperature,
             ResponseFormat = ChatResponseFormat.Json,
         };

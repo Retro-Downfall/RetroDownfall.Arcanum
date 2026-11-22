@@ -164,30 +164,6 @@ public sealed class ArcanumSettingClampsTests
     }
 
     [Fact]
-    public void BudgetDailyLimitUsd_clamps_to_valid_range()
-    {
-
-        Assert.Equal(0.00m, ArcanumSettingClamps.BudgetDailyLimitUsd(-5.00m));
-
-        Assert.Equal(10.00m, ArcanumSettingClamps.BudgetDailyLimitUsd(10.00m));
-
-        Assert.Equal(1_000_000.00m, ArcanumSettingClamps.BudgetDailyLimitUsd(2_000_000.00m));
-
-    }
-
-    [Fact]
-    public void BudgetAlertThresholdPercent_clamps_to_valid_range()
-    {
-
-        Assert.Equal(1, ArcanumSettingClamps.BudgetAlertThresholdPercent(0));
-
-        Assert.Equal(80, ArcanumSettingClamps.BudgetAlertThresholdPercent(80));
-
-        Assert.Equal(100, ArcanumSettingClamps.BudgetAlertThresholdPercent(150));
-
-    }
-
-    [Fact]
     public void NormalizeWorkspacePatchSettings_clamps_every_scalar_to_lower_bounds()
     {
         WorkspacePatchSettings normalized =

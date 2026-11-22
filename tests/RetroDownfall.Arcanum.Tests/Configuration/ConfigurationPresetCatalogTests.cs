@@ -255,7 +255,7 @@ public sealed class ConfigurationPresetCatalogTests
 
     [Fact]
 
-    public void Catalog_never_owns_secrets_endpoints_internal_mechanics_or_unlimited_budget_values()
+    public void Catalog_never_owns_secrets_endpoints_or_internal_mechanics()
     {
         string[] prohibitedPathFragments =
         [
@@ -334,13 +334,13 @@ public sealed class ConfigurationPresetCatalogTests
 
     [Fact]
 
-    public void Automation_requires_an_existing_positive_budget_without_owning_the_budget()
+    public void Automation_requires_only_a_configured_provider_and_model()
     {
         ConfigurationPresetDefinition automation = ConfigurationPresetCatalog.Find("automation")!;
 
-        Assert.Contains(
-            automation.Prerequisites,
-            static prerequisite => prerequisite.Id == "positive-budget" && prerequisite.Required);
+        ConfigurationPresetPrerequisite prerequisite = Assert.Single(automation.Prerequisites);
+        Assert.Equal(ConfigurationPresetCatalog.ProviderModelPrerequisite, prerequisite.Id);
+        Assert.True(prerequisite.Required);
 
         Assert.DoesNotContain(
             automation.OwnedSettings,
@@ -381,7 +381,7 @@ public sealed class ConfigurationPresetCatalogTests
         ConfigurationPresetDefinition automation = ConfigurationPresetCatalog.Find("automation")!;
 
         Assert.Equal(
-            "Enables unattended execution only after an operator supplies a positive explicit budget.",
+            "Enables unattended execution after a provider and model are configured.",
             automation.Purpose);
 
         Assert.Equal(
@@ -414,7 +414,7 @@ public sealed class ConfigurationPresetCatalogTests
                 "Automatic long-term-memory extraction and destructive memory management.",
                 "Ordinary tools do not pause for Ward approval; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
                 "A configured inference provider and model are required for first success.",
-                "No budget or concurrency limit is changed."),
+                "Existing concurrency settings are preserved."),
             [
                 new(
                     "provider-model",
@@ -492,7 +492,7 @@ public sealed class ConfigurationPresetCatalogTests
                 "No local memory, citation, retry, hop, timeout, or loop setting is changed.",
                 "Research sends queries and selected page requests to external services.",
                 "An inference provider/model and a securely stored Perplexity credential are required.",
-                "External research can incur provider cost; existing explicit budgets remain unchanged."),
+                "External research can incur provider charges."),
             [
                 new(
                     "provider-model",
@@ -533,7 +533,7 @@ public sealed class ConfigurationPresetCatalogTests
                 "Built-in external web research, enterprise telemetry, and non-loopback host binding.",
                 "Configured third-party integrations are not erased; inspect them before assuming fully offline operation.",
                 "The selected inference provider endpoint must be loopback.",
-                "No budget, storage-retention, or concurrency value is changed."),
+                "Storage retention and concurrency settings are preserved."),
             [
                 new(
                     "loopback-provider",
@@ -555,7 +555,7 @@ public sealed class ConfigurationPresetCatalogTests
             "automation",
             1,
             "Automation",
-            "Enables unattended execution only after an operator supplies a positive explicit budget.",
+            "Enables unattended execution after a provider and model are configured.",
             [
                 new("security.ward.enabled", "true", true, [], true),
                 new("security.ward.autoDenyInUnattendedMode", "true", true, [], true),
@@ -567,16 +567,11 @@ public sealed class ConfigurationPresetCatalogTests
                 "No unsandboxed child process, destructive memory action, or untrusted MCP server.",
                 "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
                 "A configured inference provider/model is required.",
-                "An already enabled, positive daily budget is required and is never invented or enlarged."),
+                "Hosted providers may charge for unattended work."),
             [
                 new(
                     "provider-model",
                     "A configured provider must advertise the selected model.",
-                    "arcanum config open",
-                    true),
-                new(
-                    "positive-budget",
-                    "Daily budget enforcement must already be enabled with a value greater than zero.",
                     "arcanum config open",
                     true),
             ],
@@ -587,7 +582,7 @@ public sealed class ConfigurationPresetCatalogTests
                     false),
             ],
             new ExpectedProgressiveDisclosure(
-                "Set and review an explicit positive daily budget.",
+                "Review the selected provider before scheduling unattended work.",
                 ["Jobs, schedules, apprentices, and integration-specific permissions remain separate choices."],
                 "Run arcanum daemon status.")),
         new(
@@ -601,7 +596,7 @@ public sealed class ConfigurationPresetCatalogTests
                 "Nothing automatically.",
                 "The operator is responsible for reviewing every enabled capability and boundary.",
                 "No provider is selected or modified.",
-                "No budget, concurrency, retry, timeout, or loop value is changed."),
+                "Existing concurrency, retry, timeout, and loop settings are preserved."),
             [],
             [
                 new(

@@ -13,7 +13,7 @@ public sealed class CampaignMaintenancePayload
 
     public const string SchemaDescription = "A bounded continuity summary.";
 
-    public const int MaxOutputTokens = 2048;
+    public const int ReservedAnswerTokens = 2048;
 
     public static ImmutableArray<byte> SchemaUtf8 { get; } = [.. Encoding.UTF8.GetBytes(SchemaJson)];
 

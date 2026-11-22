@@ -27,17 +27,6 @@ internal static partial class GuildEndpoints
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildQuestPageDto);
         }).WithName("GuildGetQuestTree");
 
-        api.MapGet("/guild/quests/{questId:guid}/spend", async (Guid questId,
-            GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
-        {
-            Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
-
-            Result<GuildSpendDto> result = caller.IsFailure ? caller.Error
-                : await ((IGuildTreeSpendLedger)store).ReadAsync(caller.Value, questId, context.RequestAborted).ConfigureAwait(false);
-
-            return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendDto);
-        }).WithName("GuildGetTreeSpend");
-
         api.MapPost("/guild/quests/{questId:guid}/children", async (Guid questId, GuildIssueChildRequest? request,
             GuildNativeHost host, IGuildQuestCoordinator coordinator, HttpContext context) =>
         {

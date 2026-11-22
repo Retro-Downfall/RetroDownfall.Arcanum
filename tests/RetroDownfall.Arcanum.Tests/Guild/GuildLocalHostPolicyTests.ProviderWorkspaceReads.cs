@@ -48,9 +48,8 @@ public sealed partial class GuildLocalHostPolicyTests
         settings.DefaultModel = "accepted-model";
 
         settings.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
-            Endpoint = "https://example.test/v1", GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }];
+            Endpoint = "https://example.test/v1", Models = ["accepted-model"] }];
 
-        settings.Cost.Budget.Enabled = false;
 
         await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
             TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
@@ -147,7 +146,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db, f.Settings), settings, clients, coordinator);
+            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db), settings, clients, coordinator);
 
             var result = await runtime.Runtime.ExecuteTurnAsync(execution, input.Value,
                 new("Use the permitted workspace tools.", DisableAllTools: false), default);

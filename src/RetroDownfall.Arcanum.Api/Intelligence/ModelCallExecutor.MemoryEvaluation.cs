@@ -22,7 +22,7 @@ public sealed partial class ModelCallExecutor
         if (!string.Equals(context.Model, plan.Request.Request.Model, StringComparison.Ordinal)
             || !string.Equals(context.Provider.Name, plan.Request.Request.ProviderName, StringComparison.OrdinalIgnoreCase)
             || _tokenEstimator is null || context.PrecomputedBreakdown is not { } admitted || context.PromptCachePlan is not null
-            || context.ReservedAnswerTokens != plan.Request.Request.Options.MaxOutputTokens || context.ReservedReasoningTokens != 0)
+            || context.ReservedAnswerTokens != MemoryEvaluationLimits.ReservedAnswerTokens(plan.Request.Request.Options) || context.ReservedReasoningTokens != 0)
             return new Error(ErrorCodes.MemoryEvaluation.InvalidAdmission, "The exact evaluation context admission is unavailable.");
 
         List<ChatMessage> messages = MemoryEvaluationProviderCallFreezer.Messages(plan, arm);

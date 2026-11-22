@@ -583,7 +583,6 @@ public sealed partial class WizardIntelligenceProviderTests
             settings.DefaultModel = ModelName;
             settings.Providers = [provider];
             settings.Features = DefaultSettings().Features with { Embeddings = false, Saga = false, Covenant = false, Reasoning = false };
-            settings.Cost.Budget.Enabled = false;
         });
 
         var previous = host.ServiceOverrides;

@@ -21,6 +21,7 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -392,6 +393,31 @@ public sealed class LongRestProviderDispatchTests
         Assert.Equal(17L, await f.H.ScalarAsync("SELECT InputTokens FROM BillableOperations;"));
     }
 
+    [Theory]
+    [InlineData(LongRestProviderPayloadKind.Summary)]
+    [InlineData(LongRestProviderPayloadKind.Adjudication)]
+    public async Task Closed_chat_omits_host_output_caps_on_the_provider_wire(LongRestProviderPayloadKind kind)
+    {
+        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync(kind);
+
+        if (kind == LongRestProviderPayloadKind.Adjudication) f.Handler.ChatText = LongRestScriptedVerdicts.NoMatches(2);
+
+        Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
+            f.Callback(await f.PrepareAsync()), f.Admission(), CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(1, f.Handler.SendCount);
+
+        using JsonDocument wire = JsonDocument.Parse(f.Handler.LastBody!);
+
+        Assert.False(wire.RootElement.TryGetProperty("max_tokens", out _));
+
+        Assert.False(wire.RootElement.TryGetProperty("max_completion_tokens", out _));
+
+        Assert.True(wire.RootElement.TryGetProperty("response_format", out _));
+    }
+
     [Fact]
     public async Task Closed_adjudication_preserves_NoChange_and_separate_paid_purpose()
     {
@@ -417,27 +443,22 @@ public sealed class LongRestProviderDispatchTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Exact_input_reservation_is_reconciled_to_reported_paid_spend(bool embedding)
+    public async Task Legacy_cost_limit_does_not_refuse_measured_provider_usage(bool embedding)
     {
         await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync(embedding ? LongRestProviderPayloadKind.Embedding : LongRestProviderPayloadKind.Summary);
 
-        f.UseDurableBudget();
+        f.Options.Set(LegacyBudgetFixture.ReadWithOldDailyLimit(f.Options.CurrentValue, 0.000001m));
 
         LongRestProviderAdmission admission = f.Admission();
 
-        int input = embedding ? ((LongRestProviderAdmission.Embedding)admission).ReservedInputTokens
-            : ((LongRestProviderAdmission.Chat)admission).Context.PrecomputedBreakdown!.InputTokens;
         Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
             f.Callback(await f.PrepareAsync()), admission, CancellationToken.None);
         Assert.True(result.IsSuccess);
 
-        decimal expected = input * 2m / 1000000m + (embedding ? 0m : 2048 * 3m / 1000000m);
+        Assert.Equal(embedding ? "0.000034" : "0.000043",
+            await f.H.ScalarAsync("SELECT ActualCostUsd FROM BillableOperations;"));
 
-        Assert.Equal(expected, decimal.Parse((string)(await f.H.ScalarAsync("SELECT ReservedUsd FROM BudgetReservations;"))!, System.Globalization.CultureInfo.InvariantCulture));
-
-        Assert.Equal(embedding ? "0.000034" : "0.000043", await f.H.ScalarAsync("SELECT ReconciledUsd FROM BudgetReservations;"));
-
-        Assert.Equal(1L, await f.H.ScalarAsync("SELECT Status FROM BudgetReservations;"));
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
 
         InferenceAuditRecord audit = Assert.Single(f.Audit.Records);
 
@@ -655,17 +676,9 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         f.Provider = new(f.ClientFactory, new ModelCallExecutor(f.Estimator, f.Options, f.Log), f.Epoch,
             new PaidRunWriter(new TurnRunWriter(f.H.Saga.Context), () => f.PaidRecorded?.Invoke()),
-            new BudgetReservationService(f.H.Saga.Context, f.Options), audit: f.Audit);
+            audit: f.Audit);
 
         return f;
-    }
-
-    internal void UseDurableBudget()
-    {
-        Options.CurrentValue.Cost.Budget = new() { Enabled = true, DailyLimitUsd = 100m };
-
-        Provider = new(ClientFactory, new ModelCallExecutor(Estimator, Options, Log), Epoch,
-            new PaidRunWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke()), new BudgetReservationService(H.Saga.Context, Options), Audit);
     }
 
     internal LongRestProviderAdmission Admission()
@@ -681,7 +694,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         LongRestProviderSelection chat = Epoch.Capture().ResolveChat().Value;
 
-        return new LongRestProviderAdmission.Chat(new(chat.Provider, chat.Model, 2048, 0,
+        return new LongRestProviderAdmission.Chat(new(chat.Provider, chat.Model, LongRestPromptLayout.OutputHeadroomTokens, 0,
             Estimator.EstimateLongRestChat(chat.Provider, chat.Model, Payload)));
     }
 

@@ -319,32 +319,11 @@ public sealed class BatchAccountingRecoveryStoreTests : IAsyncLifetime
             IdempotencyClaimId: null,
             StartedAt: DateTimeOffset.UtcNow));
 
-    private async Task<BudgetReservation> ReserveAsync(Guid runId)
+    private Task<BudgetReservation> ReserveAsync(Guid runId)
     {
-        BudgetReservationService reservations = new(
-            _db!,
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
-            {
-                Cost = new CostSettings
-                {
-                    Budget = new BudgetPolicySettings
-                    {
-                        Enabled = true,
-                        DailyLimitUsd = 100m,
-                    },
-                },
-            }));
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        Result<BudgetReservation> result = await reservations.ReserveAsync(
-            new BudgetReservationRequest(
-                runId,
-                ReservedUsd: 10m,
-                ExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
-                BudgetPeriod: BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow)));
-
-        Assert.True(result.IsSuccess, result.Error.Message);
-
-        return result.Value;
+        return LegacyBudgetFixture.SeedAsync(_db!, new(runId, 10m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
     }
 
     private static Task<Guid> RecordCostAsync(TurnRunWriter runs, Guid runId, decimal cost) =>

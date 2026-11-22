@@ -522,6 +522,67 @@ class ClassifyManifestDiffTests(unittest.TestCase):
                 with self.assertRaises(CLASSIFIER.ManifestError):
                     CLASSIFIER.read_guild_scheduler_reaches(contract)
 
+    def test_a_provider_call_removal_requires_the_exact_retired_row_and_its_former_named_caller(self) -> None:
+        caller = "src/RefreshRecovery.cs"
+        marker = "await RunClaimedAsync(checkpoint, token);"
+        replacement = "await ReadReceiptAsync();"
+        base = "private async Task RecoverClaimedAsync() { " + marker + " }"
+        head = "private async Task RecoverClaimedAsync() { " + replacement + " }"
+        removed = site("src/OutboundGuard.cs", callee="IDnsResolver.GetHostAddressesAsync", kind="ProviderCall")
+        exact = CLASSIFIER.ExactSourceReach(frozenset([removed]), caller, "RecoverClaimedAsync", marker,
+            "prior metadata recovery reached DNS", "-", replacement)
+
+        def classify_removal(row=removed, old_source=base, new_source=head, edited=(caller,), parity=None, reached=(exact,)):
+            old = manifest(row)
+            new = manifest()
+            sources = FakeSources(base={caller: old_source}, head={caller: new_source})
+            with patched("RETIRED_SOURCE_REACHES", reached):
+                labelled = CLASSIFIER.classify(old, new, frozenset(edited), parity=parity, sources=sources)
+                violations = next(check.violations for check in CLASSIFIER.check_invariants(old, new, labelled, parity)
+                    if check.name == "provider-call-removals")
+            return labelled[0], violations
+
+        for parity in (None, manifest(removed)):
+            label, violations = classify_removal(parity=parity)
+            self.assertEqual(("r", CLASSIFIER.RETIRED_SOURCE_REACH_RULE, []), (label.label, label.rule, violations))
+
+        for overrides in (
+            {"row": removed._replace(authority_operation_id="Other.Run")},
+            {"row": removed._replace(syntax_ordinal="1")},
+            {"new_source": base},
+            {"new_source": head.replace("ReadReceiptAsync", "OtherAsync")},
+            {"new_source": head.replace("RecoverClaimedAsync", "OtherAsync")},
+            {"old_source": base.replace("RecoverClaimedAsync", "OtherAsync")},
+            {"old_source": base.replace(marker, f"{marker} {marker}")},
+            {"old_source": base.replace(marker, f"{marker} {replacement}")},
+            {"edited": ()},
+            {"parity": manifest()},
+            {"reached": ()},
+        ):
+            with self.subTest(overrides=overrides):
+                _, violations = classify_removal(**overrides)
+                self.assertEqual(1, len(violations))
+
+    def test_retired_budget_reach_table_names_only_the_removed_metadata_and_daily_quota_paths(self) -> None:
+        reaches = CLASSIFIER.RETIRED_SOURCE_REACHES
+        reviewed = CLASSIFIER.read_manifest(str(MANIFEST_PATH), "reviewed")
+        self.assertEqual({"RecoverClaimedAsync": 36, "ProcessPageAsync": 9},
+            {entry.caller_member: len(entry.rows) for entry in reaches})
+        self.assertEqual(2, sum(row.kind == "ProviderCall" for entry in reaches for row in entry.rows))
+
+        for entry in reaches:
+            source = (REPOSITORY / entry.caller).read_text(encoding="utf-8")
+            self.assertNotIn(entry.marker, source)
+            self.assertEqual("-", entry.side)
+            self.assertEqual(1, sum(body.count(entry.replacement) for body in CLASSIFIER.member_bodies(source, entry.caller_member)))
+            former = "private async Task " + entry.caller_member + "() { " + entry.marker + " }"
+            edited = frozenset({entry.caller})
+            sources = FakeSources(base={entry.caller: former}, head={entry.caller: source})
+            for row in entry.rows:
+                self.assertNotIn(row, reviewed.counter)
+                self.assertIs(entry, CLASSIFIER.prove_reach(row, "-", edited, sources)[0])
+                self.assertIsNone(CLASSIFIER.prove_reach(row, "+", edited, sources)[0])
+
     def test_a_reviewed_call_chain_explains_a_removed_row_only_when_the_call_is_gone_at_the_head(self) -> None:
         removed = site("src/Unedited.cs", member="ProveAbsent")
 
@@ -2375,7 +2436,7 @@ class VersionMigrationAndStartupWitnessTests(unittest.TestCase):
         self.assertIsNone(CLASSIFIER.prove_reach(row, '+', edited, FakeSources(base={entry.caller: ''}, head={entry.caller: ''}))[0])
         self.assertIsNone(CLASSIFIER.prove_reach(row, '+', frozenset(), sources)[0])
 
-    def test_exact_selected_startup_group_witness_only(self):
+    def test_legacy_startup_refresh_cannot_authorize_new_provider_work(self):
         root = 'LongRunningOperationStartupHostedService'
         operation = ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:'
                      'RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~ABC')
@@ -2388,7 +2449,7 @@ class VersionMigrationAndStartupWitnessTests(unittest.TestCase):
         def violations(row, witness):
             return next(x.violations for x in CLASSIFIER.check_invariants(manifest(), manifest_v2(witness, row))
                         if x.name == 'provider-call-frames')
-        self.assertEqual([], violations(provider, group))
+        self.assertTrue(violations(provider, group))
         conflicting = group._replace(work='B' * 64)
         ambiguous = next(x.violations for x in CLASSIFIER.check_invariants(manifest(), manifest_v2(group, conflicting, provider))
                          if x.name == 'provider-call-frames')

@@ -15,12 +15,12 @@ internal sealed partial class GuildQuestStore
     private readonly ConditionalWeakTable<GuildBudgetEffectRequest, GuildLocalInferenceExecution> _providerReceipts = new();
 
     internal Task<Result<T>> ExecuteProviderEffectAsync<T>(GuildLocalInferenceExecution execution,
-        BudgetReservationService daily, GuildBudgetEffectRequest effect,
+        BudgetReservationService? daily, GuildBudgetEffectRequest effect,
         Func<CancellationToken, Task<Result<T>>> send, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
         IReadOnlyList<GuildCircleInputBatch>? circleInputs = null, GuildSpendSourceCredential? spendSource = null,
         string? spendPricing = null, IReadOnlyList<GuildWorkspaceReadDisclosure>? workspaceDisclosures = null)
     {
-        if (!ProviderIdentityMatches(execution, effect) || daily is null || send is null || allocations is not GuildBudgetLedger ledger)
+        if (!ProviderIdentityMatches(execution, effect) || send is null || allocations is not GuildBudgetLedger ledger)
             return Task.FromResult(Result<T>.Failure(InvalidReceipt));
 
         Result ready = RequireLocalExecutionReady();
@@ -86,8 +86,8 @@ internal sealed partial class GuildQuestStore
 
                 if (run.IsFailure) return run.Error;
 
-                Result<GuildBudgetEffect> prepared = await GuildBudgetPhysicalAccounting.PrepareLocalWithinAsync(connection,
-                    transaction, ledger, daily, effect, time.GetUtcNow().AddHours(1), token).ConfigureAwait(false);
+                Result<GuildBudgetEffect> prepared = await ledger.PrepareEffectWithinAsync(connection,
+                    transaction, effect, token).ConfigureAwait(false);
 
                 if (prepared.IsFailure) return prepared.Error;
 
@@ -138,7 +138,7 @@ internal sealed partial class GuildQuestStore
         GuildBudgetEffectRequest Effect, object Response, BillableOperationRecord Bill);
 
     internal async Task<Result<T>> ExecuteAndSettleProviderResponseAsync<T>(GuildLocalInferenceExecution execution,
-        BudgetReservationService daily, GuildBudgetEffectRequest effect, Func<CancellationToken, Task<Result<T>>> send,
+        BudgetReservationService? daily, GuildBudgetEffectRequest effect, Func<CancellationToken, Task<Result<T>>> send,
         Func<T, Result<BillableOperationRecord>> project, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
         IReadOnlyList<GuildCircleInputBatch>? circleInputs = null, GuildSpendSourceCredential? spendSource = null,
         string? spendPricing = null, IReadOnlyList<GuildWorkspaceReadDisclosure>? workspaceDisclosures = null) where T : class
@@ -178,7 +178,7 @@ internal sealed partial class GuildQuestStore
         => SettleProviderEffectCoreAsync(execution, daily, effect, bill, null, ct);
 
     private Task<Result<GuildBudgetEffect>> SettleProviderEffectCoreAsync(GuildLocalInferenceExecution execution,
-        BudgetReservationService daily, GuildBudgetEffectRequest effect, BillableOperationRecord bill,
+        BudgetReservationService? daily, GuildBudgetEffectRequest effect, BillableOperationRecord bill,
         ReceivedProviderResponse? proof, CancellationToken ct)
     {
         if (proof is not null && (!ReferenceEquals(proof.Store, this) || !ReferenceEquals(proof.Execution, execution)
@@ -186,7 +186,7 @@ internal sealed partial class GuildQuestStore
             return Task.FromResult(Result<GuildBudgetEffect>.Failure(InvalidReceipt));
 
         if (!ProviderIdentityMatches(execution, effect) || !_providerReceipts.TryGetValue(effect, out var owner)
-            || !ReferenceEquals(owner, execution) || daily is null || allocations is not GuildBudgetLedger ledger
+            || !ReferenceEquals(owner, execution) || allocations is not GuildBudgetLedger ledger
             || !ValidProviderBill(effect, bill))
             return Task.FromResult(Result<GuildBudgetEffect>.Failure(InvalidReceipt));
 
@@ -299,7 +299,7 @@ internal sealed partial class GuildQuestStore
 
     private static async Task<Result<GuildBudgetEffect>> ApplyReceivedProviderBillWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, GuildBudgetLedger ledger, GuildBudgetEffect effect, BillableOperationRecord bill,
-        BudgetReservationService daily, CancellationToken ct)
+        BudgetReservationService? daily, CancellationToken ct)
     {
         GuildBudgetEffectRequest request = effect.Request;
 
@@ -327,6 +327,8 @@ internal sealed partial class GuildQuestStore
 
             if (request.ReservationId is { } reservation)
             {
+                if (daily is null) return InvalidReceipt;
+
                 Result disposition = !unknownUsd
                     ? await daily.ReconcileWithinAsync(connection, transaction, reservation, request.AccountingAssociationId,
                         bill.ActualCostUsd, true, ct).ConfigureAwait(false)

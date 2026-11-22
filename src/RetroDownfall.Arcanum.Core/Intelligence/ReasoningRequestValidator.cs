@@ -38,12 +38,11 @@ public static class ReasoningRequestValidator
                 "Reasoning effort and BudgetTokens are mutually exclusive; specify only one."));
         }
 
-        if (options.BudgetTokens is { } budgetTokens
-            && budgetTokens != ArcanumSettingClamps.ReasoningBudgetTokens(budgetTokens))
+        if (options.BudgetTokens is <= 0)
         {
             return Result.Failure(new Error(
                 ErrorCodes.Validation.InvalidReasoningBudget,
-                $"Reasoning BudgetTokens ({budgetTokens}) must be within the 1-2,097,152 token range."));
+                "Reasoning BudgetTokens must be a positive integer."));
         }
 
         return Result.Success();
@@ -81,7 +80,7 @@ public static class ReasoningRequestValidator
                 $"{model} does not declare reasoning capability."));
         }
 
-        if (options.BudgetTokens is { } budgetTokens)
+        if (options.BudgetTokens is not null)
         {
             bool budgetCapable = modelEntry?.Reasoning?.WireDialect is ReasoningWireDialect.OpenRouter
                 or ReasoningWireDialect.TopLevelReasoningBudget
@@ -92,13 +91,6 @@ public static class ReasoningRequestValidator
                 return Result.Failure(new Error(
                     ErrorCodes.Validation.UnsupportedReasoningControl,
                     $"{model} does not support numeric reasoning budgets."));
-            }
-
-            if (modelEntry?.Reasoning?.MaxBudgetTokens is { } maxBudgetTokens && budgetTokens > maxBudgetTokens)
-            {
-                return Result.Failure(new Error(
-                    ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit,
-                    $"{model} reasoning BudgetTokens ({budgetTokens}) exceeds its configured maximum ({maxBudgetTokens})."));
             }
         }
 

@@ -77,6 +77,32 @@ public sealed class TurnContextGuardsTests
         Assert.Equal(MessageRole.User, cleaned[0].Role);
     }
 
+    [Theory]
+    [InlineData(10_000_000, 3_000_000, true)]
+    [InlineData(10_000_000, 10_000_000, false)]
+    [InlineData(int.MaxValue, int.MaxValue, false)]
+    public void Context_admission_uses_the_declared_capacity_and_checks_complete_token_totals(
+        int window, int reasoningTokens, bool fits)
+    {
+        ModelTokenEstimator estimator = new(
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
+        ProviderSettings provider = new() { Name = "large-context", ContextWindowLimit = window };
+        ContextTokenBreakdown breakdown = estimator.EstimateContext(new ModelTokenizationRequest(
+            provider, "test-model", [new MeAiChatMessage(ChatRole.User, "Count these bytes.")],
+            new ChatOptions(), ReservedAnswerTokens: 128, ReservedReasoningTokens: reasoningTokens));
+
+        Assert.Equal(window, breakdown.ContextWindowLimit);
+
+        Result result = TurnContextGuards.CheckContextBudget(breakdown, window);
+        Assert.Equal(fits, result.IsSuccess);
+
+        if (!fits)
+        {
+            Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+            Assert.True(result.Error.ContextOverflow!.Value.TotalTokens > window);
+        }
+    }
+
     [Fact]
     public void CheckContextBudget_FailsWhenOverWindow()
     {

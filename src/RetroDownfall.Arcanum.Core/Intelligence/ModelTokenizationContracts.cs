@@ -185,6 +185,31 @@ public sealed record ContextTokenBreakdown
 
     public required int TotalTokens { get; init; }
 
+    [JsonIgnore]
+    public long? MeasuredInputTokens { get; init; }
+
+    [JsonIgnore]
+    public long InputTokensForAdmission => MeasuredInputTokens ?? InputTokens;
+
+    [JsonIgnore]
+    public long ReservedTokensForAdmission =>
+        Math.Max(ReservedTokens, (long)ReservedAnswerTokens + ReservedReasoningTokens);
+
+    // The public breakdown saturates at Int32 for compatibility, but admission must still see an overflow.
+    [JsonIgnore]
+    public long TotalTokensForAdmission
+    {
+        get
+        {
+            long input = InputTokensForAdmission;
+            long reserved = ReservedTokensForAdmission;
+
+            return input > long.MaxValue - reserved
+                ? long.MaxValue
+                : Math.Max(TotalTokens, input + reserved);
+        }
+    }
+
     public required TokenEstimateClassification OverallClassification { get; init; }
 
     public required int SafetyMarginTokens { get; init; }

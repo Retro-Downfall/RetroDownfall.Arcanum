@@ -30,7 +30,7 @@ public sealed partial class ModelCallExecutor
 
         if (_tokenEstimator is null || payload.Kind is not (LongRestProviderPayloadKind.Summary or LongRestProviderPayloadKind.Adjudication)
             || admission is not LongRestProviderAdmission.Chat chat || chat.Context.PrecomputedBreakdown is not { } admitted
-            || chat.Context.ReservedAnswerTokens != 2048 || chat.Context.ReservedReasoningTokens != 0 || chat.Context.PromptCachePlan is not null)
+            || chat.Context.ReservedAnswerTokens != LongRestPromptLayout.OutputHeadroomTokens || chat.Context.ReservedReasoningTokens != 0 || chat.Context.PromptCachePlan is not null)
         {
             return ClosedLongRestAdmissionError();
         }
@@ -94,7 +94,6 @@ public sealed partial class ModelCallExecutor
             ChatOptions options = new()
             {
                 ModelId = chat.Context.Model,
-                MaxOutputTokens = request.MaxOutputTokens,
                 Tools = [],
                 ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement.Clone(), request.SchemaName, request.SchemaDescription),
             };

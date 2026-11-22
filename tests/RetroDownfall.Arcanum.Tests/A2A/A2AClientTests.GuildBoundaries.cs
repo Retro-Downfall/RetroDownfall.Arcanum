@@ -31,8 +31,7 @@ public sealed partial class A2AClientTests
 
         GuildSendingLifecycle initial = new();
 
-        var sent = await client.SendGuildAsync(new(DiscoveryUrl, "Compute", "cancel-settlement",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), initial, default);
+        var sent = await client.SendGuildAsync(new(DiscoveryUrl, "Compute", "cancel-settlement"), initial, default);
 
         Assert.True(sent.IsSuccess, sent.Error.Message);
 
@@ -109,8 +108,7 @@ public sealed partial class A2AClientTests
 
         settings.Features.Guild = true;
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stream-settlement",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stream-settlement"), lifecycle, default);
 
         Assert.Equal(!revokeAfterStream, result.IsSuccess);
 
@@ -235,8 +233,7 @@ public sealed partial class A2AClientTests
 
         GuildSendingLifecycle lifecycle = new();
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "identity-message",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "identity-message"), lifecycle, default);
 
         Assert.True(result.IsFailure);
 
@@ -262,8 +259,7 @@ public sealed partial class A2AClientTests
             else settings.Integrations!.A2A!.AllowedRemoteAgents = ["http://different.example/"];
         });
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "changed-message",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), new GuildSendingLifecycle(), default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "changed-message"), new GuildSendingLifecycle(), default);
 
         Assert.True(result.IsFailure);
 

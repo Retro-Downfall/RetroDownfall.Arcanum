@@ -265,19 +265,13 @@ internal sealed class BatchAdmissionScopes(IServiceScopeFactory inner, BatchAdmi
     }
 }
 
-internal sealed class BatchAdmissionAccounting(BatchAdmissionGate gate) : ITurnRunWriter, IBudgetReservationService
+internal sealed class BatchAdmissionAccounting(BatchAdmissionGate gate) : ITurnRunWriter
 {
     internal int Runs => Volatile.Read(ref _runs);
 
-    internal int Reservations => Volatile.Read(ref _reservations);
-
-    internal int RejectReservation { get; set; }
-
-    internal Func<Task>? BeforeReconcile { get; set; }
+    internal Func<Task>? BeforeComplete { get; set; }
 
     private int _runs;
-
-    private int _reservations;
 
     public Task<Guid> StartRunAsync(InferenceRunStart start, CancellationToken cancellationToken = default)
     {
@@ -290,57 +284,20 @@ internal sealed class BatchAdmissionAccounting(BatchAdmissionGate gate) : ITurnR
         return Task.FromResult(Guid.NewGuid());
     }
 
-    public Task CompleteRunAsync(Guid runId, InferenceRunStatus status, CancellationToken cancellationToken = default)
-    {
-        Assert.Equal(1, gate.ActiveGroups);
-
-        gate.Events.Enqueue("accounting-complete");
-
-        return Task.CompletedTask;
-    }
-
-    public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) => Task.FromResult(false);
-
-    public Task<Guid> RecordBillableOperationAsync(BillableOperationRecord operation, CancellationToken cancellationToken = default) => Task.FromResult(Guid.NewGuid());
-
-    public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken cancellationToken = default)
-    {
-        Assert.Equal(1, gate.ActiveGroups);
-
-        int number = Interlocked.Increment(ref _reservations);
-
-        return Task.FromResult(number == RejectReservation
-            ? Result<BudgetReservation>.Failure(new Error("test-budget-policy", "Budget rejected."))
-            : Result<BudgetReservation>.Success(new BudgetReservation(Guid.NewGuid(), request.RunId,
-                request.BudgetPeriod, request.ReservedUsd, 0m, BudgetReservationStatus.Reserved,
-                request.ExpiresAt, DateTimeOffset.UtcNow)));
-    }
-
-    public async Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default)
+    public async Task CompleteRunAsync(Guid runId, InferenceRunStatus status, CancellationToken cancellationToken = default)
     {
         Assert.Equal(1, gate.ActiveGroups);
 
         Assert.False(cancellationToken.CanBeCanceled);
 
-        if (BeforeReconcile is { } before) { await before(); }
+        if (BeforeComplete is { } before) await before();
 
-        gate.Events.Enqueue("accounting-reconciled");
+        gate.Events.Enqueue("accounting-complete");
     }
 
-    public Task<Result> AdjustAsync(Guid reservationId, decimal reservedUsd, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
+    public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) => Task.FromResult(false);
 
-    public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-    public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
-
-    public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
-
-    public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-    public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) =>
-        Task.FromResult(Result.Success());
-
-    public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => Task.FromResult(0);
+    public Task<Guid> RecordBillableOperationAsync(BillableOperationRecord operation, CancellationToken cancellationToken = default) => Task.FromResult(Guid.NewGuid());
 }
 
 internal sealed class BatchAdmissionFiles(IUploadedFileRepository inner,

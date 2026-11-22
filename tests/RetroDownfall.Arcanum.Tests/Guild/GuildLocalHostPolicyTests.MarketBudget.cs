@@ -14,7 +14,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Tool_offer_budget_hint_clamps_at_award_while_native_request_is_strict(bool toolOffer)
+    public async Task Native_and_tool_offers_award_work_despite_historical_finite_capacity(bool toolOffer)
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
@@ -153,27 +153,18 @@ public sealed partial class GuildLocalHostPolicyTests
 
         var result = await cohorts.AwardAsync(owner, new(award.IdempotencyKey, awardDigest), offerId, award, default);
 
-        if (!toolOffer)
-        {
-            Assert.Equal(ErrorCodes.Guild.GrantExceeded, result.Error.Code);
-
-            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_work_awards"));
-
-            Assert.Equal(beforeAccounts, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
-
-            Assert.Equal(beforeQuests, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
-
-            return;
-        }
-
         Assert.True(result.IsSuccess, result.Error.Message);
 
         var child = await f.Store.GetAsync(owner, result.Value.QuestId, default);
 
         Assert.True(child.IsSuccess, child.Error.Message);
 
-        Assert.Equal(100L, child.Value.Quest.ResolvedGrant.Budget.Tokens.Value);
+        Assert.Equal(beforeAccounts + 1, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+
+        Assert.Equal(beforeQuests + 1, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
 
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_work_awards"));
+
+        Assert.Equal(0L, await f.ScalarAsync("SELECT BudgetHint FROM guild_work_offers"));
     }
 }

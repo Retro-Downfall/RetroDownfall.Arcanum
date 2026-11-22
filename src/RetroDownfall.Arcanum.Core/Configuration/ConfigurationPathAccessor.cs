@@ -483,6 +483,15 @@ public static class ConfigurationPathAccessor
         out string? propertyName,
         out Type? propertyType)
     {
+        // Existing peer grant bytes are retained for identity continuity.
+        if (nodeType == typeof(GuildGrantSettings)
+            && segment.Equals("budget", StringComparison.OrdinalIgnoreCase))
+        {
+            propertyName = null;
+            propertyType = null;
+            return false;
+        }
+
         JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(nodeType);
 
         JsonPropertyInfo? property = typeInfo?.Properties.FirstOrDefault(

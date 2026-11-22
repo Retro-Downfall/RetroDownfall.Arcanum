@@ -19,8 +19,6 @@ public static class ArcanumSettingClamps
 
     public static int McpInitializationTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
-    public static int SemanticRouterMaxTokens(int value) => Math.Clamp(value, 1, 4096);
-
     public static int LexiconMaxMatchedEntries(int value) => Math.Clamp(value, 1, 100);
 
     public static int LexiconMaxInjectedBytes(int value) => Math.Clamp(value, 256, 65_536);
@@ -77,11 +75,9 @@ public static class ArcanumSettingClamps
 
     public static int ArchiveSearchMaxResults(int value) => Math.Clamp(value, 1, 100);
 
-    public static int ContextWindowLimit(int value) => Math.Clamp(value, 256, 2_097_152);
+    public static int ContextWindowLimit(int value) => Math.Max(value, 256);
 
     public static int SessionMaxPinnedEntries(int value) => Math.Clamp(value, 0, 100);
-
-    public static int ReasoningBudgetTokens(int value) => Math.Clamp(value, 1, 2_097_152);
 
     public static int WorkspaceSearchMaxPatternChars(int value) => Math.Clamp(value, 1, 16_384);
 
@@ -413,10 +409,6 @@ public static class ArcanumSettingClamps
     public static double PricingOutputPer1M(double value) => Math.Clamp(value, 0.0, 1_000_000.0);
 
     public static decimal PricingRatePer1M(decimal value) => Math.Clamp(value, 0m, 1_000_000m);
-
-    public static decimal BudgetDailyLimitUsd(decimal value) => Math.Clamp(value, 0.00m, 1_000_000.00m);
-
-    public static int BudgetAlertThresholdPercent(int value) => Math.Clamp(value, 1, 100);
 
     public static int WebBrowsingMaxContentBytes(int value) => Math.Clamp(value, 1_000, 1_000_000);
 

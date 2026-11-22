@@ -24,11 +24,9 @@ public sealed class CampaignRollupMaintenance(
     IModelCallExecutor executor,
     IModelTokenEstimator estimator,
     IOptionsMonitor<ArcanumSettings> settings,
-    BudgetMonitor budgetMonitor,
     ICovenantDisclosureJournal disclosures,
     ILogger<CampaignRollupMaintenance> logger,
     ITurnRunWriter runs,
-    IBudgetReservationService reservations,
     IInferenceAuditLogger inferenceAudit,
     CampaignRollupDeferralWarnings deferralWarnings) : ICampaignRollupMaintenance
 {
@@ -324,13 +322,6 @@ public sealed class CampaignRollupMaintenance(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            Result dailyBudget = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);
-
-            if (dailyBudget.IsFailure)
-            {
-                return dailyBudget.Error;
-            }
-
             CampaignMaintenancePayload payload = new(Persona,
                 page.Payload + (correction == 0 ? string.Empty : "\nReturn one valid summary object within the specified limit; do not include paths or attachment bytes."));
 
@@ -381,17 +372,9 @@ public sealed class CampaignRollupMaintenance(
 
             string purpose = page.Step is CovenantMaintenanceStep.CampaignContribution ? "campaign-contribution" : "campaign-rollup";
 
-            Result<TurnAccountingHandle> started = await TurnAccountingHandle.BeginAsync(
-                runs, reservations, configuration.ResolvePricing(), model,
-                capability?.ClaimLease.Claim.SessionId ?? page.SessionId, "maintenance", purpose,
-                Guid.NewGuid().ToString("N"), cancellationToken, maxOutputTokens: CampaignRollupLimits.OutputTokens).ConfigureAwait(false);
-
-            if (started.IsFailure)
-            {
-                return started.Error;
-            }
-
-            TurnAccountingHandle accounting = started.Value;
+            TurnAccountingHandle accounting = await TurnAccountingHandle.BeginAsync(
+                runs, capability?.ClaimLease.Claim.SessionId ?? page.SessionId, "maintenance", purpose,
+                Guid.NewGuid().ToString("N"), cancellationToken).ConfigureAwait(false);
 
             InferenceRunStatus status = InferenceRunStatus.Failed;
 
@@ -411,15 +394,6 @@ public sealed class CampaignRollupMaintenance(
                 {
                     try
                     {
-                        Result budget = await accounting.EnsureReservationForContextAsync(
-                            reservations, configuration.ResolvePricing(), null, model,
-                            breakdown, logger, dispatchCancellation.Token).ConfigureAwait(false);
-
-                        if (budget.IsFailure)
-                        {
-                            return budget.Error;
-                        }
-
                         int sent = 0;
 
                         bool dispatchFenceCompleted = false;
@@ -494,7 +468,7 @@ public sealed class CampaignRollupMaintenance(
 
                         Result<CampaignMaintenanceCallResult> outcome = await executor.ExecuteCampaignMaintenanceAsync(
                             lease.ChatClient, payload, accounting.Budget, BeforeSendAsync, dispatchCancellation.Token,
-                            new(provider, model, CampaignRollupLimits.OutputTokens, 0, breakdown)).ConfigureAwait(false);
+                            new(provider, model, CampaignMaintenancePayload.ReservedAnswerTokens, 0, breakdown)).ConfigureAwait(false);
 
                         if (outcome.IsFailure)
                         {
@@ -565,7 +539,7 @@ public sealed class CampaignRollupMaintenance(
             }
             finally
             {
-                await accounting.CompleteAsync(runs, reservations, status, CancellationToken.None).ConfigureAwait(false);
+                await accounting.CompleteAsync(runs, status, CancellationToken.None).ConfigureAwait(false);
             }
         }
 

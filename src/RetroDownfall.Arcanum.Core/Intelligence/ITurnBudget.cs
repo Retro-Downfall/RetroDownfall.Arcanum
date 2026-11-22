@@ -2,7 +2,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
 /// Compatibility marker carried by turn-accounting handles.
-/// Provider calls are admitted by context, cache, fingerprint, and cost checks rather than counts.
+/// Provider admission checks the selected model context and the prepared request identity.
 /// </summary>
 public interface ITurnBudget
 {

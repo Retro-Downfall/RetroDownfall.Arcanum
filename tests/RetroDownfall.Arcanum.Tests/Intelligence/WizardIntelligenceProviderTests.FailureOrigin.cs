@@ -265,10 +265,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(new(), configuration, factory: factory, healthTracker: health,
-            turnRunWriter: writer, budgetReservationService: reservations);
+            turnRunWriter: writer);
 
         PingRequest request = BaseRequest() with { Prompt = "finalize actual usage", Model = ModelName, SkipSpellRouting = true, DisableAllTools = true };
 
@@ -299,9 +297,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(2, operation.OutputTokens);
 
-        Assert.False(reservations.WasReleased);
-
-        Assert.Equal(1, reservations.ReconcileCount);
     }
 
     [Theory]
@@ -586,9 +581,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new();
-
-        WizardIntelligenceProvider wizard = CreateWizard(new(), configuration, factory: factory, turnRunWriter: writer, budgetReservationService: reservations);
+        WizardIntelligenceProvider wizard = CreateWizard(new(), configuration, factory: factory, turnRunWriter: writer);
 
         using JsonDocument schema = JsonDocument.Parse("{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"],\"additionalProperties\":false}");
 
@@ -624,9 +617,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(2, writer.RecordAttempts);
 
-        Assert.Equal(1, reservations.ReconcileCount);
-
-        Assert.False(reservations.WasReleased);
     }
 
     [Fact]
@@ -642,9 +632,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter writer = new() { CancelBeforeRecord = caller };
 
-        RecordingBudgetReservationService reservations = new();
-
-        WizardIntelligenceProvider wizard = CreateWizard(new(), configuration, factory: factory, turnRunWriter: writer, budgetReservationService: reservations);
+        WizardIntelligenceProvider wizard = CreateWizard(new(), configuration, factory: factory, turnRunWriter: writer);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "cancel after actual response", Model = ModelName, SkipSpellRouting = true, DisableAllTools = true },
@@ -658,9 +646,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(1, http.Sends);
 
-        Assert.True(await WaitUntilAsync(() => reservations.ReconcileCount == 1, TimeSpan.FromSeconds(5)));
+        Assert.True(await WaitUntilAsync(() => writer.CompletedRuns.Count == 1, TimeSpan.FromSeconds(5)));
 
-        Assert.False(reservations.WasReleased);
     }
 
     [Theory]

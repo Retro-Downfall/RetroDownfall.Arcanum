@@ -40,7 +40,6 @@ public static class DoctorDiagnosticsRegistration
 
         services.AddTransient<IDoctorCheck, LongRestRecipeCheck>();
 
-        services.AddTransient<IDoctorCheck, BudgetEnforcementCheck>();
 
         services.AddTransient<IDoctorCheck, CampaignRollupModelCheck>();
 

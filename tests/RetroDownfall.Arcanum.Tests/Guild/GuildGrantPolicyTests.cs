@@ -67,15 +67,13 @@ public sealed class GuildGrantPolicyTests
     }
 
     [Theory]
-    [InlineData(GuildBudgetMode.Unlimited, null, GuildBudgetMode.Unlimited, null, true)]
-    [InlineData(GuildBudgetMode.Unlimited, null, GuildBudgetMode.Finite, 0L, true)]
-    [InlineData(GuildBudgetMode.Finite, 10L, GuildBudgetMode.Finite, 10L, true)]
-    [InlineData(GuildBudgetMode.Finite, 10L, GuildBudgetMode.Finite, 9L, true)]
-    [InlineData(GuildBudgetMode.Finite, 0L, GuildBudgetMode.Finite, 1L, false)]
-    [InlineData(GuildBudgetMode.Finite, 10L, GuildBudgetMode.Finite, 11L, false)]
-    [InlineData(GuildBudgetMode.Finite, 10L, GuildBudgetMode.Unlimited, null, false)]
-    public void Budget_compares_both_dimensions_without_reinterpreting_zero(GuildBudgetMode parentMode, long? parentValue,
-        GuildBudgetMode childMode, long? childValue, bool allowed)
+    [InlineData(GuildBudgetMode.Unlimited, null, GuildBudgetMode.Unlimited, null)]
+    [InlineData(GuildBudgetMode.Unlimited, null, GuildBudgetMode.Finite, 0L)]
+    [InlineData(GuildBudgetMode.Finite, 10L, GuildBudgetMode.Finite, 9L)]
+    [InlineData(GuildBudgetMode.Finite, 0L, GuildBudgetMode.Finite, 1L)]
+    [InlineData(GuildBudgetMode.Finite, 10L, GuildBudgetMode.Unlimited, null)]
+    public void Grant_attenuation_keeps_legacy_amounts_as_metadata_without_making_them_authority(GuildBudgetMode parentMode,
+        long? parentValue, GuildBudgetMode childMode, long? childValue)
     {
         GuildGrant parent = Empty with { Budget = new(new(parentMode, parentValue), new(parentMode, parentValue)) };
 
@@ -83,26 +81,21 @@ public sealed class GuildGrantPolicyTests
 
         Result<GuildGrant> result = GuildGrantPolicy.Attenuate(parent, new(Budget: new(true, child)), NoScopeEvidence);
 
-        Assert.Equal(allowed, result.IsSuccess);
+        Assert.True(result.IsSuccess, result.Error.Message);
 
-        if (!allowed)
-        {
-            Assert.Equal(ErrorCodes.Guild.GrantWidening, result.Error.Code);
-        }
+        Assert.Equal(child, result.Value.Budget);
     }
 
     [Fact]
-    public void Budget_checks_usd_and_tokens_independently()
+    public void An_omitted_legacy_budget_axis_leaves_a_child_unmetered()
     {
         GuildGrant parent = Empty with { Budget = new(new(GuildBudgetMode.Finite, 1.25m), new(GuildBudgetMode.Finite, 10)) };
 
-        GuildBudgetGrant[] widening =
-        [
-            new(new(GuildBudgetMode.Finite, 1.26m), new(GuildBudgetMode.Finite, 0)),
-            new(new(GuildBudgetMode.Finite, 0), new(GuildBudgetMode.Finite, 11)),
-        ];
+        var child = GuildGrantPolicy.Attenuate(parent, new(), NoScopeEvidence);
 
-        Assert.All(widening, budget => Assert.True(GuildGrantPolicy.Attenuate(parent, new(Budget: new(true, budget)), NoScopeEvidence).IsFailure));
+        Assert.True(child.IsSuccess, child.Error.Message);
+
+        Assert.Equal(GuildBudgetGrant.Unmetered, child.Value.Budget);
     }
 
     [Fact]
@@ -363,17 +356,10 @@ public sealed class GuildGrantPolicyTests
     }
 
     [Fact]
-    public void Unknown_token_budget_mode_is_rejected_and_token_widening_does_not_depend_on_dollar_mode()
+    public void Unknown_legacy_token_budget_mode_is_rejected()
     {
         GuildBudgetGrant invalid = new(new(GuildBudgetMode.Unlimited), new((GuildBudgetMode)999));
 
         Assert.True(GuildGrantPolicy.Validate(Empty with { Budget = invalid }).IsFailure);
-
-        GuildGrant parent = Empty with { Budget = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Finite, 4)) };
-
-        GuildBudgetGrant widened = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited));
-
-        Assert.Equal(ErrorCodes.Guild.GrantWidening,
-            GuildGrantPolicy.Attenuate(parent, new(Budget: new(true, widened)), NoScopeEvidence).Error.Code);
     }
 }

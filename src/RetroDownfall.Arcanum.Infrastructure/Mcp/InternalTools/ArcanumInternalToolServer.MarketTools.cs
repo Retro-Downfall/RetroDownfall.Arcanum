@@ -40,7 +40,6 @@ internal sealed partial class ArcanumInternalToolServer
             {
                 SchemaProperty(writer, "note", "{\"type\":\"string\"}");
 
-                SchemaProperty(writer, "claimedCostUsd", "{\"type\":\"number\",\"minimum\":0}");
             }
             else if (name == "award_work")
             {

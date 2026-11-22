@@ -2,7 +2,6 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Wards;
-using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Ux.Services.Services;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Anvil;
@@ -11,8 +10,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 public sealed class AnvilDataSource : IAnvilDataSource
 {
 
-    private readonly BudgetService _budgetService;
-
     private readonly WardService _wardService;
 
     private readonly ApprenticeService _apprenticeService;
@@ -20,28 +17,16 @@ public sealed class AnvilDataSource : IAnvilDataSource
     private readonly McpService _mcpService;
 
     public AnvilDataSource(
-        BudgetService budgetService,
         WardService wardService,
         ApprenticeService apprenticeService,
         McpService mcpService)
     {
-
-        _budgetService = budgetService;
 
         _wardService = wardService;
 
         _apprenticeService = apprenticeService;
 
         _mcpService = mcpService;
-
-    }
-
-    public async Task<BudgetSummaryDto?> GetBudgetAsync(CancellationToken cancellationToken)
-    {
-
-        ApiResponse<BudgetSummaryDto>? response = await _budgetService.GetBudgetAsync(cancellationToken).ConfigureAwait(false);
-
-        return response is { IsSuccess: true } ? response.Data : null;
 
     }
 

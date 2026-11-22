@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
 /// Retained per-model reasoning facts declared under a model entry's <c>reasoning</c> block.
-/// Only the wire dialect and an optional budget ceiling remain configurable; every other
+/// Only the wire dialect remains configurable. Every other
 /// capability (control support, client-output flags, streaming, usage reporting) is derived by
 /// Arcanum from this declaration, so removed facts are rejected at validation time.
 /// </summary>
@@ -24,12 +24,5 @@ public sealed record ModelReasoningSettings
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ReasoningWireDialect? WireDialect { get; set; }
-
-    /// <summary>
-    /// Optional per-single-turn reasoning budget ceiling (1–2,097,152 tokens). Only meaningful
-    /// alongside a nonstandard wire dialect.
-    /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? MaxBudgetTokens { get; set; }
 
 }

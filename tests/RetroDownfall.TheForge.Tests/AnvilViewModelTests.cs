@@ -24,7 +24,6 @@ public class AnvilViewModelTests
 
         FakeAnvilDataSource dataSource = new()
         {
-            Budget = new BudgetSummaryDto(true, 10m, 80, 2.5m, 7.5m, 25),
             Wards = [NewWard()],
             Apprentices =
             [
@@ -42,10 +41,6 @@ public class AnvilViewModelTests
         AnvilViewModel viewModel = Create(connection, dataSource, new NavigationService());
 
         await viewModel.RefreshAsync(CancellationToken.None);
-
-        Assert.Equal(2.5m, viewModel.TodaySpendUsd);
-
-        Assert.Equal(25, viewModel.ManaPercent);
 
         Assert.Equal(1, viewModel.ActiveWardsCount);
 
@@ -79,10 +74,8 @@ public class AnvilViewModelTests
 
         viewModel.FocusMcpCommand.Execute(null);
 
-        viewModel.FocusBudgetCommand.Execute(null);
-
         Assert.Equal(
-            [PanelKind.Atelier, PanelKind.Gatehouse, PanelKind.WarTable, PanelKind.Arsenal, PanelKind.Treasury],
+            [PanelKind.Atelier, PanelKind.Gatehouse, PanelKind.WarTable, PanelKind.Arsenal],
             focused);
 
         viewModel.Dispose();
@@ -201,15 +194,11 @@ public class AnvilViewModelTests
     private sealed class FakeAnvilDataSource : IAnvilDataSource
     {
 
-        public BudgetSummaryDto? Budget { get; init; }
-
         public IReadOnlyList<WardDto> Wards { get; init; } = [];
 
         public IReadOnlyList<ApprenticeSummaryDto> Apprentices { get; init; } = [];
 
         public IReadOnlyList<McpServerInfo> McpServers { get; init; } = [];
-
-        public Task<BudgetSummaryDto?> GetBudgetAsync(CancellationToken cancellationToken) => Task.FromResult(Budget);
 
         public Task<IReadOnlyList<WardDto>> ListWardsAsync(CancellationToken cancellationToken) => Task.FromResult(Wards);
 

@@ -234,10 +234,7 @@ public sealed class ChatClientFactory(
             options.AddPolicy(dispatchPolicy, PipelinePosition.BeforeTransport);
         }
 
-        GuildSpendSourceCredential? spendSource = provider.GuildUsageReconciliation == GuildUsageReconciliationSource.None
-            ? null : new(provider, resolvedModel, resolvedApiKey);
-
-        GuildProviderWirePolicy guildPolicy = new(provider, resolvedModel, spendSource);
+        GuildProviderWirePolicy guildPolicy = new(provider, resolvedModel);
 
         options.AddPolicy(guildPolicy, PipelinePosition.BeforeTransport);
 

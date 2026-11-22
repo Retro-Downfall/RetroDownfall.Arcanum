@@ -21,7 +21,8 @@ public sealed class MemoryEvaluationValidationTests
     [InlineData(0, false)]
     [InlineData(1, true)]
     [InlineData(4096, true)]
-    [InlineData(4097, false)]
+    [InlineData(4097, true)]
+    [InlineData(int.MaxValue, true)]
     public void Output_token_boundaries(int count, bool valid)
     {
         Assert.Equal(valid, MemoryEvaluationValidator.Validate(MemoryEvaluationTestData.ValidRequest() with { Options = new(MaxOutputTokens: count) }).IsSuccess);

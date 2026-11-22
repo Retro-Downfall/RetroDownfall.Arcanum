@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
@@ -76,7 +77,8 @@ public sealed partial class ToolExecutionPipelineTests
     public async Task AttachmentDiagnostics_Truncated_tool_result_reports_actual_retained_characters_and_next_step(bool unicode)
     {
         string unit = unicode ? "😀z" : "x";
-        string raw = string.Concat(Enumerable.Repeat(unit, 250_000));
+        int byteLimit = IntelligenceSettings.DefaultToolOutputCapBytes;
+        string raw = string.Concat(Enumerable.Repeat(unit, byteLimit / Encoding.UTF8.GetByteCount(unit) + 100));
         ChatOptions options = new() { Tools = [AIFunctionFactory.Create(() => raw, "read_many")] };
         var result = await CreatePipeline(materializer: new ToolResultMaterializer()).ProcessSingleToolCallAsync(new FunctionCallContent("large", "read_many", new Dictionary<string, object?>()), new PingRequest("hello"), options, null, null, new(), false, default);
         Assert.Contains("Narrow the request or use pagination", result.ResultText, StringComparison.Ordinal);
@@ -86,8 +88,8 @@ public sealed partial class ToolExecutionPipelineTests
         int markerAt = result.ResultText.IndexOf("\n[truncated", StringComparison.Ordinal);
         string retained = result.ResultText[..markerAt].Replace("\n…\n", "", StringComparison.Ordinal);
         Assert.Equal(retained.Length, int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
-        Assert.True(Encoding.UTF8.GetByteCount(result.ResultText) <= 8192);
-        Assert.True(result.ResultText.Length <= 8192);
+        Assert.True(Encoding.UTF8.GetByteCount(result.ResultText) <= byteLimit);
+        Assert.True(result.ResultText.Length <= byteLimit);
         Assert.Equal(result.ResultText, new UTF8Encoding(false, true).GetString(new UTF8Encoding(false, true).GetBytes(result.ResultText)));
     }
 }

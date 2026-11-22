@@ -712,8 +712,8 @@ class CoverageThresholdParserTests(unittest.TestCase):
             )
 
     def test_guild_authority_policies_have_security_branch_gates(self) -> None:
-        # These pure policies prevent authority widening and clamp delegated spending.
-        for name in ("GuildSpendCorrectionPolicy", "GuildGrantPolicy", "GuildBudgetAllocationPolicy", "GuildSignetGrantComposition", "GuildBudgetObligations", "GuildPhysicalRetentionProof"):
+        # These policies prevent authority widening and preserve exact physical effect evidence.
+        for name in ("GuildSpendCorrectionPolicy", "GuildGrantPolicy", "GuildSignetGrantComposition", "GuildBudgetObligations", "GuildPhysicalRetentionProof"):
             self.assertIn(name, coverage_threshold.SECURITY_TYPES)
             self.assertEqual(coverage_threshold.security_branch_target(name), 100.0)
 

@@ -195,43 +195,28 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StreamPromptAsync_BudgetExceeded_YieldsErrorEventAndSkipsInference()
+    public async Task StreamPromptAsync_LegacyDailyCostLimit_DoesNotRefuseInference()
     {
         ScriptingChatClient chat = new();
 
-        ArcanumSettings settings = DefaultSettings() with
-        {
-            Cost = new CostSettings
-            {
-                Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m },
-            },
-        };
-        FakeGrimoireRepository budgetGrimoire = new() { TodaySpend = 15m };
+        chat.EnqueueStreamTokens("provider answer");
 
-        BudgetMonitor monitor = new(
-            CreateBudgetMonitorScopeFactory(budgetGrimoire, new FakeBudgetAlertRepository()),
-            new FakeCommLinkDispatcher(),
-            new TestOptionsMonitor<ArcanumSettings>(settings),
-            NullLogger<BudgetMonitor>.Instance);
+        ArcanumSettings settings = LegacyBudgetFixture.ReadWithOldDailyLimit(DefaultSettings(), 10m);
+
+        FakeGrimoireRepository budgetGrimoire = new() { TodaySpend = 15m };
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
-            budgetMonitor: monitor);
+            grimoire: budgetGrimoire);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
             BaseRequest() with { Prompt = "anything", SkipSpellRouting = true, DisableMcpTools = true });
 
-        IntelligenceEvent error = Assert.Single(events);
+        Assert.DoesNotContain(events, item => item.Type == IntelligenceEventType.Error);
 
-        Assert.Equal(IntelligenceEventType.Error, error.Type);
-
-        Assert.Contains("Daily budget limit", error.Message);
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, error.Data);
-
-        Assert.Equal(0, chat.BufferedCallCount);
+        Assert.Contains(events, item => item.Type == IntelligenceEventType.Result);
     }
 
     [Fact]
@@ -5650,65 +5635,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(20, result.Value.Usage?.TotalTokens);
     }
 
-    [Fact]
-    public async Task AccountingReservation_UsesTypedRequestOutputAndReasoningBudgets()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueText("answer");
-
-        ArcanumSettings settings = SettingsWithReasoning() with
-        {
-            Cost = new CostSettings
-            {
-                Pricing = new PricingSettings
-                {
-                    DefaultPricing = new ModelPricingEntry
-                    {
-                        OutputPer1M = 20m,
-                        ReasoningPer1M = 80m,
-                    },
-                },
-            },
-        };
-        settings.Providers[0].Models[0].Reasoning = new ModelReasoningSettings
-        {
-            WireDialect = ReasoningWireDialect.OpenRouter,
-        };
-        RecordingTurnRunWriter turnRuns = new();
-
-        RecordingBudgetReservationService reservations = new();
-
-        WizardIntelligenceProvider wizard = CreateWizard(
-            chat,
-            settings,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
-
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with
-            {
-                Prompt = "budget",
-                SkipSpellRouting = true,
-                DisableMcpTools = true,
-                MaxOutputTokens = 1_000,
-                Reasoning = new ReasoningRequestOptions(BudgetTokens: 600),
-            },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-
-        BudgetReservationRequest request = Assert.IsType<BudgetReservationRequest>(reservations.LastRequest);
-
-        Assert.Equal(
-            BudgetReservationService.EstimateWorstCaseTurnUsd(
-                settings.Cost.Pricing.DefaultPricing,
-                maxOutputTokens: 1_000,
-                reasoningBudgetTokens: 600),
-            request.ReservedUsd);
-    }
-
     /// <summary>
     /// A client disconnect must not make a round that already streamed real provider usage
     /// look like it spent nothing. Usage arrives, the provider then goes quiet, and the caller
@@ -5716,7 +5642,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     /// as though nothing happened.
     /// </summary>
     [Fact]
-    public async Task StreamPromptAsync_CancelledAfterUsageArrives_ReconcilesInsteadOfReleasing()
+    public async Task StreamPromptAsync_CancelledAfterUsageArrives_RecordsMeasuredUsage()
     {
         UsageDetails usage = new()
         {
@@ -5731,12 +5657,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         RecordingTurnRunWriter turnRuns = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         using CancellationTokenSource cancellation = new();
 
@@ -5779,9 +5702,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             await enumerator.DisposeAsync();
         }
-        Assert.Equal(1, reservations.ReconcileCount);
 
-        Assert.False(reservations.WasReleased);
+        BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
+
+        Assert.Equal(100L, operation.InputTokens);
+
+        Assert.Equal(20L, operation.OutputTokens);
     }
 
     [Fact]
@@ -6188,13 +6114,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         RecordingTurnRunWriter turnRuns = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with
@@ -6219,7 +6142,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0.00064m, operation.ActualCostUsd);
 
-        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
 
     [Fact]
@@ -6302,14 +6224,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         RecordingTurnRunWriter turnRuns = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
             guardrailsPipeline: CreateGuardrailsPipeline(settings),
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "guard", SkipSpellRouting = true, DisableMcpTools = true },
@@ -6324,9 +6243,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(5, operation.OutputTokens);
 
-        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
-
-        Assert.Equal(1, reservations.ReconcileCount);
     }
 
     [Fact]
@@ -6379,13 +6295,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         FakeGrimoireRepository grimoire = new() { ThrowOnFinalize = true };
         RecordingTurnRunWriter turnRuns = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             grimoire: grimoire,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with
@@ -6404,13 +6317,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal((10L, 5L), (operation.InputTokens, operation.OutputTokens));
 
-        Assert.Equal(1, reservations.ReconcileCount);
-
-        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
 
     [Fact]
-    public async Task Accounting_DurableWriteFailure_PropagatesAndKeepsReservation()
+    public async Task Accounting_DurableWriteFailure_PropagatesAndMarksRunFailed()
     {
         ChatResponse response = new(new MeAiChatMessage(ChatRole.Assistant, "answer"))
         {
@@ -6421,12 +6331,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         chat.EnqueueResponse(response);
 
         RecordingTurnRunWriter turnRuns = new() { RecordException = new IOException("ledger unavailable") };
-        RecordingBudgetReservationService reservations = new();
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "account", SkipSpellRouting = true, DisableMcpTools = true },
@@ -6435,9 +6343,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal(0, reservations.ReconcileCount);
+        Assert.Equal(InferenceRunStatus.Failed, Assert.Single(turnRuns.CompletedRuns).Status);
 
-        Assert.False(reservations.WasReleased);
     }
 
     [Fact]
@@ -6489,13 +6396,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         RecordingTurnRunWriter turnRuns = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with
@@ -6518,7 +6422,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Equal(0.000018m, operation.ActualCostUsd);
 
-        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
 
     [Fact]
@@ -6549,13 +6452,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             },
         };
         RecordingTurnRunWriter turnRuns = new() { CancelBeforeRecord = callerCancellation };
-        RecordingBudgetReservationService reservations = new();
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             wizard.ExecutePromptAsync(
@@ -6571,15 +6472,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
 
-        Assert.True(await WaitUntilAsync(() => reservations.ReconcileCount == 1, TimeSpan.FromSeconds(5)));
+        Assert.True(await WaitUntilAsync(() => turnRuns.CompletedRuns.Count == 1, TimeSpan.FromSeconds(5)));
 
         Assert.Equal(BillableOperationType.Routing, operation.OperationType);
 
-        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
-
-        Assert.Equal(1, reservations.ReconcileCount);
-
-        Assert.False(reservations.WasReleased);
     }
 
     [Theory]
@@ -6728,7 +6624,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             },
         };
         RecordingTurnRunWriter turnRuns = new() { CancelBeforeRecord = callerCancellation };
-        RecordingBudgetReservationService reservations = new();
 
         FakeLexiconService lexicon = new();
 
@@ -6738,8 +6633,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             chat,
             settings,
             lexiconService: lexicon,
-            turnRunWriter: turnRuns,
-            budgetReservationService: reservations);
+            turnRunWriter: turnRuns);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             wizard.ExecutePromptAsync(
@@ -6756,15 +6650,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         BillableOperationRecord operation = Assert.Single(turnRuns.Operations);
 
-        Assert.True(await WaitUntilAsync(() => reservations.ReconcileCount == 1, TimeSpan.FromSeconds(5)));
+        Assert.True(await WaitUntilAsync(() => turnRuns.CompletedRuns.Count == 1, TimeSpan.FromSeconds(5)));
 
         Assert.Equal(BillableOperationType.Extraction, operation.OperationType);
 
-        Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
-
-        Assert.Equal(1, reservations.ReconcileCount);
-
-        Assert.False(reservations.WasReleased);
     }
 
     [Fact]
@@ -9130,22 +9019,13 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StructuredRetry_ReservationFailure_PreservesBudgetError()
+    public async Task StructuredRetry_IgnoresLegacyMonetaryCeiling()
     {
         ScriptingChatClient chat = new();
 
         chat.EnqueueText("invalid answer");
 
         chat.EnqueueText("""{"name":"unused"}""");
-
-        RecordingBudgetReservationService reservations = new()
-        {
-            ReservedUsdOverride = 0m,
-        };
-        reservations.AdjustResults.Enqueue(Result.Success());
-
-        reservations.AdjustResults.Enqueue(Result.Failure(
-            new Error(ErrorCodes.Budget.Exceeded, "retry reservation exceeded")));
 
         ArcanumSettings defaults = DefaultSettings();
 
@@ -9167,14 +9047,15 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 },
             },
         };
+        settings = LegacyBudgetFixture.ReadWithOldDailyLimit(settings, 0.000001m);
+
         JsonElement schema = JsonSerializer.Deserialize<JsonElement>(
             """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""", AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
-            turnRunWriter: new RecordingTurnRunWriter(),
-            budgetReservationService: reservations);
+            turnRunWriter: new RecordingTurnRunWriter());
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with
@@ -9189,11 +9070,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
-        Assert.Equal(1, chat.BufferedCallCount);
+        Assert.Equal(2, chat.BufferedCallCount);
     }
 
     [Fact]
@@ -9915,9 +9794,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ArcanumDbContext? db = null,
         IInferenceAuditLogger? auditLogger = null,
         GuardrailsPipeline? guardrailsPipeline = null,
-        BudgetMonitor? budgetMonitor = null,
         ITurnRunWriter? turnRunWriter = null,
-        IBudgetReservationService? budgetReservationService = null,
         ILogger<WizardIntelligenceProvider>? logger = null,
         ILogger<ToolExecutionPipeline>? toolLogger = null,
         ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
@@ -9992,8 +9869,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         lexiconService ??= new FakeLexiconService();
 
         db ??= CreateUnusedDbContext();
-
-        budgetMonitor ??= CreateBudgetMonitor(settings);
 
         sessionAttachmentStore ??= new NoOpSessionAttachmentStore();
 
@@ -10073,14 +9948,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             auditLogger,
             new StructuredOutputValidator(),
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
-            budgetMonitor,
             sessionAttachmentStore,
             humanPrompts ?? new HumanPromptRegistry(),
             healthTracker: healthTracker,
             subagentRunner: subagentRunner,
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
-            budgetReservationService: budgetReservationService,
             webResearchProviderCatalog: new WebResearchProviderCatalog([]),
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
             serviceProvider: ordinaryProvider,
@@ -10160,38 +10033,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
             compression);
-    }
-
-    private static BudgetMonitor CreateBudgetMonitor(ArcanumSettings? settings = null)
-    {
-        ArcanumSettings effective = settings ?? new ArcanumSettings();
-
-        IGrimoireRepository grimoire = new FakeGrimoireRepository();
-
-        IBudgetAlertRepository budgetAlerts = new FakeBudgetAlertRepository();
-
-        ICommLinkDispatcher commLink = new FakeCommLinkDispatcher();
-
-        IServiceScopeFactory scopeFactory = CreateBudgetMonitorScopeFactory(grimoire, budgetAlerts);
-
-        return new BudgetMonitor(
-            scopeFactory,
-            commLink,
-            new TestOptionsMonitor<ArcanumSettings>(effective),
-            NullLogger<BudgetMonitor>.Instance);
-    }
-
-    private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(
-        IGrimoireRepository grimoire,
-        IBudgetAlertRepository budgetAlerts)
-    {
-        ServiceCollection services = new();
-
-        services.AddScoped(_ => grimoire);
-
-        services.AddScoped(_ => budgetAlerts);
-
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
     private static PingRequest BaseRequest() =>
@@ -11650,108 +11491,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         }
     }
 
-    private sealed class RecordingBudgetReservationService : IBudgetReservationService
-    {
-        public BudgetReservationRequest? LastRequest { get; private set; }
-
-        public decimal? ReservedUsdOverride { get; init; }
-
-        public decimal? ReconciledUsd { get; private set; }
-
-        public int ReconcileCount { get; private set; }
-
-        public bool WasReleased { get; private set; }
-
-        public int UncertainCalls { get; private set; }
-
-        public Task MarkPossiblyDispatchedAsync(Guid reservationId, Guid runId, CancellationToken cancellationToken = default)
-        {
-            UncertainCalls++;
-
-            return Task.CompletedTask;
-        }
-
-        public Queue<Result> AdjustResults { get; } = new();
-
-        public Task<Result<BudgetReservation>> ReserveAsync(
-            BudgetReservationRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            LastRequest = request;
-
-            return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
-                Guid.NewGuid(),
-                request.RunId,
-                request.BudgetPeriod,
-                ReservedUsdOverride ?? request.ReservedUsd,
-                0m,
-                BudgetReservationStatus.Reserved,
-                request.ExpiresAt,
-                DateTimeOffset.UtcNow)));
-        }
-
-        public Task ReconcileAsync(
-            Guid reservationId,
-            decimal actualCostUsd,
-            CancellationToken cancellationToken = default)
-        {
-            ReconciledUsd = actualCostUsd;
-
-            ReconcileCount++;
-
-            return Task.CompletedTask;
-        }
-
-        public Task<Result> AdjustAsync(
-            Guid reservationId,
-            decimal reservedUsd,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                AdjustResults.Count > 0
-                    ? AdjustResults.Dequeue()
-                    : Result.Success());
-
-        public Task ReleaseAsync(
-            Guid reservationId,
-            CancellationToken cancellationToken = default)
-        {
-            WasReleased = true;
-
-            return Task.CompletedTask;
-        }
-
-        public Task<decimal> GetTodayCommittedSpendAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task ExtendExpiryAsync(
-            Guid reservationId,
-            DateTimeOffset expiresAt,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task<Result> RecheckDailyLimitAsync(
-            Guid reservationId,
-            decimal delegatedSpendUsd,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result.Success());
-
-        public Task<int> SweepExpiredAsync(
-            DateTimeOffset utcNow,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(0);
-    }
-
-    /// <summary>
-    /// Delegates every call to a real estimator while recording how many messages
-    /// <see cref="EstimateContext"/> was asked to estimate each time it ran, distinguishing an
-    /// O(removed) trim (a few small calls) from an O(messages) one (every
-    /// call sized to the current, still-largely-untrimmed transcript).
-    /// </summary>
     private sealed class CountingModelTokenEstimator(IModelTokenEstimator inner) : IModelTokenEstimator
     {
         private int _estimateContextCalls;

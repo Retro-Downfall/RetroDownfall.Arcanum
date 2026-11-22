@@ -158,6 +158,46 @@ public sealed class A2AInboundPeerConfigurationTests
         Assert.Equal(new DateTimeOffset(2030, 1, 2, 3, 4, 5, TimeSpan.Zero), grant.ExpiresAtUtc);
     }
 
+    [Fact]
+    public void A_new_peer_binds_and_round_trips_without_a_budget_axis()
+    {
+        JsonObject peer = JsonNode.Parse(PeerJson)!.AsObject();
+        peer["grant"]!.AsObject().Remove("budget");
+        string json = Wrap(peer.ToJsonString());
+
+        using JsonDocument file = JsonDocument.Parse(json);
+
+        ConfigurationValidator validator = new();
+        Assert.True(validator.ValidateConfigurationFileJson(file.RootElement).IsSuccess);
+
+        using MemoryStream stream = new(Encoding.UTF8.GetBytes(json));
+        IConfigurationRoot configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
+
+        Assert.True(validator.RejectObsoleteKeys(configuration).IsSuccess);
+
+        ServiceCollection services = new();
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        ArcanumSettings settings = provider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+        Assert.True(validator.Validate(settings).IsSuccess);
+
+        A2AInboundPeerSettings configured = Assert.Single(settings.Integrations.A2A.InboundPeers);
+        Assert.Null(configured.Grant!.Budget);
+
+        GuildGrant normalized = configured.Grant.ToGrant().Value;
+        Assert.Equal(GuildBudgetMode.Unlimited, normalized.Budget.Usd.Mode);
+        Assert.Equal(GuildBudgetMode.Unlimited, normalized.Budget.Tokens.Mode);
+
+        using JsonDocument saved = JsonDocument.Parse(JsonSerializer.Serialize(
+            settings, ConfigurationJsonContext.Default.ArcanumSettings));
+
+        JsonElement grant = saved.RootElement.GetProperty("integrations").GetProperty("a2A")
+            .GetProperty("inboundPeers")[0].GetProperty("grant");
+        Assert.False(grant.TryGetProperty("budget", out _));
+    }
+
     [Theory]
     [InlineData("peerId")]
     [InlineData("credentialEnvironmentVariable")]
@@ -166,7 +206,6 @@ public sealed class A2AInboundPeerConfigurationTests
     [InlineData("grant.workspaces")]
     [InlineData("grant.tools")]
     [InlineData("grant.memory")]
-    [InlineData("grant.budget")]
     [InlineData("grant.budget.usd")]
     [InlineData("grant.budget.usd.mode")]
     [InlineData("grant.budget.tokens")]

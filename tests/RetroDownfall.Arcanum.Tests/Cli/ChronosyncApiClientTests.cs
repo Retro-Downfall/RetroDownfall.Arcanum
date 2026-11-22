@@ -187,7 +187,7 @@ public sealed class ChronosyncApiClientTests
     }
 
     [Fact]
-    public async Task GetBudgetAsync_DoesNotInheritTheChronosyncResponseBodyRetry()
+    public async Task GetConclaveStatusAsync_DoesNotInheritTheChronosyncResponseBodyRetry()
     {
         RecordingHandler handler = new(request =>
         {
@@ -200,7 +200,7 @@ public sealed class ChronosyncApiClientTests
             new FakeHttpClientFactory(handler),
             ArcanumApiCredentialLeaseTestFactory.Create("test-key"));
 
-        Result<BudgetSummaryDto> result = await client.GetBudgetAsync();
+        Result<ConclaveStatusDto> result = await client.GetConclaveStatusAsync();
 
         Assert.True(result.IsFailure);
 

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
@@ -60,23 +59,9 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
                 "required": ["path", "content"],
                 "additionalProperties": false
               }
-            },
-            "max_tokens": {
-              "type": "integer",
-              "description": "Hard provider-reported token ceiling delegated to the child.",
-              "minimum": 1
-            },
-            "max_cost_usd": {
-              "type": "number",
-              "description": "Optional hard USD cost ceiling delegated to the child.",
-              "exclusiveMinimum": 0
             }
           },
           "required": ["prompt"],
-          "anyOf": [
-            { "required": ["max_tokens"] },
-            { "required": ["max_cost_usd"] }
-          ],
           "additionalProperties": false
         }
         """);
@@ -91,15 +76,13 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
     {
         var schema = System.Text.Json.Nodes.JsonNode.Parse(SchemaDocument.RootElement.GetRawText())!;
 
-        schema.AsObject().Remove("anyOf");
-
         schema["properties"]!["files"]!["items"]!["properties"]!.AsObject().Remove("attachment_id");
 
         return JsonDocument.Parse(schema.ToJsonString());
     }
 
     public override string Description =>
-        "Runs a self-contained task in one isolated child agent with an explicit token or cost budget and returns only its final summary.";
+        "Runs a self-contained task in one isolated child agent and returns only its final summary.";
 
     private static readonly JsonDocument MemorySchemaDocument = CreateMemorySchema();
 
@@ -129,39 +112,6 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             return "Subagent task failed: A bounded, non-empty prompt is required.";
         }
 
-        bool tokensSupplied = arguments.ContainsKey("max_tokens");
-
-        bool costSupplied = arguments.ContainsKey("max_cost_usd");
-
-        if (!tokensSupplied && !costSupplied)
-        {
-            return "Subagent task failed: A delegated token or cost budget is required.";
-        }
-
-        long? maxTokens = null;
-
-        decimal? maxCostUsd = null;
-
-        if (tokensSupplied)
-        {
-            if (!TryReadInt64(arguments, "max_tokens", out long tokenValue) || tokenValue <= 0)
-            {
-                return "Subagent task failed: A delegated token or cost budget is required.";
-            }
-
-            maxTokens = tokenValue;
-        }
-
-        if (costSupplied)
-        {
-            if (!TryReadDecimal(arguments, "max_cost_usd", out decimal costValue) || costValue <= 0)
-            {
-                return "Subagent task failed: A delegated token or cost budget is required.";
-            }
-
-            maxCostUsd = costValue;
-        }
-
         FileReadResult fileResult = TryReadFiles(
             arguments,
             out IReadOnlyList<AttachedFileDto> files,
@@ -180,7 +130,7 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
         // Freeze metadata with the validated explicit bytes, before any consumption/revalidation await.
         var inputSensitivity = memoryDelegation?.CaptureInputSensitivity();
 
-        SubagentRunRequest request = new(prompt, inheritedModel, files, maxTokens, maxCostUsd)
+        SubagentRunRequest request = new(prompt, inheritedModel, files)
         {
             InputProtection = memoryDelegation?.CaptureOutputProtection(),
         };
@@ -220,13 +170,7 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
                 cancellationToken)
             .ConfigureAwait(false);
 
-        string text = result.FailureCode switch
-        {
-            null when result.Success => result.Summary,
-            SubagentFailureCodes.BudgetExhausted =>
-                SubagentParentContextInjector.BudgetExhaustedMessage,
-            _ => "Subagent task failed.",
-        };
+        string text = result.Success ? result.Summary : "Subagent task failed.";
 
         var sensitivity = result.Sensitivity ?? request.MemoryDelegation?.Sensitivity ?? request.InputProtection?.Sensitivity;
 
@@ -354,70 +298,5 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
         value = value.Trim();
 
         return value.Length > 0;
-    }
-
-    private static bool TryReadInt64(
-        AIFunctionArguments arguments,
-        string name,
-        out long value)
-    {
-        value = 0;
-
-        if (!arguments.TryGetValue(name, out object? raw)
-            || raw is null)
-        {
-            return false;
-        }
-
-        return raw switch
-        {
-            int number => Assign(number, out value),
-            long number => Assign(number, out value),
-            JsonElement { ValueKind: JsonValueKind.Number } element =>
-                element.TryGetInt64(out value),
-            _ => long.TryParse(
-                raw.ToString(),
-                NumberStyles.Integer,
-                CultureInfo.InvariantCulture,
-                out value),
-        };
-    }
-
-    private static bool TryReadDecimal(
-        AIFunctionArguments arguments,
-        string name,
-        out decimal value)
-    {
-        value = 0;
-
-        if (!arguments.TryGetValue(name, out object? raw)
-            || raw is null)
-        {
-            return false;
-        }
-
-        return raw switch
-        {
-            decimal number => Assign(number, out value),
-            double number when double.IsFinite(number) =>
-                decimal.TryParse(
-                    number.ToString("R", CultureInfo.InvariantCulture),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
-                    out value),
-            JsonElement { ValueKind: JsonValueKind.Number } element =>
-                element.TryGetDecimal(out value),
-            _ => decimal.TryParse(
-                raw.ToString(),
-                NumberStyles.Number,
-                CultureInfo.InvariantCulture,
-                out value),
-        };
-    }
-
-    private static bool Assign<T>(T source, out T destination)
-    {
-        destination = source;
-        return true;
     }
 }

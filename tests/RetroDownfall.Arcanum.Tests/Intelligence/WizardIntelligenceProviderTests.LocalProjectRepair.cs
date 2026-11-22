@@ -138,7 +138,6 @@ public sealed partial class WizardIntelligenceProviderTests
                 settings.Security.PerceptionWorkspaceRoots = [workspace];
                 settings.Security.CampaignRoots = [workspace];
                 settings.Integrations.WorkspaceChecks.ExecutableCatalog.DotNet.Path = ProjectRepairDotNet;
-                settings.Cost.Budget.Enabled = false;
             });
 
             Action<IServiceCollection>? previous = host.ServiceOverrides;

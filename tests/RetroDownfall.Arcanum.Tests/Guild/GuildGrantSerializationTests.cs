@@ -15,10 +15,9 @@ public sealed class GuildGrantSerializationTests
     [InlineData("workspaces")]
     [InlineData("tools")]
     [InlineData("memory")]
-    [InlineData("budget")]
     [InlineData("delegation")]
     [InlineData("expiresAtUtc")]
-    public void Every_root_field_must_be_present_even_nullable_expiry(string name)
+    public void Every_nonfinancial_root_field_must_be_present_even_nullable_expiry(string name)
     {
         JsonObject root = JsonNode.Parse(RootJson)!.AsObject();
 
@@ -28,7 +27,27 @@ public sealed class GuildGrantSerializationTests
     }
 
     [Fact]
-    public void Root_requires_explicit_budget_dimensions_and_mode()
+    public void Retained_signed_grants_round_trip_the_exact_historical_bytes()
+    {
+        var grant = JsonSerializer.Deserialize(RootJson, GuildJsonContext.Default.GuildGrant);
+
+        Assert.Equal(RootJson, JsonSerializer.Serialize(grant, GuildJsonContext.Default.GuildGrant));
+    }
+
+    [Fact]
+    public void New_root_grants_may_omit_the_historical_budget()
+    {
+        JsonObject root = JsonNode.Parse(RootJson)!.AsObject();
+
+        Assert.True(root.Remove("budget"));
+
+        var grant = root.Deserialize(GuildJsonContext.Default.GuildGrant);
+
+        Assert.Equal(GuildBudgetGrant.Unmetered, Assert.IsType<GuildGrant>(grant).Budget);
+    }
+
+    [Fact]
+    public void Explicit_legacy_budget_requires_both_dimensions_and_mode()
     {
         string[] invalid =
         [

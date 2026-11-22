@@ -33,23 +33,17 @@ internal sealed partial class GuildBudgetLedger
 
         if (open.IsFailure) return open.Error;
 
-        Result<GuildBudgetSnapshot> account = await ReadWithinAsync(connection, transaction, binding.Value, ct).ConfigureAwait(false);
+        Result<Account> account = await ReadAccountAsync(connection, transaction, binding.Value, ct).ConfigureAwait(false);
 
         if (account.IsFailure) return account.Error;
 
-        if (!Fits(0m, 0L, account.Value)) return Exceeded;
-
         if (account.Value.Revision == long.MaxValue) return Exhausted;
-
-        if (effect.Request.ReservationId is null && daily?.RequiresReservation == true)
-            return new Error(ErrorCodes.Guild.ReconciliationRequired,
-                "The daily gate now requires an owned reservation. Prepare a new physical effect before dispatch.");
 
         if (effect.Request.ReservationId is { } reservation)
         {
             if (daily is null) return new Error(ErrorCodes.Guild.AuthorityUnavailable, "The real daily reservation owner is unavailable.");
 
-            Result exposed = await daily.RecheckBeforeDispatchWithinAsync(connection, transaction,
+            Result exposed = await daily.ExposeHistoricalReservationWithinAsync(connection, transaction,
                 reservation, effect.Request.AccountingAssociationId, ct).ConfigureAwait(false);
 
             if (exposed.IsFailure) return exposed.Error;
@@ -106,25 +100,13 @@ internal sealed partial class GuildBudgetLedger
 
         if (open.IsFailure) return open.Error;
 
-        Result<GuildBudgetSnapshot> read = await ReadWithinAsync(connection, transaction, binding.Value, ct).ConfigureAwait(false);
+        Result<Account> read = await ReadAccountAsync(connection, transaction, binding.Value, ct).ConfigureAwait(false);
 
         if (read.IsFailure) return read.Error;
 
-        GuildBudgetSnapshot account = read.Value;
+        Account account = read.Value;
 
         if (account.Closed) return Closed;
-
-        if (request.Kind == GuildBudgetEffectKind.External
-            && (account.Grant.Usd.Mode == GuildBudgetMode.Finite || account.Grant.Tokens.Mode == GuildBudgetMode.Finite))
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General remote transport has no qualified finite spend contract.");
-
-        if (account.Grant.Usd.Mode == GuildBudgetMode.Finite && request.UsdBound is null)
-            return new Error(ErrorCodes.Guild.PriceUnavailable, "A finite USD grant requires a trustworthy conservative price bound.");
-
-        if (account.Grant.Tokens.Mode == GuildBudgetMode.Finite && request.TokenBound is null)
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "A finite token grant requires a trustworthy conservative token bound.");
-
-        if (!Fits(request.UsdBound, request.TokenBound, account)) return Exceeded;
 
         if (account.Revision == long.MaxValue) return Exhausted;
 
@@ -158,12 +140,6 @@ internal sealed partial class GuildBudgetLedger
         Result open = await RequireOpenLineageAsync(connection, transaction, accountId, cancellationToken).ConfigureAwait(false);
 
         if (open.IsFailure) return open;
-
-        Result<GuildBudgetSnapshot> account = await ReadWithinAsync(connection, transaction, accountId, cancellationToken).ConfigureAwait(false);
-
-        if (account.IsFailure) return account.Error;
-
-        if (!Fits(0m, 0L, account.Value)) return Exceeded;
 
         List<GuildBudgetEffect> effects = [];
 
@@ -201,7 +177,7 @@ internal sealed partial class GuildBudgetLedger
 
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) effects.Add(ParseEffect(reader));
 
-            if (effects.Count != 1 || daily?.RequiresReservation == true)
+            if (effects.Count != 1)
                 return new Error(ErrorCodes.Guild.ReconciliationRequired, "No qualified physical effect was prepared for this dispatch.");
         }
 

@@ -23,7 +23,7 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(opened.IsSuccess, opened.Error.Message);
         await using var lease = opened.Value;
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(lease.Connection);
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+        BudgetReservationService daily = new(db);
         GuildBudgetEffectRequest effect = new(Guid.NewGuid(), issued.Value.Quest.Id, execution.Dispatch.DispatchId,
             issued.Value.Quest.RunId, GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, null, null);
         Assert.True((await f.Store.ExecuteProviderEffectAsync(execution, daily, effect,

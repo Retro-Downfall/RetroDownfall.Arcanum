@@ -27,7 +27,7 @@ public static class MemoryEvaluationValidator
                 || (request.Scope.Kind == MemoryEvaluationScopeKind.Campaign ? request.Scope.CampaignId is null || request.Scope.CampaignId == Guid.Empty : request.Scope.CampaignId is not null)
                 || !Identifier(request.ProviderName) || !Identifier(request.Model)
                 || request.PairCount is < MemoryEvaluationLimits.MinPairs or > MemoryEvaluationLimits.MaxPairs
-                || request.Options.MaxOutputTokens is < MemoryEvaluationLimits.MinOutputTokens or > MemoryEvaluationLimits.MaxOutputTokens
+                || request.Options.MaxOutputTokens is < MemoryEvaluationLimits.MinOutputTokens
                 || request.Options.Temperature is { } temperature && (!double.IsFinite(temperature) || temperature is < 0 or > 2)
                 || request.Options.TopP is { } topP && (!double.IsFinite(topP) || topP is < 0 or > 1)
                 || request.Options.ReasoningEffort is { } effort && !Enum.IsDefined(effort)

@@ -55,7 +55,8 @@ public sealed record GuildGrantSettings
     [JsonRequired]
     public GuildMemoryGrantSettings[]? Memory { get; set; }
 
-    [JsonRequired]
+    // Retain legacy grant bytes for peer identity across configuration save and restart.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GuildBudgetGrantSettings? Budget { get; set; }
 
     [JsonRequired]
@@ -78,7 +79,7 @@ public sealed record GuildGrantSettings
     /// <summary>Validates data only. The host must still verify ownership, availability and live authority.</summary>
     public Result<GuildGrant> ToGrant()
     {
-        if (Workspaces is null || Tools is null || Memory is null || Budget is null
+        if (Workspaces is null || Tools is null || Memory is null
             || Delegation is null || !HasExplicitExpiry)
         {
             return Result<GuildGrant>.Failure(new Error(ErrorCodes.Guild.InvalidRequest,
@@ -94,9 +95,11 @@ public sealed record GuildGrantSettings
                 item.Store ?? (GuildMemoryStore)(-1), item.Operation ?? (GuildMemoryOperation)(-1),
                 item.Scope is null ? null! : new GuildMemoryScope(
                     item.Scope.Kind ?? (GuildMemoryScopeKind)(-1), item.Scope.Id))).ToImmutableArray(),
-            new GuildBudgetGrant(
-                Budget.Usd is null ? null! : new GuildUsdBudget(Budget.Usd.Mode ?? (GuildBudgetMode)(-1), Budget.Usd.Value),
-                Budget.Tokens is null ? null! : new GuildTokenBudget(Budget.Tokens.Mode ?? (GuildBudgetMode)(-1), Budget.Tokens.Value)),
+            Budget is null
+                ? new GuildBudgetGrant(new GuildUsdBudget(GuildBudgetMode.Unlimited), new GuildTokenBudget(GuildBudgetMode.Unlimited))
+                : new GuildBudgetGrant(
+                    Budget.Usd is null ? null! : new GuildUsdBudget(Budget.Usd.Mode ?? (GuildBudgetMode)(-1), Budget.Usd.Value),
+                    Budget.Tokens is null ? null! : new GuildTokenBudget(Budget.Tokens.Mode ?? (GuildBudgetMode)(-1), Budget.Tokens.Value)),
             Delegation.ToImmutableArray(),
             ExpiresAtUtc);
 

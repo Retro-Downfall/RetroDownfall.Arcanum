@@ -146,7 +146,7 @@ internal sealed partial class GuildRemotePort(GuildQuestStore quests, GuildLocal
                         if (body.IsFailure) return body.Error;
 
                         transported = await client.SendGuildAsync(new(input.DiscoveryEndpoint, body.Value, request.DispatchId.ToString("N"),
-                            bound.Value.Quest.Quest.ResolvedGrant.Budget, continuation ? taskId : null, continuation ? contextId : null,
+                            continuation ? taskId : null, continuation ? contextId : null,
                             input.Mode, new(input.AcceptedOutputModes, input.SkillId), input.DelegationChain, input.Transport), lifecycle,
                             lifetime.Token).ConfigureAwait(false);
                     }

@@ -8,7 +8,6 @@ public static class DockToolId
 
     public const string Gatehouse = "gatehouse";
 
-    public const string Treasury = "treasury";
 
     public const string Arsenal = "arsenal";
 
@@ -40,7 +39,6 @@ public static class DockToolId
     [
         Atelier,
         Gatehouse,
-        Treasury,
         Arsenal,
         WarTable,
         Output,

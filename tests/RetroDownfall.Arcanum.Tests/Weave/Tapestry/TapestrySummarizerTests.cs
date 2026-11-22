@@ -196,11 +196,10 @@ public sealed partial class TapestrySummarizerTests
     }
 
     /// <summary>
-    /// The fit estimate reserves twice <c>MaxSummaryTokens</c> because reasoning counts against the
-    /// output limit, so the request is capped at exactly that reservation rather than left unbounded.
+    /// The cluster fit estimate leaves response headroom. The provider chooses how much to generate.
     /// </summary>
     [Fact]
-    public async Task SummarizeAsync_caps_output_at_the_reserved_budget()
+    public async Task SummarizeAsync_leaves_provider_output_open_after_reserving_context()
     {
         FakeIntelligenceProvider provider = new();
 
@@ -208,7 +207,7 @@ public sealed partial class TapestrySummarizerTests
 
         _ = await summarizer.SummarizeAsync(Request("alpha"), CancellationToken.None);
 
-        Assert.Equal(2 * MaxSummaryTokens, Assert.Single(provider.Requests).MaxOutputTokens);
+        Assert.Null(Assert.Single(provider.Requests).MaxOutputTokens);
     }
 
     [Fact]
@@ -226,7 +225,7 @@ public sealed partial class TapestrySummarizerTests
 
         Assert.Equal("a summary cut short", result.Value);
 
-        Assert.Contains(logger.Entries, static entry => entry.Contains("output cap", StringComparison.Ordinal));
+        Assert.Contains(logger.Entries, static entry => entry.Contains("provider output limit", StringComparison.Ordinal));
     }
 
     [Fact]

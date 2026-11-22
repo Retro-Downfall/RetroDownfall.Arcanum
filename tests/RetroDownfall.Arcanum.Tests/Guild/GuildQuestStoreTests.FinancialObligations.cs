@@ -274,9 +274,8 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetPolicySettings settings = new() { Enabled = true, DailyLimitUsd = 10m };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new() { Cost = new() { Budget = settings } }));
+        BudgetReservationService daily = new(db);
 
         GuildBudgetLedger ledger = new(daily);
 
@@ -308,8 +307,7 @@ public sealed partial class GuildQuestStoreTests
         GuildBudgetEffectRequest request = new(Guid.NewGuid(), row.Quest.Id, dispatch, run,
             GuildBudgetEffectKind.LocalProvider, bill, null, 5m, 20);
 
-        var prepared = await GuildBudgetPhysicalAccounting.PrepareLocalWithinAsync(connection, transaction, ledger, daily,
-            request, DateTimeOffset.UtcNow.AddHours(1), default);
+        var prepared = await SeedHistoricalProviderEffectAsync(connection, transaction, ledger, request, linkedReservation: true);
 
         Assert.True(prepared.IsSuccess, prepared.Error.Message);
 
@@ -323,8 +321,6 @@ public sealed partial class GuildQuestStoreTests
             request.EffectId, Guid.NewGuid(), default, daily);
 
         Assert.True(applied.IsSuccess, applied.Error.Message);
-
-        settings.Enabled = false;
 
         Assert.True(await GuildBudgetObligations.ReservationsClearWithinAsync(connection, transaction, row.AllocationAccountId, default));
 

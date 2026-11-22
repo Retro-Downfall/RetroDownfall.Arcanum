@@ -66,10 +66,6 @@ internal static class GuildLocalServiceCollectionExtensions
 
         services.AddScoped<IGuildLocalExecutionAdmission, GuildLocalExecutionAdmission>();
 
-        services.AddSingleton(static sp => new GuildSpendRefreshConfiguration(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
-
-        services.AddScoped(static sp => new GuildOpenRouterSpendReader(sp.GetRequiredService<IDnsResolver>()));
-
         services.AddScoped<GuildSpendRefreshService>();
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, GuildSpendRefreshRecoveryHandler>();

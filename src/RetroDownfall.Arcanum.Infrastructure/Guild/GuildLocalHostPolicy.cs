@@ -394,6 +394,10 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
                 grant = GuildSignetGrantComposition.Intersect(grant, work.PrimaryCeiling, primaryScope.Value);
             }
+
+            // A historical Cohort or primary grant can still narrow each nonfinancial authority.
+            // It contributes no budget amount to the newly issued Quest.
+            grant = grant with { Budget = GuildBudgetGrant.Unmetered };
         }
 
         if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item is not (GuildDelegationKind.Local or GuildDelegationKind.Remote or GuildDelegationKind.Cohort))) return Forbidden;
@@ -411,9 +415,6 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
             if (remote is not null)
             {
-                if (grant.Budget.Usd.Mode != GuildBudgetMode.Unlimited || grant.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)
-                    return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "The remote transport cannot enforce a finite Guild spending grant.");
-
                 if (root && !grant.Delegation.Contains(GuildDelegationKind.Remote)) return Forbidden;
 
                 if (!root)

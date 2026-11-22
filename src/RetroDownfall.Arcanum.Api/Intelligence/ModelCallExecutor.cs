@@ -819,7 +819,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 pricing);
         }
 
-        tracker.RecordUsageDeferred(usage, costUsd);
+        tracker.RecordUsage(usage, costUsd);
     }
 
     private void RecordPromptCacheMetrics(

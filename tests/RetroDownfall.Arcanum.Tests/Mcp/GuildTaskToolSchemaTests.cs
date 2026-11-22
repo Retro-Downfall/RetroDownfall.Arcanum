@@ -6,33 +6,47 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed class GuildTaskToolSchemaTests
 {
     [Fact]
-    public void Creation_grant_schema_describes_closed_exact_scope_and_budget_axes()
+    public void Creation_grant_schema_keeps_closed_nonfinancial_authority()
     {
-        JsonElement grant = ArcanumInternalToolServer.BuildTaskToolSchema("create_agent_task")
-            .GetProperty("properties").GetProperty("grant").GetProperty("properties");
+        JsonElement creation = ArcanumInternalToolServer.BuildTaskToolSchema("create_agent_task");
+        JsonElement grant = creation.GetProperty("properties").GetProperty("grant");
+        JsonElement axes = grant.GetProperty("properties");
 
-        Assert.True(grant.GetProperty("tools").GetProperty("items").TryGetProperty("properties", out JsonElement tools));
+        Assert.False(grant.GetProperty("additionalProperties").GetBoolean());
+        Assert.Equal(["delegation", "expiresAtUtc", "memory", "tools", "workspaces"],
+            axes.EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(["goal"], creation.GetProperty("required").EnumerateArray().Select(static item => item.GetString()));
 
-        Assert.Equal(["name", "sourceKind", "sourceRegistrationId"], tools.EnumerateObject().Select(p => p.Name).Order().ToArray());
+        AssertClosedMembers(axes.GetProperty("tools").GetProperty("items"), "name", "sourceKind", "sourceRegistrationId");
+        AssertClosedMembers(axes.GetProperty("workspaces").GetProperty("items"), "access", "relativeRoot", "workspaceId");
 
-        Assert.True(grant.GetProperty("workspaces").GetProperty("items").TryGetProperty("properties", out JsonElement workspaces));
+        JsonElement memory = axes.GetProperty("memory").GetProperty("items");
+        AssertClosedMembers(memory, "operation", "scope", "store");
 
-        Assert.Equal(["access", "relativeRoot", "workspaceId"], workspaces.EnumerateObject().Select(p => p.Name).Order().ToArray());
+        JsonElement scope = memory.GetProperty("properties").GetProperty("scope");
+        Assert.False(scope.GetProperty("additionalProperties").GetBoolean());
+        Assert.Equal(["id", "kind"],
+            scope.GetProperty("properties").EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(["kind"], scope.GetProperty("required").EnumerateArray().Select(static item => item.GetString()));
 
-        Assert.True(grant.GetProperty("memory").GetProperty("items").TryGetProperty("properties", out JsonElement memory));
+        JsonElement scopeVariants = scope.GetProperty("oneOf");
+        Assert.Equal(2, scopeVariants.GetArrayLength());
+        Assert.Equal("global", scopeVariants[0].GetProperty("properties").GetProperty("kind").GetProperty("const").GetString());
+        Assert.Equal(["id"], scopeVariants[1].GetProperty("required").EnumerateArray().Select(static item => item.GetString()));
 
-        Assert.Equal(["operation", "scope", "store"], memory.EnumerateObject().Select(p => p.Name).Order().ToArray());
+        Assert.Equal(["local", "remote", "cohort"],
+            axes.GetProperty("delegation").GetProperty("items").GetProperty("enum").EnumerateArray().Select(static item => item.GetString()));
+        Assert.Equal(["string", "null"],
+            axes.GetProperty("expiresAtUtc").GetProperty("type").EnumerateArray().Select(static item => item.GetString()));
+    }
 
-        Assert.True(grant.GetProperty("budget").TryGetProperty("properties", out JsonElement budget));
-
-        Assert.Equal(["tokens", "usd"], budget.EnumerateObject().Select(p => p.Name).Order().ToArray());
-
-        foreach (string axis in new[] { "tokens", "usd" })
-        {
-            Assert.False(budget.GetProperty(axis).GetProperty("additionalProperties").GetBoolean());
-
-            Assert.Equal(["mode", "value"], budget.GetProperty(axis).GetProperty("properties").EnumerateObject().Select(p => p.Name).Order().ToArray());
-        }
+    private static void AssertClosedMembers(JsonElement schema, params string[] expected)
+    {
+        Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
+        Assert.Equal(expected,
+            schema.GetProperty("properties").EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(expected,
+            schema.GetProperty("required").EnumerateArray().Select(static item => item.GetString()).Order(StringComparer.Ordinal));
     }
 
     [Fact]

@@ -106,7 +106,7 @@ public static class GuildGrantPolicy
             request.Workspaces.IsSpecified ? request.Workspaces.Value!.Value : effectiveParent.Workspaces,
             request.Tools.IsSpecified ? request.Tools.Value!.Value : effectiveParent.Tools,
             request.Memory.IsSpecified ? request.Memory.Value!.Value : effectiveParent.Memory,
-            request.Budget.IsSpecified ? request.Budget.Value! : effectiveParent.Budget,
+            request.Budget.IsSpecified ? request.Budget.Value! : GuildBudgetGrant.Unmetered,
             request.Delegation.IsSpecified ? request.Delegation.Value!.Value : effectiveParent.Delegation,
             request.ExpiresAtUtc.IsSpecified ? request.ExpiresAtUtc.Value : effectiveParent.ExpiresAtUtc);
 
@@ -127,15 +127,12 @@ public static class GuildGrantPolicy
         bool memorySubset = child.Memory.All(item => effectiveParent.Memory.Any(parent =>
             parent.Store == item.Store && parent.Operation == item.Operation && ScopeContains(parent.Scope, item.Scope, evidence)));
 
-        bool budgetSubset = UsdWithin(child.Budget.Usd, effectiveParent.Budget.Usd)
-            && TokensWithin(child.Budget.Tokens, effectiveParent.Budget.Tokens);
-
         bool delegationSubset = child.Delegation.All(effectiveParent.Delegation.Contains);
 
         bool expirySubset = effectiveParent.ExpiresAtUtc is null
             || child.ExpiresAtUtc is { } expiry && expiry <= effectiveParent.ExpiresAtUtc.Value;
 
-        if (!workspaceSubset || !toolSubset || !memorySubset || !budgetSubset || !delegationSubset || !expirySubset)
+        if (!workspaceSubset || !toolSubset || !memorySubset || !delegationSubset || !expirySubset)
         {
             return Result<GuildGrant>.Failure(new Error(ErrorCodes.Guild.GrantWidening,
                 "The requested grant is not a verified subset of its effective issuer grant."));
@@ -201,12 +198,6 @@ public static class GuildGrantPolicy
     private static bool ScopeContains(GuildMemoryScope parent, GuildMemoryScope child, GuildGrantScopeEvidence evidence) =>
         parent == child || parent.Kind == GuildMemoryScopeKind.Campaign && child.Kind == GuildMemoryScopeKind.Session
         && evidence.SessionOwnership.Contains((parent.Id!.Value, child.Id!.Value));
-
-    private static bool UsdWithin(GuildUsdBudget child, GuildUsdBudget parent) => parent.Mode == GuildBudgetMode.Unlimited
-        || child.Mode == GuildBudgetMode.Finite && child.Value <= parent.Value;
-
-    private static bool TokensWithin(GuildTokenBudget child, GuildTokenBudget parent) => parent.Mode == GuildBudgetMode.Unlimited
-        || child.Mode == GuildBudgetMode.Finite && child.Value <= parent.Value;
 
     private static Result Invalid(string message) => Result.Failure(new Error(ErrorCodes.Guild.InvalidRequest, message));
 }

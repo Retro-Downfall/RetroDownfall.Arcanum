@@ -42,7 +42,7 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
                 DataContext = root,
             };
 
-            LabeledStepper stepper = StepperFor(view, "cost.budget.dailyLimitUsd");
+            LabeledStepper stepper = StepperFor(view, "cost.pricing.defaultPricing.outputPer1M");
 
             NumericUpDown numeric = NumericInput(stepper);
 
@@ -68,7 +68,7 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
 
             Assert.False(field.HasError);
 
-            Assert.Equal(expected, root.BuildSettings().Cost.Budget.DailyLimitUsd);
+            Assert.Equal(expected, root.BuildSettings().Cost.Pricing.DefaultPricing.OutputPer1M);
         });
 
     [Fact]
@@ -83,10 +83,9 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
             {
                 Cost = new CostSettings
                 {
-                    Budget = new BudgetPolicySettings { DailyLimitUsd = amount },
                     Pricing = new PricingSettings
                     {
-                        DefaultPricing = new ModelPricingEntry { InputPer1M = rate },
+                        DefaultPricing = new ModelPricingEntry { InputPer1M = rate, OutputPer1M = amount },
                     },
                 },
             });
@@ -101,13 +100,13 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
 
             Assert.False(root.LoadFailed);
 
-            Assert.Equal(amount, NumericInput(StepperFor(view, "cost.budget.dailyLimitUsd")).Value);
+            Assert.Equal(amount, NumericInput(StepperFor(view, "cost.pricing.defaultPricing.outputPer1M")).Value);
 
             Assert.Equal(rate, NumericInput(StepperFor(view, "cost.pricing.defaultPricing.inputPer1M")).Value);
 
             ArcanumSettings built = root.BuildSettings();
 
-            Assert.Equal(amount, built.Cost.Budget.DailyLimitUsd);
+            Assert.Equal(amount, built.Cost.Pricing.DefaultPricing.OutputPer1M);
 
             Assert.Equal(rate, built.Cost.Pricing.DefaultPricing.InputPer1M);
 
@@ -130,7 +129,7 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
                 DataContext = root,
             };
 
-            LabeledStepper stepper = StepperFor(view, "cost.budget.dailyLimitUsd");
+            LabeledStepper stepper = StepperFor(view, "cost.pricing.defaultPricing.outputPer1M");
 
             NumericUpDown numeric = NumericInput(stepper);
 
@@ -150,7 +149,7 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
 
             Assert.Equal(expected, numeric.Value);
 
-            Assert.Equal(expected, root.BuildSettings().Cost.Budget.DailyLimitUsd);
+            Assert.Equal(expected, root.BuildSettings().Cost.Pricing.DefaultPricing.OutputPer1M);
         });
 
     [Fact]
@@ -289,14 +288,13 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
         });
 
     [Fact]
-    public Task Inbound_grant_precision_survives_generic_view_without_an_editable_money_control() =>
+    public Task Inbound_grant_survives_generic_view_without_an_editable_collection_template() =>
         ui.RunAsync(() =>
         {
             const string json = """
                 {"integrations":{"a2A":{"inboundPeers":[{
                   "peerId":"configured-peer","enabled":true,"credentialEnvironmentVariable":"PRIVATE_PEER_TOKEN",
                   "campaignId":null,"grant":{"workspaces":[],"tools":[],"memory":[],
-                  "budget":{"usd":{"mode":"finite","value":1.234567890123456789},"tokens":{"mode":"unlimited"}},
                   "delegation":["local"],"expiresAtUtc":null}}]}}}
                 """;
 
@@ -313,10 +311,10 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
                 DataContext = root,
             };
 
-            const string key = "integrations.a2A.inboundPeers.grant.budget.usd.value";
+            const string key = "integrations.a2A.inboundPeers.grant.workspaces.relativeRoot";
 
-            Assert.DoesNotContain(view.GetLogicalDescendants().OfType<LabeledStepper>(),
-                stepper => stepper.Key == key);
+            Assert.DoesNotContain(view.GetLogicalDescendants().OfType<LabeledEntry>(),
+                textBox => textBox.Key == key);
 
             GenericSettingFieldViewModel field = Assert.Single(
                 root.GetOrCreateGenericSection(ConfigSection.Integrations).Fields,
@@ -324,17 +322,18 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
 
             Assert.True(field.IsCollectionTemplate);
 
-            field.NumericValue = 0;
+            field.StringValue = "ignored-template-override";
 
             var peer = Assert.Single(root.BuildSettings().Integrations.A2A.InboundPeers);
 
-            Assert.Equal(1.234567890123456789m, peer.Grant!.Budget!.Usd!.Value);
+
+            Assert.Single(peer.Grant!.Delegation!);
 
             Assert.Equal("PRIVATE_PEER_TOKEN", peer.CredentialEnvironmentVariable);
         });
 
     [Fact]
-    public Task Provider_and_model_integer_steppers_keep_compiled_bindings_two_way() =>
+    public Task Provider_context_integer_stepper_keeps_compiled_binding_two_way() =>
         ui.RunAsync(() =>
         {
             using InMemoryConfigurationStore store = new(new ArcanumSettings
@@ -362,90 +361,15 @@ public sealed class GenericSettingsSectionViewTests(AvaloniaBindingFixture ui)
             NumericUpDown context = NumericInput(Assert.Single(row.GetLogicalDescendants().OfType<LabeledStepper>(),
                 stepper => stepper.Label == "Context window limit"));
 
-            context.Value = 32768m;
+            context.Value = 10_000_000m;
 
-            Assert.Equal(32768, provider.ContextWindowLimit);
+            Assert.Equal(10_000_000, provider.ContextWindowLimit);
 
-            provider.ContextWindowLimit = 65536;
+            provider.ContextWindowLimit = int.MaxValue;
 
-            Assert.Equal(65536m, context.Value);
+            Assert.Equal((decimal)int.MaxValue, context.Value);
 
-            ItemsControl models = Assert.Single(row.GetLogicalDescendants().OfType<ItemsControl>(), control => control.GetType() == typeof(ItemsControl));
-
-            var model = Assert.Single(provider.Models);
-
-            model.HasReasoning = true;
-
-            model.HasReasoningMaxBudgetTokens = true;
-
-            Control modelRow = models.ItemTemplate!.Build(model)!;
-
-            modelRow.DataContext = model;
-
-            NumericUpDown reasoning = NumericInput(Assert.Single(modelRow.GetLogicalDescendants().OfType<LabeledStepper>(),
-                stepper => stepper.Label == "Maximum reasoning budget"));
-
-            reasoning.Value = 1234m;
-
-            Assert.Equal(1234, model.ReasoningMaxBudgetTokens);
-
-            model.ReasoningMaxBudgetTokens = 4321;
-
-            Assert.Equal(4321m, reasoning.Value);
-
-            ProviderSettings built = Assert.Single(root.BuildSettings().Providers);
-
-            Assert.Equal(65536, built.ContextWindowLimit);
-
-            Assert.Equal(4321, Assert.Single(built.Models).Reasoning!.MaxBudgetTokens);
-        });
-
-    [Fact]
-    public Task Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page() =>
-        ui.RunAsync(() =>
-        {
-            using InMemoryConfigurationStore store = new(new ArcanumSettings
-            {
-                Providers = [new ProviderSettings
-                {
-                    Name = "router",
-                    Endpoint = "https://openrouter.ai/api/v1",
-                    Models = ["model"],
-                }],
-            });
-
-            ConfigurationViewModel root = CreateRoot(store);
-
-            var provider = Assert.Single(root.Providers.Providers);
-
-            ProvidersPage page = new() { DataContext = root };
-
-            ItemsControl providers = Assert.Single(page.GetLogicalDescendants().OfType<ItemsControl>());
-
-            Control row = providers.ItemTemplate!.Build(provider)!;
-
-            row.DataContext = provider;
-
-            LabeledPicker picker = Assert.Single(row.GetLogicalDescendants().OfType<LabeledPicker>(),
-                control => control.Key == "providers.guildUsageReconciliation");
-
-            Assert.Equal(GuildUsageReconciliationSource.None, picker.SelectedItem);
-
-            picker.SelectedItem = GuildUsageReconciliationSource.OpenRouterGeneration;
-
-            Assert.Equal(GuildUsageReconciliationSource.OpenRouterGeneration,
-                Assert.Single(root.BuildSettings().Providers).GuildUsageReconciliation);
-
-            provider.Type = AiProviderKind.CodexCli;
-
-            Assert.False(picker.IsVisible);
-
-            Assert.Equal(GuildUsageReconciliationSource.None,
-                Assert.Single(root.BuildSettings().Providers).GuildUsageReconciliation);
-
-            provider.Type = AiProviderKind.OpenAICompatible;
-
-            Assert.Equal(GuildUsageReconciliationSource.None, picker.SelectedItem);
+            Assert.Equal(int.MaxValue, Assert.Single(root.BuildSettings().Providers).ContextWindowLimit);
         });
 
     private static ConfigurationViewModel CreateRoot(IArcanumConfigurationStore store) =>

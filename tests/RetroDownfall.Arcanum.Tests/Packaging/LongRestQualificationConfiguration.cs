@@ -29,19 +29,13 @@ internal static class LongRestQualificationConfiguration
 
     public const int ChatContextWindow = 131_072;
 
-    /// <summary>Synthetic prices, so that the budget snapshot's spend is a nonzero figure the test can compare with the traffic it saw.</summary>
+    /// <summary>Synthetic prices, so that measured local spend is a nonzero figure the test can compare with the traffic it saw.</summary>
     public const decimal InputPricePerMillion = 1000m;
 
     public const decimal OutputPricePerMillion = 1000m;
 
     /// <summary>A cached-input rate unlike both others, so the comparison with the provider's cached-token count has something to find.</summary>
     public const decimal CachedPricePerMillion = 250m;
-
-    /// <summary>
-    /// The budget snapshot reports spend only while a daily limit is enforced, so one is: large enough that no qualification call is
-    /// ever refused by it (at the synthetic prices the whole run costs a few hundred dollars), small enough to be a real limit.
-    /// </summary>
-    public const decimal DailyLimitUsd = 10_000m;
 
     /// <param name="providerEndpoint">The literal-loopback <c>/v1</c> endpoint both entries use (the recording forwarder in front of Ollama).</param>
     /// <param name="sagaExtraction">Seeding needs the host's own extraction; the sweeps and the ordinary turn do not.</param>
@@ -141,11 +135,6 @@ internal static class LongRestQualificationConfiguration
                 },
                 Cost = new CostSettings
                 {
-                    Budget = new BudgetPolicySettings
-                    {
-                        Enabled = true,
-                        DailyLimitUsd = DailyLimitUsd,
-                    },
                     Pricing = new PricingSettings
                     {
                         DefaultPricing = new ModelPricingEntry

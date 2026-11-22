@@ -314,7 +314,8 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
             }
         }
 
-        int inputTokens = ContextTokenBreakdown.SaturatingInt(SumInput(estimates));
+        long measuredInput = SumInput(estimates);
+        int inputTokens = ContextTokenBreakdown.SaturatingInt(measuredInput);
         int reservedTokens = SaturatingAdd(
             Math.Max(0, request.ReservedAnswerTokens),
             Math.Max(0, request.ReservedReasoningTokens));
@@ -330,6 +331,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
             ToolCatalogTokens = ContextTokenBreakdown.SaturatingInt(toolCatalogTokens),
             ToolExchangeTokens = ContextTokenBreakdown.SaturatingInt(toolExchangeTokens),
             InputTokens = inputTokens,
+            MeasuredInputTokens = measuredInput,
             ReservedTokens = reservedTokens,
             ReservedAnswerTokens = Math.Max(0, request.ReservedAnswerTokens),
             ReservedReasoningTokens = Math.Max(0, request.ReservedReasoningTokens),

@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -30,9 +31,9 @@ public sealed partial class TapestrySummarizerTests
 
         Assert.True(prompt.SafetyMarginTokens > 0);
 
-        Assert.Equal(2 * MaxSummaryTokens, ping.MaxOutputTokens);
+        Assert.Null(ping.MaxOutputTokens);
 
-        int required = checked(prompt.TokenCount + ping.MaxOutputTokens!.Value);
+        int required = checked(prompt.TokenCount + 2 * settings.ResolveEmbeddings().Tapestry.MaxSummaryTokens);
 
         settings.Providers[0].ContextWindowLimit = required;
 

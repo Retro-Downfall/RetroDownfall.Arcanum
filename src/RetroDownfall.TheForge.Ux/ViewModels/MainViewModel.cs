@@ -21,7 +21,6 @@ using RetroDownfall.TheForge.Ux.ViewModels.Gatehouse;
 using RetroDownfall.TheForge.Ux.ViewModels.Hearth;
 using RetroDownfall.TheForge.Ux.ViewModels.Ledger;
 using RetroDownfall.TheForge.Ux.ViewModels.Lore;
-using RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 using RetroDownfall.TheForge.Ux.ViewModels.WarTable;
 using RetroDownfall.TheForge.Ux.ViewModels.WeaveInspector;
 using RetroDownfall.TheForge.Ux.ViewModels.Workbench;
@@ -104,8 +103,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     public GatehouseViewModel Gatehouse { get; }
 
-    public TreasuryViewModel Treasury { get; }
-
     public ArsenalViewModel Arsenal { get; }
 
     public FoundryFloorViewModel FoundryFloor { get; }
@@ -136,7 +133,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         AtelierViewModel atelier,
         WarTableViewModel warTable,
         GatehouseViewModel gatehouse,
-        TreasuryViewModel treasury,
         ArsenalViewModel arsenal,
         FoundryFloorViewModel foundryFloor,
         HearthViewModel hearth,
@@ -178,8 +174,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         WarTable = warTable;
 
         Gatehouse = gatehouse;
-
-        Treasury = treasury;
 
         Arsenal = arsenal;
 
@@ -272,9 +266,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private void ShowGatehouse() => DockLayout.ShowTool(DockToolId.Gatehouse);
-
-    [RelayCommand]
-    private void ShowTreasury() => DockLayout.ShowTool(DockToolId.Treasury);
 
     [RelayCommand]
     private void ShowArsenal() => DockLayout.ShowTool(DockToolId.Arsenal);
@@ -456,8 +447,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         Arsenal.Dispose();
 
-        Treasury.Dispose();
-
         Anvil.Dispose();
 
         // FoundryFloorViewModel is a DI singleton — leave disposal to ServiceProvider.
@@ -472,8 +461,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         DockLayout.SetContent(DockToolId.Atelier, Atelier);
 
         DockLayout.SetContent(DockToolId.Gatehouse, Gatehouse);
-
-        DockLayout.SetContent(DockToolId.Treasury, Treasury);
 
         DockLayout.SetContent(DockToolId.Arsenal, Arsenal);
 
@@ -777,7 +764,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         {
             PanelKind.Atelier => DockToolId.Atelier,
             PanelKind.Gatehouse => DockToolId.Gatehouse,
-            PanelKind.Treasury => DockToolId.Treasury,
             PanelKind.Arsenal => DockToolId.Arsenal,
             PanelKind.WarTable => DockToolId.WarTable,
             PanelKind.FoundryFloor => DockToolId.Output,

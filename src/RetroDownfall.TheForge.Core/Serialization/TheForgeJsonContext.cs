@@ -48,7 +48,6 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ApiResponse<HealthReportDto>))]
 [JsonSerializable(typeof(ApiResponse<InstanceMetadataDto>))]
 [JsonSerializable(typeof(ApiResponse<GrimoireStatsDto>))]
-[JsonSerializable(typeof(ApiResponse<BudgetSummaryDto>))]
 
 // Campaigns
 [JsonSerializable(typeof(RegisterCampaignRequest))]

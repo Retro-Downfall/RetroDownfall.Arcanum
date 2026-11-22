@@ -79,7 +79,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(root.Value.Quest.Id, child.Value.Quest.ParentQuestId);
 
-        Assert.Equal(ceiling, child.Value.Quest.ResolvedGrant.Budget);
+        Assert.Equal(GuildBudgetGrant.Unmetered, child.Value.Quest.ResolvedGrant.Budget);
 
         Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
 
@@ -102,17 +102,17 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Guid secondKey = Guid.NewGuid();
 
-        var overallocated = await f.Store.IssueCohortMemberAsync(run.Value,
+        var second = await f.Store.IssueCohortMemberAsync(run.Value,
             new(f.Generation, root.Value.Quest.Id, null, secondKey, secondKey), cohort.Value.Id,
             currentCohort.Value.Revision, childRequest with { IdempotencyKey = secondKey }, default);
 
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, overallocated.Error.Code);
+        Assert.True(second.IsSuccess, second.Error.Message);
 
-        Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+        Assert.Equal(4L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
 
-        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_cohort_members"));
+        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_cohort_members"));
 
-        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+        Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
 
         var ordinary = await f.Store.IssueAsync(run.Value, identity, root.Value.Quest.Id, childRequest, default);
 
@@ -121,7 +121,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
 
     [Fact]
-    public async Task Cohort_ceiling_resolution_preserves_omitted_axes_and_refuses_explicit_widening()
+    public async Task Cohort_scope_resolution_preserves_delegation_and_accepts_legacy_budget_metadata()
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -149,7 +149,11 @@ public sealed partial class GuildLocalHostPolicyTests
         var widened = await f.Policy.ResolveCohortGrantWithinAsync(connection, transaction, live,
             new(Budget: new(true, new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)))), default);
 
-        Assert.True(widened.IsFailure);
+        Assert.True(widened.IsSuccess, widened.Error.Message);
+
+        Assert.Equal(GuildBudgetGrant.Unmetered, widened.Value.Budget);
+
+        Assert.Equal<GuildDelegationKind>(live.Delegation, widened.Value.Delegation);
     }
 
 }

@@ -211,8 +211,6 @@ public sealed partial class PublishedArcanumSessionSmokeTests
                 ExpectedModel,
                 "--temperature",
                 "0",
-                "--max-tokens",
-                "32",
                 "--unattended",
                 ExpectedPrompt);
 
@@ -230,6 +228,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
             Assert.Equal($"Bearer {ProviderKey}", providerRequest.Authorization);
             Assert.Equal(ExpectedPrompt, providerRequest.Prompt);
             Assert.True(providerRequest.Streaming);
+            Assert.False(providerRequest.Payload.TryGetProperty("max_tokens", out _));
+            Assert.False(providerRequest.Payload.TryGetProperty("max_completion_tokens", out _));
             Assert.Equal(-1, providerRequest.Payload.GetProperty("keep_alive").GetInt32());
             Assert.Equal(1, provider.RequestCount);
 
@@ -826,8 +826,6 @@ public sealed partial class PublishedArcanumSessionSmokeTests
     internal static void ConfigureEvaluationPricing(ArcanumSettings settings)
     {
         settings.Cost.Pricing.ModelPricing[ExpectedModel] = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m };
-        settings.Cost.Budget.Enabled = true;
-        settings.Cost.Budget.DailyLimitUsd = 1m;
     }
 
     internal static async Task<MemoryEvaluationRequest> SeedEvaluationAsync(HttpClient client, CancellationToken ct)
@@ -897,6 +895,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
             Assert.False(arm.Payload.TryGetProperty("tool_choice", out _));
             Assert.Equal(0, arm.Payload.GetProperty("temperature").GetDouble());
             Assert.Equal(32, arm.Payload.GetProperty("max_completion_tokens").GetInt32());
+            Assert.False(arm.Payload.TryGetProperty("max_tokens", out _));
         }
 
         using var replay = await client.PostAsync("api/proving-grounds/memory-evaluations/run", JsonContent.Create(request, ArcanumJsonContext.Default.MemoryEvaluationRequest), ct);
@@ -980,6 +979,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         });
         var function = Assert.Single(calls[0].Payload.GetProperty("tools").EnumerateArray(), tool => tool.GetProperty("function").GetProperty("name").GetString() == "delegate_task").GetProperty("function");
         var schema = function.GetProperty("parameters");
+        Assert.False(schema.GetProperty("properties").TryGetProperty("max_tokens", out _));
+        Assert.False(schema.GetProperty("properties").TryGetProperty("max_cost_usd", out _));
         Assert.Equal("memory", Assert.Single(schema.GetProperty("properties").GetProperty("memory_grant").GetProperty("enum").EnumerateArray()).GetString());
         Assert.DoesNotContain(schema.GetProperty("required").EnumerateArray(), item => item.GetString() == "memory_grant");
         if (resolveCreatedSession is null) Assert.Contains(DelegationHistory, calls[0].Payload.GetProperty("messages").GetRawText());
@@ -989,7 +990,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         Assert.DoesNotContain(DelegationHistory, child);
         Assert.DoesNotContain(DelegationParentPrompt, child);
         Assert.Equal(DelegationChildPrompt, calls[1].Prompt);
-        Assert.Equal(256, calls[1].Payload.GetProperty("max_completion_tokens").GetInt32());
+        Assert.False(calls[1].Payload.TryGetProperty("max_tokens", out _));
+        Assert.False(calls[1].Payload.TryGetProperty("max_completion_tokens", out _));
         Assert.False(calls[1].Payload.TryGetProperty("tools", out _));
         Assert.False(calls[1].Payload.TryGetProperty("tool_choice", out _));
         var toolResult = Assert.Single(calls[2].Payload.GetProperty("messages").EnumerateArray(), message => message.GetProperty("role").GetString() == "tool");
@@ -1397,7 +1399,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
         public int RuntimeMutationCount => Volatile.Read(ref _runtimeMutationCount);
 
-        public static async Task<FakeOpenAiProvider> StartAsync(bool allowOrdinaryFollowUp = false)
+        public static async Task<FakeOpenAiProvider> StartAsync(bool allowOrdinaryFollowUp = false, bool delegationUsesMemory = true)
         {
             WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(
                 new WebApplicationOptions
@@ -1526,7 +1528,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
                 if (phase is { } delegationPhase)
                 {
-                    await WriteDelegationAsync(context, delegationPhase, streaming);
+                    await WriteDelegationAsync(context, delegationPhase, streaming, delegationUsesMemory: delegationUsesMemory);
                     return;
                 }
 
@@ -1569,9 +1571,12 @@ public sealed partial class PublishedArcanumSessionSmokeTests
             return provider;
         }
 
-        private static async Task WriteDelegationAsync(HttpContext context, int phase, bool streaming, bool ordinary = false, bool partialOutput = false)
+        private static async Task WriteDelegationAsync(HttpContext context, int phase, bool streaming, bool ordinary = false,
+            bool partialOutput = false, bool delegationUsesMemory = true)
         {
-            string arguments = ordinary ? "{}" : "{\"prompt\":\"published-delegation-child\",\"max_tokens\":256,\"memory_grant\":\"memory\"}";
+            string arguments = ordinary ? "{}" : delegationUsesMemory
+                ? "{\"prompt\":\"published-delegation-child\",\"memory_grant\":\"memory\"}"
+                : "{\"prompt\":\"published-delegation-child\"}";
             string name = ordinary ? "get_local_system_time" : "delegate_task";
             string content = partialOutput ? string.Empty : ordinary ? OrdinaryToolFinal : phase == 1 ? DelegationChildAnswer : DelegationFinal;
             string message = phase == 0

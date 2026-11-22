@@ -84,7 +84,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 Endpoint = "https://example.test/v1", Models = ["accepted-model"] }],
         };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         using CircleInputTransport transport = new();
 

@@ -109,7 +109,7 @@ internal static partial class CliCommandTree
 
         Option<string?> maxTokens = new("--max-tokens")
         {
-            Description = "Maximum Agent/Spell output tokens; research uses --token-budget.",
+            Description = "Maximum Agent/Spell output tokens.",
         };
 
         Option<string?> seed = new("--seed")
@@ -140,16 +140,6 @@ internal static partial class CliCommandTree
         Option<int?> sourceTarget = new("--sources")
         {
             Description = "Optional positive research source target; otherwise continue until source exhaustion.",
-        };
-
-        Option<int?> tokenBudget = new("--token-budget")
-        {
-            Description = "Explicit positive research synthesis output-token budget (default 2000).",
-        };
-
-        Option<decimal?> costBudget = new("--cost-budget")
-        {
-            Description = "Optional research search-provider cost limit in USD.",
         };
 
         command.Add(prompt);
@@ -200,10 +190,6 @@ internal static partial class CliCommandTree
 
         command.Add(sourceTarget);
 
-        command.Add(tokenBudget);
-
-        command.Add(costBudget);
-
         command.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
                 RejectedPromptOption(serviceProvider, result, prompt)
@@ -233,9 +219,7 @@ internal static partial class CliCommandTree
                         result.GetValue(responseFormat),
                         result.GetValue(presencePenalty),
                         result.GetValue(frequencyPenalty),
-                        result.GetValue(sourceTarget),
-                        result.GetValue(tokenBudget) ?? 2_000,
-                        result.GetValue(costBudget)),
+                        result.GetValue(sourceTarget)),
                     cancellationToken).ConfigureAwait(false));
 
         return command;

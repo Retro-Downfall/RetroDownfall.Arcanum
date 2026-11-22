@@ -116,8 +116,6 @@ public sealed partial class WizardIntelligenceProviderTests
             },
         };
 
-        RecordingBudgetReservationService reservations = new();
-
         CovenantToolCapabilityRegistry capabilities = new();
 
         FakeGrimoireRepository grimoire = new() { Session = new Session { Id = sessionId, Entries = [] } };
@@ -143,7 +141,7 @@ public sealed partial class WizardIntelligenceProviderTests
             grimoire: grimoire,
             mcp: mcp,
             turnRunWriter: new RecordingTurnRunWriter(),
-            budgetReservationService: reservations,
+
             sessionAttachmentStore: store,
             covenantDispatch: StagingCovenantGate(),
             covenantToolCapabilities: capabilities,
@@ -196,9 +194,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(1, seen.ProviderRound);
 
-        Assert.NotNull(reservations.LastRequest);
-
-        Assert.NotNull(seen.BudgetReservationId);
+        Assert.Null(seen.BudgetReservationId);
 
         Assert.NotNull(seen.CovenantStaging);
         Assert.Single(claims.Requests);

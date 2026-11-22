@@ -37,13 +37,6 @@ internal static class ModelInfoBuilder
                     continue;
                 }
 
-                // maxBudgetTokens means nothing without the dialect that says how a budget is carried on
-                // the wire, so the two are advertised together or not at all. Startup validation refuses
-                // that pairing now, which makes this defence in depth — but this is the published
-                // capability surface, and projecting the two fields independently is what let them
-                // disagree in the first place.
-                ReasoningWireDialect? wireDialect = model.Reasoning?.WireDialect;
-
                 models.Add(new ModelInfoDto(
                     model.Name,
                     provider.Name,
@@ -52,8 +45,7 @@ internal static class ModelInfoBuilder
                     provider.ContextWindowLimit,
                     model.SupportsVision,
                     model.SupportsTools is not false,
-                    wireDialect,
-                    wireDialect is null ? null : model.Reasoning?.MaxBudgetTokens,
+                    model.Reasoning?.WireDialect,
                     ModelCapabilityCatalog.ResolvePromptCaching(provider, model.Name)));
             }
         }

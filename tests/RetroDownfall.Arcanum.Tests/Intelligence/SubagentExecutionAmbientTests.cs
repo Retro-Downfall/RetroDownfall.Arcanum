@@ -7,7 +7,7 @@ public sealed class SubagentExecutionAmbientTests
     [Fact]
     public void EnterChild_ExposesIsolationAndRestoresParent()
     {
-        DelegatedManaTracker tracker = new(1_000, null);
+        DelegatedManaTracker tracker = new();
 
         Assert.False(SubagentExecutionAmbient.IsIsolated);
 
@@ -24,8 +24,8 @@ public sealed class SubagentExecutionAmbientTests
     [Fact]
     public void EnterChild_NestedScope_UsesChildTrackerAndRestoresParentTracker()
     {
-        DelegatedManaTracker parentTracker = new(1_000, null);
-        DelegatedManaTracker childTracker = new(500, null);
+        DelegatedManaTracker parentTracker = new();
+        DelegatedManaTracker childTracker = new();
 
         using (SubagentExecutionAmbient.EnterChild(parentTracker))
         {

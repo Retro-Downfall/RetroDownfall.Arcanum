@@ -163,8 +163,8 @@ internal sealed partial class GuildCohortStore
                 string grantJson = JsonSerializer.Serialize(request.RequestedGrant, GuildJsonContext.Default.GuildRequestedGrant);
 
                 await using (var insert = Command(connection, transaction, """
-                    INSERT INTO guild_work_offers(Id,CohortId,IssuerQuestId,OfferSequence,SkillId,GoalContentId,RequestedGrantJson,BudgetHint,MimeType,StateCode,Revision)
-                    VALUES($id,$cohort,$issuer,$sequence,$skill,$content,$grant,$hint,$mime,1,1)
+                    INSERT INTO guild_work_offers(Id,CohortId,IssuerQuestId,OfferSequence,SkillId,GoalContentId,RequestedGrantJson,MimeType,StateCode,Revision)
+                    VALUES($id,$cohort,$issuer,$sequence,$skill,$content,$grant,$mime,1,1)
                     """))
                 {
                     Add(insert, "$id", Id(offer));
@@ -174,7 +174,6 @@ internal sealed partial class GuildCohortStore
                     Add(insert, "$skill", request.SkillId);
                     Add(insert, "$content", Id(contentId));
                     Add(insert, "$grant", grantJson);
-                    Add(insert, "$hint", toolAdmission is null ? 0 : 1);
                     Add(insert, "$mime", request.ResultContract.MimeType);
                     await insert.ExecuteNonQueryAsync(token).ConfigureAwait(false);
                 }

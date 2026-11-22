@@ -44,7 +44,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         var evidence = new MemoryEvaluationEvidenceStore(new ConnectionSource((SqliteConnection)h.Connection));
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, new ConnectionSource((SqliteConnection)h.Connection), new TurnRunWriter(h.Context), new BudgetReservationService(h.Context, h.Options), TimeProvider.System);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, new ConnectionSource((SqliteConnection)h.Connection), new TurnRunWriter(h.Context), new BudgetReservationService(h.Context), TimeProvider.System);
 
         var reconciler = new LongRunningOperationReconciler(store, [handler], TimeProvider.System, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
 
@@ -89,7 +89,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
         if (completed)
             before = (await evidence.CompleteAsync(r.EvaluationId, Report(r, [Source()]), default)).Value;
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context, h.Options), TimeProvider.System);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context), TimeProvider.System);
 
         var reconciler = new LongRunningOperationReconciler(store, [handler], TimeProvider.System, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
 
@@ -167,7 +167,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         clock.Advance(TimeSpan.FromMinutes(3));
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context, h.Options), clock);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context), clock);
 
         var reconciler = new LongRunningOperationReconciler(store, [handler], clock, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
 
@@ -209,7 +209,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         var evidence = new MemoryEvaluationEvidenceStore(connections);
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context, h.Options), TimeProvider.System);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context), TimeProvider.System);
 
         var outcome = await handler.RecoverAsync(operation with { CheckpointVersion = version, CheckpointPayload = "{\"unexpected\":true}"u8.ToArray() }, default);
 
@@ -259,7 +259,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         operation = operation with { CheckpointVersion = 1, CheckpointPayload = JsonSerializer.SerializeToUtf8Bytes(checkpoint, GrimoireJsonContext.Default.MemoryEvaluationCheckpoint) };
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, runs, new BudgetReservationService(h.Context, h.Options), TimeProvider.System);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, runs, new BudgetReservationService(h.Context), TimeProvider.System);
 
         var recovered = await handler.RecoverAsync(operation, default);
 
@@ -335,7 +335,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         var evidence = new MemoryEvaluationEvidenceStore(connections);
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context, h.Options), clock);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, new TurnRunWriter(h.Context), new BudgetReservationService(h.Context), clock);
 
         var reconciler = new LongRunningOperationReconciler(store, [handler], clock, NullLogger<LongRunningOperationReconciler>.Instance, ownership);
 
@@ -355,7 +355,6 @@ public sealed class MemoryEvaluationCrashRecoveryTests
     {
         await using var h = await SagaStoreHarness.CreateAsync();
 
-        h.Options.CurrentValue.Cost.Budget = new() { Enabled = true, DailyLimitUsd = 100m };
 
         var store = new LongRunningOperationStore(h.Context, TestOrdinaryConnectionFactory.For(h.Context));
 
@@ -369,8 +368,6 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         var runs = new TurnRunWriter(h.Context);
 
-        var reservations = new BudgetReservationService(h.Context, h.Options);
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         var known = await runs.StartRunAsync(new($"{r.EvaluationId:N}:5", null, "memory-evaluation", "counterfactual-arm", null, now));
@@ -381,9 +378,8 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         foreach (var id in new[] { known, unknown, unrelated })
         {
-            var reserved = (await reservations.ReserveAsync(new(id, 3m, now.AddMinutes(1), now.ToString("yyyy-MM-dd")))).Value;
-
-            await reservations.MarkPossiblyDispatchedAsync(reserved.Id, id);
+            await LegacyBudgetFixture.SeedAsync(h.Context, new(id, 3m, now.AddMinutes(1), BudgetReservationService.UtcBudgetPeriod(now)),
+                BudgetReservationStatus.UncertainPaid);
         }
 
         await runs.RecordBillableOperationAsync(new(known, BillableOperationType.Chat, "provider", "model", "counterfactual-arm", now, now, 10, 2, 0, 0, "{}", 2m, BillableOperationStatus.Completed, null));
@@ -394,7 +390,7 @@ public sealed class MemoryEvaluationCrashRecoveryTests
 
         operation = operation with { CheckpointVersion = 1, CheckpointPayload = MemoryEvaluationCheckpointCodec.Encode(checkpoint) };
 
-        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, runs, reservations, TimeProvider.System);
+        var handler = new MemoryEvaluationRecoveryHandler(store, evidence, connections, runs, new BudgetReservationService(h.Context), TimeProvider.System);
 
         Assert.Equal(LongRunningOperationState.Abandoned, (await handler.RecoverAsync(operation, default)).State);
 

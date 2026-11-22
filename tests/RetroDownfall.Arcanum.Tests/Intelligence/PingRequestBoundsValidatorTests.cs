@@ -296,8 +296,7 @@ public sealed class PingRequestBoundsValidatorTests
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
-    [InlineData(2_097_153)]
-    public void Validate_RejectsReasoningBudgetOutsideGlobalBounds(int budgetTokens)
+    public void Validate_RejectsNonpositiveReasoningBudget(int budgetTokens)
     {
 
         PingRequest request = new(
@@ -346,28 +345,27 @@ public sealed class PingRequestBoundsValidatorTests
 
     }
 
-    [Fact]
-    public void ValidateForModel_RejectsBudgetAboveModelCapability()
+    [Theory]
+    [InlineData(4097)]
+    [InlineData(2_097_153)]
+    [InlineData(int.MaxValue)]
+    public void ValidateForModel_accepts_explicit_numeric_reasoning_for_a_supported_dialect(int tokens)
     {
 
         Result result = ReasoningRequestValidator.ValidateForModel(
-            new ReasoningRequestOptions(BudgetTokens: 4097),
+            new ReasoningRequestOptions(BudgetTokens: tokens),
             new ModelEntry("reasoner")
             {
                 Reasoning = new ModelReasoningSettings
                 {
                     WireDialect = ReasoningWireDialect.OpenRouter,
-                    MaxBudgetTokens = 4096,
                 },
             },
             true,
             modelName: "reasoner",
             providerName: "test");
 
-        Assert.True(result.IsFailure);
-        Assert.Equal(
-            ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit,
-            result.Error.Code);
+        Assert.True(result.IsSuccess);
 
     }
 

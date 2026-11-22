@@ -75,7 +75,7 @@ public sealed partial class WizardIntelligenceProviderTests
                     Guid.Parse("2C4A5E3B-9F17-4D0C-8A6E-1B3D5F70921A"), 1, mode == "stale-epoch" ? 12 : 11)).Value
             : InvocationContexts.StatelessOperator();
 
-        using IDisposable? child = mode == "isolated" ? SubagentExecutionAmbient.EnterChild(new(10000, null)) : null;
+        using IDisposable? child = mode == "isolated" ? SubagentExecutionAmbient.EnterChild(new()) : null;
 
         var request = BaseRequest() with
         {
@@ -312,8 +312,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter writer = new();
 
-        RecordingBudgetReservationService reservations = new() { ReservedUsdOverride = nativeRetry ? 1m : null };
-
         Task10MutatingEstimator estimator = new(new ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)), () =>
         {
             using DbCommand command = db.Database.GetDbConnection().CreateCommand();
@@ -359,7 +357,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         var wizard = CreateWizard(chat, configuration, mcp: mcp, weaveService: weave, tapestryStore: store, factory: nativeFactory,
             healthTracker: candidates is null ? null : new RetroDownfall.Arcanum.Infrastructure.Resilience.ProviderHealthTracker(NullLogger<RetroDownfall.Arcanum.Infrastructure.Resilience.ProviderHealthTracker>.Instance),
-            modelTokenEstimator: estimator, turnRunWriter: writer, budgetReservationService: reservations,
+            modelTokenEstimator: estimator, turnRunWriter: writer,
             workspaceIndexingService: new FakeRagWorkspaceIndexingService { IndexedPath = _workspace.Root },
             campaignResolver: ProductionCampaignResolver.Over(new(), new()), tapestryAuthority: new Task10Authority());
 
@@ -460,24 +458,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
                 Assert.Equal(InferenceRunStatus.Failed, Assert.Single(writer.CompletedRuns).Status);
 
-                if (actualDefaultSdk)
-                {
-                    Assert.True(reservations.WasReleased);
-
-                    Assert.Equal(0, reservations.UncertainCalls);
-
-                    Assert.Equal(0, reservations.ReconcileCount);
-
-                    return;
-                }
-
-                // One physical attempt may have been billed without returning usage. No zero-spend assertion is justified.
-                Assert.False(reservations.WasReleased);
-
-                Assert.Equal(1, reservations.UncertainCalls);
-
-                Assert.Equal(0, reservations.ReconcileCount);
-
                 return;
             }
 
@@ -490,8 +470,6 @@ public sealed partial class WizardIntelligenceProviderTests
                 Assert.Empty(writer.Operations);
 
                 Assert.Equal(InferenceRunStatus.Failed, Assert.Single(writer.CompletedRuns).Status);
-
-                Assert.True(reservations.WasReleased);
 
                 return;
             }
@@ -717,7 +695,7 @@ public sealed partial class WizardIntelligenceProviderTests
         var wizard = CreateWizard(chat, configuration, weaveService: weave, tapestryResolver: resolver,
             tapestryAuthority: new Task10Authority(), covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate());
 
-        using var isolated = SubagentExecutionAmbient.EnterChild(new(10000, null), child,
+        using var isolated = SubagentExecutionAmbient.EnterChild(new(), child,
             new MemoryDelegationProtection(child.Sensitivity, child.Revocation, child.AdmitEffectAsync), child.Sources);
 
         PingRequest request = BaseRequest() with

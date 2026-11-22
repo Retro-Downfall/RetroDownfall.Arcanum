@@ -211,10 +211,10 @@ public sealed class CliJsonEnvelopeContractTests
     public void A_typed_verb_that_fails_under_json_emits_the_text_envelope_with_an_empty_output()
     {
         RecordingHandler handler = new(_ => CreateResponse(
-            new ApiResponse<BudgetSummaryDto>(null, false, new Error(ErrorCodes.Validation.InvalidBody, "The budget could not be read.")),
-            ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto));
+            new ApiResponse<ConclaveStatusDto>(null, false, new Error(ErrorCodes.Validation.InvalidBody, "Conclave status could not be read.")),
+            ArcanumJsonContext.Default.ApiResponseConclaveStatusDto));
 
-        CliTestResult result = RunCommand(handler, ["--json", "budget"]);
+        CliTestResult result = RunCommand(handler, ["--json", "conclave", "status"]);
 
         Assert.NotEqual(0, result.ExitCode);
 
@@ -228,7 +228,7 @@ public sealed class CliJsonEnvelopeContractTests
 
         Assert.Equal(string.Empty, document.RootElement.GetProperty("output").GetString());
 
-        Assert.Contains("The budget could not be read.", result.Error, StringComparison.Ordinal);
+        Assert.Contains("Conclave status could not be read.", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -198,8 +198,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
-            turnRunWriter: runs,
-            budgetReservationService: new RecordingBudgetReservationService());
+            turnRunWriter: runs);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "fail", SkipSpellRouting = true, DisableMcpTools = true },
@@ -237,8 +236,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
-            turnRunWriter: runs,
-            budgetReservationService: new RecordingBudgetReservationService());
+            turnRunWriter: runs);
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
@@ -272,8 +270,7 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             grimoire: grimoire,
-            turnRunWriter: runs,
-            budgetReservationService: new RecordingBudgetReservationService());
+            turnRunWriter: runs);
 
         try
         {
@@ -324,12 +321,9 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter runs = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
-            turnRunWriter: runs,
-            budgetReservationService: reservations);
+            turnRunWriter: runs);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -342,10 +336,6 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal(100, operation.InputTokens);
 
         Assert.Equal(20, operation.OutputTokens);
-
-        Assert.Equal(1, reservations.ReconcileCount);
-
-        Assert.False(reservations.WasReleased);
 
         (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
 
@@ -366,8 +356,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
-            turnRunWriter: runs,
-            budgetReservationService: new RecordingBudgetReservationService());
+            turnRunWriter: runs);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "answer", SkipSpellRouting = true, DisableMcpTools = true },
@@ -635,8 +624,7 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             grimoire: grimoire,
-            turnRunWriter: runs,
-            budgetReservationService: new RecordingBudgetReservationService());
+            turnRunWriter: runs);
 
         try
         {
@@ -685,13 +673,11 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter runs = new();
 
-        RecordingBudgetReservationService reservations = new();
-
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             grimoire: grimoire,
             turnRunWriter: runs,
-            budgetReservationService: reservations,
+
             sessionTurnGate: turnGate);
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
@@ -713,10 +699,6 @@ public sealed partial class WizardIntelligenceProviderTests
         (Guid _, InferenceRunStatus status) = Assert.Single(runs.CompletedRuns);
 
         Assert.Equal(InferenceRunStatus.Abandoned, status);
-
-        Assert.True(reservations.WasReleased);
-
-        Assert.Equal(0, reservations.ReconcileCount);
 
         // The Session lease is free: the next turn on the same Session is admitted.
         GrimoireTurnWriter nextWriter = new(

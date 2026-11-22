@@ -26,12 +26,12 @@ public sealed class CampaignMaintenanceModelCallTests
             [new(ChatRole.System, payload.SystemPrompt), new(ChatRole.User, payload.UserPrompt)],
             new ChatOptions
             {
-                MaxOutputTokens = CampaignMaintenancePayload.MaxOutputTokens,
+
                 Tools = [],
                 ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement.Clone(),
                     CampaignMaintenancePayload.SchemaName, CampaignMaintenancePayload.SchemaDescription),
             },
-            CampaignMaintenancePayload.MaxOutputTokens,
+            CampaignMaintenancePayload.ReservedAnswerTokens,
             0));
 
         ContextTokenBreakdown closed = estimator.EstimateCampaignMaintenance(provider, model, payload);
@@ -73,7 +73,7 @@ public sealed class CampaignMaintenanceModelCallTests
         Assert.Equal(1, chat.CallCount);
         Assert.Equal([payload.SystemPrompt, payload.UserPrompt], chat.Messages!.Select(static message => message.Text));
         Assert.Equal([ChatRole.System, ChatRole.User], chat.Messages!.Select(static message => message.Role));
-        Assert.Equal(2048, chat.Options!.MaxOutputTokens);
+        Assert.Null(chat.Options!.MaxOutputTokens);
         Assert.Empty(chat.Options.Tools ?? []);
         ChatResponseFormatJson format = Assert.IsType<ChatResponseFormatJson>(chat.Options.ResponseFormat);
         Assert.Equal(CampaignMaintenancePayload.SchemaName, format.SchemaName);

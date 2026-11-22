@@ -12,7 +12,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Award_remote_route_pins_skill_and_result_or_refuses_unenforceable_finite_budget(bool finite)
+    public async Task Award_remote_route_pins_skill_and_result_with_historical_finite_grants(bool finite)
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
         f.Settings.CurrentValue.Features.Conclave = true;
@@ -68,14 +68,6 @@ public sealed partial class GuildLocalHostPolicyTests
         AwardWorkRequest awardRequest = new(Guid.NewGuid(), offer.Value.Revision, current.Value.Revision, bid.Value.Id);
         string digest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(awardRequest, GuildJsonContext.Default.AwardWorkRequest)));
         var award = await cohorts.AwardAsync(owner, new(awardRequest.IdempotencyKey, digest), offer.Value.Id, awardRequest, default);
-
-        if (finite)
-        {
-            Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, award.Error.Code);
-            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_work_awards"));
-            Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
-            return;
-        }
 
         Assert.True(award.IsSuccess, award.Error.Message);
         await using var connection = await f.OpenAsync();

@@ -29,6 +29,84 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SubagentRunnerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Child_masks_only_the_accepted_parent_identity_and_restores_it_on_return(bool childRefuses)
+    {
+        using CancellationTokenSource ownership = new();
+        TurnIdempotencyAmbient.Publish(ownership.Token);
+        TurnIdempotencyAmbient.PublishIdentity(new string('a', 64), new string('b', 64));
+        var accepted = TurnIdempotencyAmbient.RequestIdentity;
+
+        try
+        {
+            Result<PromptTurnResult> child = childRefuses
+                ? Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.ContextBudgetExceeded, "Synthetic child refusal."))
+                : Result<PromptTurnResult>.Success(new PromptTurnResult("child summary", null));
+            CapturingTurnFacade facade = new(child)
+            {
+                OnExecute = () =>
+                {
+                    Assert.Null(TurnIdempotencyAmbient.RequestIdentity);
+                    Assert.Equal(ownership.Token, TurnIdempotencyAmbient.OwnershipLostToken);
+                },
+            };
+            FakeOperationCoordinator operations = new();
+            SubagentRunner runner = CreateRunner(new(() => facade), operations, TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+
+            SubagentRunResult result = await runner.RunAsync(new("Review synthetic data.", null, []), ownership.Token);
+
+            Assert.Equal(!childRefuses, result.Success);
+            Assert.Same(accepted, TurnIdempotencyAmbient.RequestIdentity);
+            Assert.Equal(ownership.Token, TurnIdempotencyAmbient.OwnershipLostToken);
+            Assert.Equal(childRefuses ? 1 : 0, operations.FailCalls);
+            Assert.Equal(childRefuses ? 0 : 1, operations.CompleteCalls);
+        }
+        finally
+        {
+            TurnIdempotencyAmbient.Clear();
+        }
+    }
+
+    [Fact]
+    public async Task Parent_ownership_loss_cancels_the_awaited_child_without_consuming_the_accepted_identity()
+    {
+        using CancellationTokenSource ownership = new();
+        TurnIdempotencyAmbient.Publish(ownership.Token);
+        TurnIdempotencyAmbient.PublishIdentity(new string('a', 64), new string('b', 64));
+        var accepted = TurnIdempotencyAmbient.RequestIdentity;
+
+        try
+        {
+            TaskCompletionSource wait = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            CapturingTurnFacade facade = new(Result<PromptTurnResult>.Success(new PromptTurnResult("unreachable", null)))
+            {
+                Gate = wait.Task,
+                OnExecute = () =>
+                {
+                    Assert.Null(TurnIdempotencyAmbient.RequestIdentity);
+                    Assert.Equal(ownership.Token, TurnIdempotencyAmbient.OwnershipLostToken);
+                },
+            };
+            FakeOperationCoordinator operations = new();
+            SubagentRunner runner = CreateRunner(new(() => facade), operations, TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+            Task<SubagentRunResult> child = runner.RunAsync(new("Review synthetic data.", null, []), ownership.Token);
+            await facade.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await ownership.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await child);
+            Assert.Same(accepted, TurnIdempotencyAmbient.RequestIdentity);
+            Assert.Equal(1, operations.FailCalls);
+            Assert.Equal(0, operations.CompleteCalls);
+        }
+        finally
+        {
+            TurnIdempotencyAmbient.Clear();
+        }
+    }
+
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -54,7 +132,7 @@ public sealed class SubagentRunnerTests
 
         SubagentRunner runner = CreateRunner(new(() => facade), operations, TimeProvider.System, NullLogger<SubagentRunner>.Instance);
 
-        var request = new SubagentRunRequest("actual task", "model", [], 100, null) { MemoryDelegation = new(id, child) };
+        var request = new SubagentRunRequest("actual task", "model", []) { MemoryDelegation = new(id, child) };
 
         var running = runner.RunAsync(request, default);
 
@@ -108,7 +186,7 @@ public sealed class SubagentRunnerTests
         var runner = CreateRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
         try
         {
-            await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default);
+            await runner.RunAsync(new("task", "model", []) { MemoryDelegation = new(id, child) }, default);
         }
         catch (OperationCanceledException) { }
         Assert.True(retainedWhileConsumerActive);
@@ -132,7 +210,7 @@ public sealed class SubagentRunnerTests
         };
         var runner = CreateRunner(new(() => facade), new FakeOperationCoordinator { RefuseComplete = outcome == "complete-refused" },
             TimeProvider.System, NullLogger<SubagentRunner>.Instance);
-        var result = await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default);
+        var result = await runner.RunAsync(new("task", "model", []) { MemoryDelegation = new(id, child) }, default);
         Assert.Equal(RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, result.Sensitivity!.Level);
         Assert.Equal(child.Sensitivity.Provenance, result.Sensitivity!.Provenance);
         Assert.Throws<InvalidOperationException>(() => child.Sources);
@@ -154,7 +232,7 @@ public sealed class SubagentRunnerTests
         var operations = new FakeOperationCoordinator();
         var runner = CreateRunner(new(() => new CapturingTurnFacade(new PromptTurnResult("never", null))), operations,
             TimeProvider.System, NullLogger<SubagentRunner>.Instance);
-        try { await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default); }
+        try { await runner.RunAsync(new("task", "model", []) { MemoryDelegation = new(id, child) }, default); }
         catch (OperationCanceledException) { }
         Assert.Null(operations.StartRequest);
     }
@@ -207,21 +285,15 @@ public sealed class SubagentRunnerTests
         SubagentRunRequest request = new(
             "prompt",
             "test-model",
-            [new AttachedFileDto("src/A.cs", "sealed class A {}")],
-            MaxTokens: 1_000,
-            MaxCostUsd: 2m);
+            [new AttachedFileDto("src/A.cs", "sealed class A {}")]);
 
         (string prompt,
             string? model,
-            IReadOnlyList<AttachedFileDto> files,
-            long? maxTokens,
-            decimal? maxCostUsd) = request;
+            IReadOnlyList<AttachedFileDto> files) = request;
 
         Assert.Equal("prompt", prompt);
         Assert.Equal("test-model", model);
         Assert.Single(files);
-        Assert.Equal(1_000, maxTokens);
-        Assert.Equal(2m, maxCostUsd);
     }
 
     [Fact]
@@ -244,9 +316,7 @@ public sealed class SubagentRunnerTests
             new SubagentRunRequest(
                 "Review the explicit file.",
                 "test-model",
-                [explicitFile],
-                MaxTokens: 1_000,
-                MaxCostUsd: null),
+                [explicitFile]),
             CancellationToken.None);
 
         Assert.True(result.Success);
@@ -291,11 +361,11 @@ public sealed class SubagentRunnerTests
     }
 
     [Fact]
-    public async Task RunAsync_WhenProviderUsageExceedsCeiling_FailsDurablyAndBillsUsage()
+    public async Task RunAsync_RecordsProviderUsageAndReturnsCompletedChildWithoutAnAllowance()
     {
         CapturingTurnFacade facade = new(
             Result<PromptTurnResult>.Success(
-                new PromptTurnResult("must not escape", null)))
+                new PromptTurnResult("completed review", null)))
         {
             OnExecute = static () =>
             {
@@ -303,7 +373,7 @@ public sealed class SubagentRunnerTests
                     Assert.IsType<DelegatedManaTracker>(
                         SubagentExecutionAmbient.Tracker);
                 tracker.BeginModelCall();
-                tracker.RecordUsageDeferred(
+                tracker.RecordUsage(
                     new Microsoft.Extensions.AI.UsageDetails
                     {
                         InputTokenCount = 900,
@@ -324,18 +394,17 @@ public sealed class SubagentRunnerTests
             new SubagentRunRequest(
                 "Bounded task.",
                 null,
-                [],
-                MaxTokens: 1_000,
-                MaxCostUsd: null),
+                []),
             CancellationToken.None);
 
-        Assert.False(result.Success);
-        Assert.Equal(SubagentFailureCodes.BudgetExhausted, result.FailureCode);
+        Assert.True(result.Success);
+        Assert.Null(result.FailureCode);
+        Assert.Equal("completed review", result.Summary);
+        Assert.Null(facade.Request!.MaxOutputTokens);
         Assert.Equal(1_001, result.Usage.Tokens);
         Assert.Equal(0.02m, result.Usage.CostUsd);
-        Assert.Equal(0, operations.CompleteCalls);
-        Assert.Equal(1, operations.FailCalls);
-        Assert.Equal(SubagentFailureCodes.BudgetExhausted, operations.FailureCode);
+        Assert.Equal(1, operations.CompleteCalls);
+        Assert.Equal(0, operations.FailCalls);
     }
 
     /// <summary>
@@ -366,9 +435,7 @@ public sealed class SubagentRunnerTests
             new SubagentRunRequest(
                 "Long child task.",
                 null,
-                [],
-                MaxTokens: 1_000,
-                MaxCostUsd: null),
+                []),
             CancellationToken.None);
 
         await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
@@ -436,9 +503,7 @@ public sealed class SubagentRunnerTests
             new SubagentRunRequest(
                 "Long child task.",
                 null,
-                [],
-                MaxTokens: 1_000,
-                MaxCostUsd: null),
+                []),
             CancellationToken.None);
 
         await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
@@ -499,9 +564,7 @@ public sealed class SubagentRunnerTests
             new SubagentRunRequest(
                 "Long child task.",
                 null,
-                [],
-                MaxTokens: 1_000,
-                MaxCostUsd: null),
+                []),
             cancellation.Token);
 
         await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
@@ -539,9 +602,7 @@ public sealed class SubagentRunnerTests
             new SubagentRunRequest(
                 "Contended task.",
                 null,
-                [],
-                MaxTokens: 1_000,
-                MaxCostUsd: null),
+                []),
             CancellationToken.None);
 
         Assert.False(result.Success);
@@ -574,7 +635,7 @@ public sealed class SubagentRunnerTests
             logger);
 
         SubagentRunResult result = await runner.RunAsync(
-            new SubagentRunRequest("Faulting task.", null, [], MaxTokens: 1_000, MaxCostUsd: null),
+            new SubagentRunRequest("Faulting task.", null, []),
             CancellationToken.None);
 
         Assert.False(result.Success);
@@ -593,7 +654,7 @@ public sealed class SubagentRunnerTests
     /// <summary>
     /// R-008: the child turn starts inside the parent's <c>delegate_task</c> call, where the parent
     /// turn's accounting is now re-established. The child must not see it: a child that adopted the
-    /// parent's handle would settle the parent's run and reservation when it completed.
+    /// parent's handle would settle the parent's run when it completed.
     /// </summary>
     /// <remarks>
     /// Restoration is not asserted here. <see cref="SubagentRunner.RunAsync"/> is an async method, and
@@ -604,17 +665,13 @@ public sealed class SubagentRunnerTests
     [Fact]
     public async Task RunAsync_HidesTheParentTurnsAccountingFromTheChild()
     {
-        TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
+        TurnAccountingHandle parent = await TurnAccountingHandle.BeginAsync(
                 turnRunWriter: null,
-                budgetReservations: null,
-                new PricingSettings(),
-                "test-model",
                 sessionId: null,
                 surface: "test",
                 purpose: "chat",
                 requestId: "parent",
-                CancellationToken.None))
-            .Value;
+                CancellationToken.None);
 
         bool childSawAccounting = true;
 
@@ -635,7 +692,7 @@ public sealed class SubagentRunnerTests
         using (TurnAccountingAmbient.Push(parent, writer: null))
         {
             SubagentRunResult result = await runner.RunAsync(
-                new SubagentRunRequest("child task", "test-model", [], MaxTokens: 1_000, MaxCostUsd: null),
+                new SubagentRunRequest("child task", "test-model", []),
                 CancellationToken.None);
 
             Assert.True(result.Success);

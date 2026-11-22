@@ -1768,11 +1768,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             auditLogger ?? new FakeInferenceAuditLogger(),
             new StructuredOutputValidator(),
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
-            new BudgetMonitor(
-                CreateBudgetMonitorScopeFactory(new FakeGrimoireRepository(), new FakeBudgetAlertRepository()),
-                new FakeCommLinkDispatcher(),
-                new TestOptionsMonitor<ArcanumSettings>(settings),
-                NullLogger<BudgetMonitor>.Instance),
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
             ordinaryProvider,
@@ -1788,19 +1783,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities,
             campaignRollups: preparer);
-    }
-
-    private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(
-        IGrimoireRepository grimoire,
-        IBudgetAlertRepository budgetAlerts)
-    {
-        ServiceCollection services = new();
-
-        services.AddScoped(_ => grimoire);
-
-        services.AddScoped(_ => budgetAlerts);
-
-        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
     /// <summary>

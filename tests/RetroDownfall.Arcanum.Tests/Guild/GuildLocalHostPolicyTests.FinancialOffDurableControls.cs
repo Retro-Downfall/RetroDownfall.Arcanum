@@ -19,10 +19,8 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildLocalHostPolicyTests
 {
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Durable_local_port_retains_daily_obligation_or_post_response_fault_after_reconstruction(bool receiptFault)
+    [Fact]
+    public async Task Durable_local_port_retains_post_response_fault_after_reconstruction()
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
@@ -37,9 +35,7 @@ public sealed partial class GuildLocalHostPolicyTests
         f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000, Models = ["gpt-5.4-mini-2026-03-17"] }];
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = !receiptFault;
 
-        f.Settings.CurrentValue.Cost.Budget.DailyLimitUsd = 10m;
 
         await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
             TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
@@ -78,27 +74,18 @@ public sealed partial class GuildLocalHostPolicyTests
         ArcanumSettings settings = new()
         {
             Features = new() { Guild = true }, DefaultModel = "gpt-5.4-mini-2026-03-17",
-            Cost = new() { Budget = new() { Enabled = !receiptFault, DailyLimitUsd = 10m } },
+            Cost = new(),
             Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
                 Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000,
-                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["gpt-5.4-mini-2026-03-17"] }],
+                Models = ["gpt-5.4-mini-2026-03-17"] }],
         };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         GuildQuestStore store = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
 
-        using DurableFinancialTransport transport = new(async ordinal =>
-        {
-            if (ordinal != 1 || receiptFault) return;
-
-            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-            settings.Cost.Budget.Enabled = false;
-
-            f.Settings.CurrentValue.Cost.Budget.Enabled = false;
-        });
+        using DurableFinancialTransport transport = new();
 
         ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
 
@@ -122,8 +109,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
-            if (receiptFault)
-                await f.ExecuteAsync("CREATE TRIGGER fixture_durable_abort_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END");
+            await f.ExecuteAsync("CREATE TRIGGER fixture_durable_abort_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END");
 
             var first = await port.DispatchAsync(handle.Value, pending.Value.Request!, deadline.Token);
 
@@ -141,17 +127,17 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotEqual(GuildAccountingState.Settled, current.Value.Quest.AccountingState);
 
-            Assert.Equal(receiptFault ? 1 : 3, transport.Posts);
+            Assert.Equal(1, transport.Posts);
 
             Assert.Equal(0, transport.MetadataGets);
 
             Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts WHERE NoDispatchProven=1"));
 
-            Assert.Equal(receiptFault ? 1L : 0L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=1"));
+            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=1"));
 
-            Assert.Equal(receiptFault ? 0L : 1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
 
-            Assert.Equal(receiptFault ? 0L : 1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status=4"));
+            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status=4"));
 
             string physicalSnapshot = await ReadDurablePhysicalSnapshotAsync(connection.Connection);
 
@@ -179,7 +165,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             await using ArcanumDbContext restartedDb = GrimoireFixture.CreateContext(restartedConnection.Connection);
 
-            BudgetReservationService restartedDaily = new(restartedDb, new TestOptionsMonitor<ArcanumSettings>(settings));
+            BudgetReservationService restartedDaily = new(restartedDb);
 
             GuildQuestStore restartedStore = new(new(f.Connections, f.Gate, TimeProvider.System), restartedAuthority,
                 restartedPolicy, new GuildBudgetLedger(restartedDaily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
@@ -243,7 +229,7 @@ public sealed partial class GuildLocalHostPolicyTests
         return (string)(await command.ExecuteScalarAsync())!;
     }
 
-    private sealed class DurableFinancialTransport(Func<int, Task> afterHandoff) : HttpMessageHandler, IHttpClientFactory
+    private sealed class DurableFinancialTransport : HttpMessageHandler, IHttpClientFactory
     {
         internal int Posts;
 
@@ -251,7 +237,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         public HttpClient CreateClient(string name) => new(this, false);
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             if (request.Method == HttpMethod.Get)
             {
@@ -264,15 +250,14 @@ public sealed partial class GuildLocalHostPolicyTests
 
             int ordinal = Interlocked.Increment(ref Posts);
 
-            await afterHandoff(ordinal);
-
             string message = ordinal == 1
                 ? """{"role":"assistant","content":"[{\"index\":1,\"description\":\"Answer task\"}]"}"""
                 : """{"role":"assistant","content":"actual durable answer"}""";
 
             string json = $$$"""{"id":"durable-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"gpt-5.4-mini-2026-03-17","choices":[{"index":0,"message":{{{message}}},"finish_reason":"stop"}]}""";
 
-            return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = new StringContent(json, Encoding.UTF8, "application/json") });
         }
     }
 }

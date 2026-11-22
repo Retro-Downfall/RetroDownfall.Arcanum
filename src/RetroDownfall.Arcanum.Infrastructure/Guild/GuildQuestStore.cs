@@ -268,8 +268,8 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
                 if (toolAdmission is not null && cohortIssue is null && awardIssue is null)
                 {
-                    Result<GuildIssueChildRequest> resolved = await ResolveToolBudgetWithinAsync(connection, transaction,
-                        parent, child!, token, strict: toolAdmission.Tool.Name == "delegate_task").ConfigureAwait(false);
+                    Result<GuildIssueChildRequest> resolved = await ResolveToolEffectOwnerWithinAsync(connection, transaction,
+                        parent, child!, token).ConfigureAwait(false);
 
                     if (resolved.IsFailure) return resolved.Error;
 
@@ -277,7 +277,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 }
             }
 
-            if (awardIssue is { Context.BudgetHint: true })
+            if (awardIssue is not null)
             {
                 if (parent is null) return Unavailable;
 
@@ -288,8 +288,8 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 Guid fundingAccount = envelope.Value.Cohort.IssuerQuestId == parent.Quest.Id
                     ? envelope.Value.Cohort.AllocationAccountId : parent.AllocationAccountId;
 
-                var resolved = await ResolveToolBudgetWithinAsync(connection, transaction, parent, child!, token,
-                    fundingAccount, envelope.Value.Cohort.CohortGrant).ConfigureAwait(false);
+                var resolved = await ResolveToolEffectOwnerWithinAsync(connection, transaction, parent, child!, token,
+                    fundingAccount).ConfigureAwait(false);
 
                 if (resolved.IsFailure) return resolved.Error;
 
@@ -314,8 +314,8 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
                 if (toolAdmission is not null)
                 {
-                    var resolved = await ResolveToolBudgetWithinAsync(connection, transaction, parent, child!, token,
-                        cohort.Cohort.AllocationAccountId, cohort.Cohort.CohortGrant).ConfigureAwait(false);
+                    var resolved = await ResolveToolEffectOwnerWithinAsync(connection, transaction, parent, child!, token,
+                        cohort.Cohort.AllocationAccountId).ConfigureAwait(false);
 
                     if (resolved.IsFailure) return resolved.Error;
 

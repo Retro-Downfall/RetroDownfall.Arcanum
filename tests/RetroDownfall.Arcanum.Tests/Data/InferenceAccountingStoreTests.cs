@@ -50,83 +50,48 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
         }
     }
 
-    [SkippableTheory]
-    [InlineData(InferenceRunStatus.Completed)]
-    [InlineData(InferenceRunStatus.Failed)]
-    public async Task Completion_ActualReservationWriteFaultStillPersistsRunAndRetainsOutstandingBudget(InferenceRunStatus status)
+    [SkippableFact]
+    public async Task OrdinaryRunPersistsWhileTheLegacyReservationStoreWouldRefuse()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         TurnRunWriter writer = new(_db!);
 
-        BudgetReservationService reservations = new(_db!, new TestOptionsMonitor<ArcanumSettings>(new()
-        {
-            Cost = new CostSettings { Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 100m } },
-        }));
-
-        var handle = (await TurnAccountingHandle.BeginAsync(writer, reservations, new PricingSettings(), null, null,
-            "test", "terminal-disposition", "private-accounting-input", CancellationToken.None, reservedUsdOverride: 5m)).Value;
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         await using (DbCommand trigger = connection.CreateCommand())
         {
-            trigger.CommandText = "CREATE TEMP TRIGGER FailReservationDisposition BEFORE UPDATE ON BudgetReservations BEGIN SELECT RAISE(ABORT, 'private-reservation-fault'); END;";
+            trigger.CommandText = "CREATE TEMP TRIGGER FailNewReservation BEFORE INSERT ON BudgetReservations BEGIN SELECT RAISE(ABORT, 'unexpected reservation'); END;";
 
             await trigger.ExecuteNonQueryAsync();
         }
 
-        await Assert.ThrowsAsync<SqliteException>(() => handle.CompleteAsync(writer, reservations, status, CancellationToken.None));
+        TurnAccountingHandle handle = await TurnAccountingHandle.BeginAsync(writer, null,
+            "test", "terminal-disposition", "ordinary-accounting", CancellationToken.None);
 
-        await using (DbCommand state = connection.CreateCommand())
-        {
-            state.CommandText = "SELECT run.Status, run.CompletedAt, reservation.Status FROM InferenceRuns run JOIN BudgetReservations reservation ON reservation.RunId = run.Id WHERE run.Id = @id";
+        await handle.CompleteAsync(writer, InferenceRunStatus.Completed, CancellationToken.None);
 
-            DbParameter id = state.CreateParameter();
+        await using DbCommand state = connection.CreateCommand();
 
-            id.ParameterName = "@id";
+        state.CommandText = "SELECT run.Status, run.CompletedAt, (SELECT count(*) FROM BudgetReservations WHERE RunId = run.Id) FROM InferenceRuns run WHERE run.Id = @id";
 
-            id.Value = handle.RunId!.Value.ToString("N");
+        DbParameter id = state.CreateParameter();
 
-            state.Parameters.Add(id);
+        id.ParameterName = "@id";
 
-            await using DbDataReader row = await state.ExecuteReaderAsync();
+        id.Value = handle.RunId!.Value.ToString("N");
 
-            Assert.True(await row.ReadAsync());
+        state.Parameters.Add(id);
 
-            Assert.Equal((int)status, row.GetInt32(0));
+        await using DbDataReader row = await state.ExecuteReaderAsync();
 
-            Assert.False(row.IsDBNull(1));
+        Assert.True(await row.ReadAsync());
 
-            Assert.Equal((int)BudgetReservationStatus.Reserved, row.GetInt32(2));
-        }
-        Assert.Equal(5m, await reservations.GetTodayOutstandingReservationsAsync());
+        Assert.Equal((int)InferenceRunStatus.Completed, row.GetInt32(0));
 
-        await using (DbCommand trigger = connection.CreateCommand())
-        {
-            trigger.CommandText = "DROP TRIGGER FailReservationDisposition";
+        Assert.False(row.IsDBNull(1));
 
-            await trigger.ExecuteNonQueryAsync();
-        }
-        handle.AddCost(10m);
-
-        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None);
-
-        Assert.Equal(0m, await reservations.GetTodayOutstandingReservationsAsync());
-
-        await using DbCommand final = connection.CreateCommand();
-
-        final.CommandText = "SELECT Status FROM InferenceRuns WHERE Id = @id";
-
-        DbParameter parameter = final.CreateParameter();
-
-        parameter.ParameterName = "@id";
-
-        parameter.Value = handle.RunId!.Value.ToString("N");
-
-        final.Parameters.Add(parameter);
-
-        Assert.Equal((long)status, await final.ExecuteScalarAsync());
+        Assert.Equal(0L, row.GetInt64(2));
     }
 
     [SkippableFact]
@@ -201,55 +166,6 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task BudgetReservation_RejectsWhenLimitWouldBeExceeded()
-    {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        ArcanumSettings settings = new()
-        {
-            Cost = new CostSettings
-            {
-                Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 1m },
-            },
-        };
-
-        BudgetReservationService reservations = new(
-            _db!,
-            new TestOptionsMonitor<ArcanumSettings>(settings));
-
-        TurnRunWriter runs = new(_db!);
-
-        Guid runId = await runs.StartRunAsync(new InferenceRunStart(
-            RequestId: "r1",
-            SessionId: null,
-            Surface: "test",
-            Purpose: "chat",
-            IdempotencyClaimId: null,
-            StartedAt: DateTimeOffset.UtcNow));
-
-        string period = BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow);
-
-        Result<BudgetReservation> first = await reservations.ReserveAsync(
-            new BudgetReservationRequest(runId, ReservedUsd: 0.8m, ExpiresAt: DateTimeOffset.UtcNow.AddHours(1), period));
-
-        Assert.True(first.IsSuccess);
-
-        Guid runId2 = await runs.StartRunAsync(new InferenceRunStart(
-            RequestId: "r2",
-            SessionId: null,
-            Surface: "test",
-            Purpose: "chat",
-            IdempotencyClaimId: null,
-            StartedAt: DateTimeOffset.UtcNow));
-
-        Result<BudgetReservation> second = await reservations.ReserveAsync(
-            new BudgetReservationRequest(runId2, ReservedUsd: 0.5m, ExpiresAt: DateTimeOffset.UtcNow.AddHours(1), period));
-
-        Assert.True(second.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, second.Error.Code);
-    }
-
-    [SkippableFact]
     public async Task TurnRunWriter_RecordsBillableOperation()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -300,15 +216,7 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
 
         await runs.CompleteRunAsync(runId, InferenceRunStatus.Completed);
 
-        BudgetReservationService reservations = new(
-            _db!,
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
-            {
-                Cost = new CostSettings
-                {
-                    Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 100m },
-                },
-            }));
+        BudgetReservationService reservations = new(_db!);
 
         decimal committed = await reservations.GetTodayCommittedSpendAsync();
 

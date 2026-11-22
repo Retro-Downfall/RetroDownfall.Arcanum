@@ -6,14 +6,11 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 /// <summary>
-/// Dormant accounting kernel. Every caller supplies the admitted immediate transaction.
-/// Runtime admission must supply the daily service even when its current gate is disabled;
-/// an absent service supports dormant accounting, read-only consumers and isolated tests.
+/// Durable ownership and physical-effect evidence. A daily reservation service is used only
+/// for disposition of historical reservations. Every caller supplies the admitted transaction.
 /// </summary>
 internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily = null) : IGuildQuestAllocationParticipant
 {
-    internal bool RequiresDailyReservation => daily?.RequiresReservation == true;
-
     public async Task<Result<Guid>> AllocateAsync(SqliteConnection connection, SqliteTransaction transaction, Guid questId,
         Guid? parentAccountId, GuildGrant grant, CancellationToken cancellationToken)
     {
@@ -79,12 +76,6 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
             if (parent.Value.Closed) return Closed;
 
             if (kind == GuildBudgetOwnerKind.Cohort && parent.Value.Kind != GuildBudgetOwnerKind.Quest) return Invalid;
-
-            Result<GuildBudgetSnapshot> available = await ReadWithinAsync(connection, transaction, parentId, ct).ConfigureAwait(false);
-
-            if (available.IsFailure) return available.Error;
-
-            if (!Fits(usd, tokens, available.Value)) return Exceeded;
 
             rootId = parent.Value.RootId;
 
@@ -171,26 +162,8 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
         return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1 ? Result.Success() : Exhausted;
     }
 
-    private async Task<Result> RequireOpenLineageAsync(SqliteConnection connection, SqliteTransaction transaction,
-        Guid accountId, CancellationToken ct)
-    {
-        Result valid = await ValidateLineageAsync(connection, transaction, accountId, true, ct).ConfigureAwait(false);
-
-        if (valid.IsFailure) return valid;
-
-        Result<Account> account = await ReadAccountAsync(connection, transaction, accountId, ct).ConfigureAwait(false);
-
-        if (account.IsFailure) return account.Error;
-
-        Result<GuildBudgetSnapshot> root = await ReadWithinAsync(connection, transaction, account.Value.RootId, ct).ConfigureAwait(false);
-
-        if (root.IsFailure) return root.Error;
-
-        // A preallocated sibling cannot hide a violation of a qualified provider bound. Evidence
-        // and replay remain readable; all new authority in the funding tree stops pending reconciliation.
-        return root.Value.CapabilityFault ? new Error(ErrorCodes.Guild.GrantExceeded,
-            "A provider exceeded a qualified physical bound; this funding tree cannot admit new work.") : Result.Success();
-    }
+    private static Task<Result> RequireOpenLineageAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid accountId, CancellationToken ct) => ValidateLineageAsync(connection, transaction, accountId, true, ct);
 
     private static async Task<Result> ValidateLineageAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid accountId, bool requireOpen, CancellationToken ct)
@@ -210,7 +183,7 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
                 SELECT a.ParentAccountId FROM guild_budget_accounts a JOIN lineage l ON a.AccountId=l.Id WHERE a.ParentAccountId IS NOT NULL
             )
             SELECT a.AccountId,a.OwnerKindCode,a.OwnerId,a.RootAccountId,a.ParentAccountId,a.UsdLimit,a.TokenLimit,
-                a.Closed,a.SettlementReceiptId,a.Revision,p.AccountId,p.OwnerKindCode,p.RootAccountId,p.UsdLimit,p.TokenLimit
+                a.Closed,a.SettlementReceiptId,a.Revision,p.AccountId,p.OwnerKindCode,p.RootAccountId
             FROM guild_budget_accounts a JOIN lineage l ON a.AccountId=l.Id
             LEFT JOIN guild_budget_accounts p ON p.AccountId=a.ParentAccountId
             """);
@@ -257,14 +230,6 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
                     || !Enum.IsDefined((GuildBudgetOwnerKind)reader.GetInt32(11))
                     || Guid.Parse(reader.GetString(12)) != rootId
                     || account.Kind == GuildBudgetOwnerKind.Cohort && (GuildBudgetOwnerKind)reader.GetInt32(11) != GuildBudgetOwnerKind.Quest) return Invalid;
-
-                decimal? parentUsd = reader.IsDBNull(13) ? null : ExactUsdText.Read(reader, 13);
-
-                long? parentTokens = reader.IsDBNull(14) ? null : reader.GetInt64(14);
-
-                if (parentUsd < 0 || parentTokens < 0
-                    || parentUsd is { } usd && (account.Usd is null || account.Usd > usd)
-                    || parentTokens is { } tokens && (account.Tokens is null || account.Tokens > tokens)) return Invalid;
             }
         }
         catch (Exception error) when (error is FormatException or InvalidCastException or ArgumentException or OverflowException)
@@ -289,37 +254,6 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
     private static GuildBudgetGrant Grant(decimal? usd, long? tokens) => new(
         new(usd is null ? GuildBudgetMode.Unlimited : GuildBudgetMode.Finite, usd),
         new(tokens is null ? GuildBudgetMode.Unlimited : GuildBudgetMode.Finite, tokens));
-
-    private static bool Fits(decimal? usd, long? tokens, GuildBudgetSnapshot snapshot)
-    {
-        if (snapshot.Closed || snapshot.CapabilityFault
-            || snapshot.Grant.Usd.Mode == GuildBudgetMode.Finite && snapshot.KnownUsd > snapshot.Grant.Usd.Value
-            || snapshot.Grant.Tokens.Mode == GuildBudgetMode.Finite && snapshot.KnownTokens > snapshot.Grant.Tokens.Value
-            || snapshot.Remaining.Usd.Mode == GuildBudgetMode.Finite && (usd is null || usd > snapshot.Remaining.Usd.Value)
-            || snapshot.Remaining.Tokens.Mode == GuildBudgetMode.Finite && (tokens is null || tokens > snapshot.Remaining.Tokens.Value)) return false;
-
-        try
-        {
-            if (snapshot.Committed is { } committed)
-            {
-                decimal? projectedUsd = Sum(Limit(committed.Usd), usd);
-
-                long? projectedTokens = Sum(Limit(committed.Tokens), tokens);
-
-                if (snapshot.Grant.Usd.Mode == GuildBudgetMode.Finite && (projectedUsd is null || projectedUsd > snapshot.Grant.Usd.Value)
-                    || snapshot.Grant.Tokens.Mode == GuildBudgetMode.Finite && (projectedTokens is null || projectedTokens > snapshot.Grant.Tokens.Value)) return false;
-            }
-
-            if (snapshot.Remaining.Usd.Mode == GuildBudgetMode.Finite && usd is { } amount)
-                _ = ExactUsdText.CheckedAdd(snapshot.Remaining.Usd.Value!.Value, -amount);
-
-            return true;
-        }
-        catch (OverflowException)
-        {
-            return false;
-        }
-    }
 
     private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql)
     {

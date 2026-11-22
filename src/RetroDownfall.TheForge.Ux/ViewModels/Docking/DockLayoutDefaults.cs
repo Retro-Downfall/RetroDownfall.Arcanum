@@ -47,7 +47,6 @@ public static class DockLayoutDefaults
         (DockToolId.Lore, "Lore Browser", "IconCodex", DockRegion.Hidden, 0),
         (DockToolId.WorkspaceExplorer, "Workspace Explorer", "IconWorkspace", DockRegion.Hidden, 0),
         (DockToolId.Gatehouse, "The Gatehouse", "IconWard", DockRegion.Right, 0),
-        (DockToolId.Treasury, "The Treasury", "IconModel", DockRegion.Right, 1),
         (DockToolId.Arsenal, "The Arsenal", "IconMcp", DockRegion.Right, 2),
         (DockToolId.WarTable, "The War Table", "IconApprentice", DockRegion.Right, 3),
         (DockToolId.Archive, "The Archive", "IconSession", DockRegion.Hidden, 0),

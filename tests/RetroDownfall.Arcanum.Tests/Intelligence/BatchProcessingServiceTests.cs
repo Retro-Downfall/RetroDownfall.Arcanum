@@ -1500,71 +1500,6 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ProcessBatchAsync_ReservesValidLinesUsingResolvedPricingAndTypedBudgets()
-    {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        RecordingTurnRunWriter writer = new();
-
-        RecordingBudgetReservationService reservations = new();
-
-        PricingSettings pricing = new()
-        {
-            DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
-            ModelPricing =
-            {
-                ["reasoner"] = new ModelPricingEntry
-                {
-                    InputPer1M = 3m,
-                    OutputPer1M = 4m,
-                    ReasoningPer1M = 8m,
-                },
-            },
-        };
-
-        BatchProcessingService service = CreateService(
-            new FakeIntelligenceProvider(),
-            turnRunWriter: writer,
-            budgetReservations: reservations,
-            pricing: pricing);
-
-        string jsonl =
-            "{ not-json\n"
-            + """{"custom_id":"reasoning","method":"POST","url":"/v1/chat/completions","body":{"model":"reasoner","max_completion_tokens":1000,"reasoning_budget":600,"messages":[{"role":"user","content":"hi"}]}}"""
-            + "\n"
-            + """{"custom_id":"legacy","method":"POST","url":"/v1/chat/completions","body":{"model":"other","max_tokens":200,"messages":[{"role":"user","content":"hi"}]}}"""
-            + "\n";
-
-        Guid inputFileId = await SeedInputFileAsync(jsonl);
-
-        BatchRecord batch = new(
-            Guid.NewGuid(),
-            inputFileId,
-            "/v1/chat/completions",
-            BatchStatuses.Validating,
-            DateTimeOffset.UtcNow,
-            null,
-            null,
-            null);
-
-        await _batches!.CreateAsync(batch, CancellationToken.None);
-
-        await service.ProcessBatchAsync(batch, CancellationToken.None);
-
-        decimal expected =
-            BudgetReservationService.EstimateWorstCaseBatchLineUsd(
-                pricing.ModelPricing["reasoner"],
-                maxOutputTokens: 1_000,
-                reasoningBudgetTokens: 600)
-            + BudgetReservationService.EstimateWorstCaseBatchLineUsd(
-                pricing.DefaultPricing,
-                maxOutputTokens: 200,
-                reasoningBudgetTokens: null);
-
-        Assert.Equal(expected, reservations.LastRequest?.ReservedUsd);
-    }
-
-    [SkippableFact]
     public async Task ProcessBatchAsync_AccountingCompletionFailureKeepsBatchRecoverable()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -2720,7 +2655,6 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     private BatchProcessingService CreateService(
         IArcanumIntelligenceProvider intelligence,
         ITurnRunWriter? turnRunWriter = null,
-        IBudgetReservationService? budgetReservations = null,
         PricingSettings? pricing = null,
         int maxConcurrentRequestsPerBatch = 2)
     {
@@ -2750,7 +2684,7 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
             Cost = new CostSettings { Pricing = pricing ?? new PricingSettings() },
         };
 
-        ServiceProvider root = BuildServiceProvider(intelligence, turnRunWriter, budgetReservations);
+        ServiceProvider root = BuildServiceProvider(intelligence, turnRunWriter);
 
         return CreateService(root, settings);
     }
@@ -2804,7 +2738,6 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
     private ServiceProvider BuildServiceProvider(
         IArcanumIntelligenceProvider intelligence,
         ITurnRunWriter? turnRunWriter = null,
-        IBudgetReservationService? budgetReservations = null,
         IBatchAccountingRecoveryStore? accountingRecoveryStore = null,
         ConcurrentBag<ScopedDatabaseIdentity>? scopedDatabases = null,
         IEncryptedBlobStore? blobStore = null,
@@ -2848,10 +2781,6 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
             services.AddSingleton(turnRunWriter);
         }
 
-        if (budgetReservations is not null)
-        {
-            services.AddSingleton(budgetReservations);
-        }
 
         ServiceProvider root = services.BuildServiceProvider();
 
@@ -3206,67 +3135,7 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         }
     }
 
-    private sealed class RecordingBudgetReservationService : IBudgetReservationService
-    {
-        public BudgetReservationRequest? LastRequest { get; private set; }
 
-        public Task<Result<BudgetReservation>> ReserveAsync(
-            BudgetReservationRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            LastRequest = request;
-
-            return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
-                Guid.NewGuid(),
-                request.RunId,
-                request.BudgetPeriod,
-                request.ReservedUsd,
-                0m,
-                BudgetReservationStatus.Reserved,
-                request.ExpiresAt,
-                DateTimeOffset.UtcNow)));
-        }
-
-        public Task ReconcileAsync(
-            Guid reservationId,
-            decimal actualCostUsd,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task<Result> AdjustAsync(
-            Guid reservationId,
-            decimal reservedUsd,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result.Success());
-
-        public Task ReleaseAsync(
-            Guid reservationId,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task ExtendExpiryAsync(
-            Guid reservationId,
-            DateTimeOffset expiresAt,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task<Result> RecheckDailyLimitAsync(
-            Guid reservationId,
-            decimal delegatedSpendUsd,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result.Success());
-
-        public Task<int> SweepExpiredAsync(
-            DateTimeOffset utcNow,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(0);
-    }
 
     /// <summary>
     /// Forwards everything and records which lines were ever opened in the provider-ambiguous

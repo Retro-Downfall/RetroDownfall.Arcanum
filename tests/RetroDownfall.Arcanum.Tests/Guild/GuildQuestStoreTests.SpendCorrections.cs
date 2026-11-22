@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -103,17 +102,18 @@ public sealed partial class GuildQuestStoreTests
         await using Fixture f = await Fixture.CreateAsync();
         await using SqliteConnection connection = await f.OpenAsync();
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
-        ArcanumSettings settings = new() { Cost = new() { Budget = new() { Enabled = true, DailyLimitUsd = 10m } } };
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
         f.UseBudgetParticipant(new GuildBudgetLedger(daily));
         GuildQuestStored quest = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
         GuildQuestDriver driver = await f.DriverAsync(quest);
         GuildQuestDispatchRecord dispatch = (await f.Store.PrepareDispatchAsync(driver, Guid.NewGuid(), ReceiptDigest("hold"), quest.Quest.RunId, false, default)).Value;
         GuildLocalInferenceExecution execution = new(f.Store, driver, dispatch);
-        GuildBudgetEffectRequest effect = new(Guid.NewGuid(), quest.Quest.Id, dispatch.DispatchId, quest.Quest.RunId,
-            GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, 1m, 1000);
-        Assert.True((await f.Store.ExecuteProviderEffectAsync(execution, daily, effect, _ => Task.FromResult(Result<string>.Success("answer")), default)).IsSuccess);
         DateTimeOffset started = new(2026, 1, 2, 23, 59, 59, TimeSpan.Zero);
+        BudgetReservation retained = await LegacyBudgetFixture.SeedAsync(db,
+            new(quest.Quest.RunId, 1m, started.AddHours(1), BudgetReservationService.UtcBudgetPeriod(started)));
+        GuildBudgetEffectRequest effect = new(Guid.NewGuid(), quest.Quest.Id, dispatch.DispatchId, quest.Quest.RunId,
+            GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), retained.Id, 1m, 1000);
+        Assert.True((await f.Store.ExecuteProviderEffectAsync(execution, daily, effect, _ => Task.FromResult(Result<string>.Success("answer")), default)).IsSuccess);
         BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
             started, started.AddSeconds(2), 100, 20, 5, 40, "{}", .25m, BillableOperationStatus.Completed, "request-id");
         var initial = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
@@ -154,7 +154,7 @@ public sealed partial class GuildQuestStoreTests
         await using Fixture f = await Fixture.CreateAsync();
         await using SqliteConnection connection = await f.OpenAsync();
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+        BudgetReservationService daily = new(db);
         f.UseBudgetParticipant(new GuildBudgetLedger(daily));
         GuildQuestStored root = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
         GuildQuestDriver rootDriver = await f.DriverAsync(root);

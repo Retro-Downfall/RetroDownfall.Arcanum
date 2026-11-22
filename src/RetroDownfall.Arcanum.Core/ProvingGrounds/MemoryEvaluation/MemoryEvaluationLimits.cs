@@ -38,9 +38,9 @@ public static class MemoryEvaluationLimits
 
     public const int MinOutputTokens = 1;
 
-    public const int MaxOutputTokens = 4096;
+    internal const int DefaultAnswerReservation = 512;
 
-    public const int DefaultOutputTokens = 512;
+    public static int ReservedAnswerTokens(MemoryEvaluationOptions options) => options.MaxOutputTokens ?? DefaultAnswerReservation;
 
     public const int ProviderResponseBytes = 1024 * 1024;
 

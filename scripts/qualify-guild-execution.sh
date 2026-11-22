@@ -177,7 +177,7 @@ printf '%s\0' \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_fault_rolls_back_every_participant_and_same_key_retries_once \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_primary_cycle_is_rejected_without_authorizing_effects \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_primary_pinned_identity_mismatch_refuses_writes_without_poisoning_run \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_remote_route_pins_skill_and_result_or_refuses_unenforceable_finite_budget \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_remote_route_pins_skill_and_result_with_historical_finite_grants \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_result_publishes_typed_receipt_to_exact_winning_primary \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Award_work_reads_its_exact_primary_but_not_an_unrelated_same_agent_quest \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Concurrent_award_and_close_commit_exactly_one_and_loser_allocates_nothing \
@@ -194,7 +194,7 @@ printf '%s\0' \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Scheduled_completion_retains_claim_while_child_work_is_unfinished \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Shared_note_append_records_one_distinct_content_free_event_across_replay \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Successful_primary_completion_preserves_existing_award_authority_and_does_not_request_sibling_stop \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Tool_offer_budget_hint_clamps_at_award_while_native_request_is_strict \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_tool_offers_award_work_despite_historical_finite_capacity \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Unavailable_member_issuer_closes_offers_without_award_work \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Winning_primary_reads_associated_award_result_but_cannot_cancel_sibling \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildPortalStoreTests.Distribution_authored_progress_lookalike_does_not_hydrate_a_work_reference \
@@ -328,7 +328,7 @@ printf '%s\0' \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_remote_creation_replays_one_asynchronous_child_for_one_logical_call \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_remote_tool_returns_a_question_and_answers_the_same_remote_task_to_completion \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_continue_sending_refuses_a_task_outside_the_current_immediate_parent \
-  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_refuses_unsupported_finite_axes_before_discovery \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_dispatch_sending_ignores_historical_finite_grants \
   --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_preserves_the_frozen_multi_interface_card_and_uses_the_supported_binding \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.GuildA2AStreamingProviderWorkCompletesUnderItsEnumerationFrontiers \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.GuildNamedHttpFactoryClosesOnlyItsExactAuthoredConfiguration \
@@ -358,7 +358,8 @@ printf '%s\0' \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Guild_host_readiness_physical_stage_refuses_closed_effect_admission_after_identity_commit \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_scheduler_discovery_fault_cancels_and_joins_its_waiting_pump \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_port_paid_completion_closes_account_and_preserves_unknown_price \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Provider_effect_timeout_keeps_real_daily_hold_past_expiry_and_refuses_another_identity \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Provider_effect_timeout_retains_physical_uncertainty_and_refuses_another_identity_without_reserving \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Guild_shared_engine_admits_each_unit_with_its_own_Guild_work_and_effect_lease \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Local_child_frontier_separates_explicit_interruption_from_resumable_or_live_descendants \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Local_child_frontier_does_not_count_its_own_interruption_as_a_descendant \

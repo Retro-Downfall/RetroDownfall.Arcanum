@@ -337,7 +337,7 @@ public sealed partial class GuildLocalHostPolicyTests
         GuildBudgetEffectRequest effect = new(Guid.NewGuid(), local.Quest.Id, localExecution.Dispatch.DispatchId,
             local.Quest.RunId, GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, null, null);
 
-        var applied = await fixture.Store.ExecuteProviderEffectAsync(localExecution, new BudgetReservationService(db, fixture.Settings),
+        var applied = await fixture.Store.ExecuteProviderEffectAsync(localExecution, new BudgetReservationService(db),
             effect, _ => Task.FromResult(Result<string>.Success("processed")), default, circleInputs: [batch]);
 
         Assert.True(applied.IsSuccess, applied.Error.Message);
@@ -417,7 +417,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         fixture.Settings.CurrentValue.Features.A2AClient = true;
 
-        fixture.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         const string discovery = "http://portal-peer.example/";
 

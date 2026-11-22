@@ -62,17 +62,13 @@ public sealed class RecoveryHandlerCoverageTests
         };
 
     /// <summary>
-    /// Kind → the production source file that creates its ledger rows. A descriptor and handler for a
-    /// kind nothing creates is a recovery path for work that is never recorded, and a guard that reads
-    /// such a kind protects nothing, so a kind is registered only together with the place that produces it.
+    /// Source files that produce new live ledger rows. The retired refresh kind keeps only recovery.
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ProductionProducers =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [LongRunningOperationKinds.GuildQuest] =
                 "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs",
-            [LongRunningOperationKinds.GuildSpendRefresh] =
-                "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshAdmission.cs",
             [LongRunningOperationKinds.MemoryEvaluation] =
                 "src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationRunner.cs",
             [LongRunningOperationKinds.LongRestSweep] =
@@ -102,12 +98,12 @@ public sealed class RecoveryHandlerCoverageTests
         };
 
     [Fact]
-    public void Every_registry_kind_has_a_production_producer()
+    public void Every_live_registry_kind_has_a_production_producer()
     {
         string[] unproduced =
         [
             .. LongRunningOperationRecoveryRegistry.Descriptors.Keys
-                .Where(static kind => !ProductionProducers.ContainsKey(kind))
+                .Where(static kind => kind != LongRunningOperationKinds.GuildSpendRefresh && !ProductionProducers.ContainsKey(kind))
                 .Order(StringComparer.Ordinal),
         ];
 

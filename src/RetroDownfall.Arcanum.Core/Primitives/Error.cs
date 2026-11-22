@@ -157,9 +157,9 @@ public readonly record struct CampaignMarkerFailureDetails(
 public readonly record struct ContextOverflowDetails(
     string Provider,
     string Model,
-    int InputTokens,
-    int ReservedTokens,
-    int TotalTokens,
+    long InputTokens,
+    long ReservedTokens,
+    long TotalTokens,
     int WindowTokens)
 {
     public const string Remedy = "Shorten the prompt, run arcanum session compact, start a new Session, choose a model with a larger context window, or raise providers[].contextWindowLimit to the model's actual capacity.";
@@ -175,24 +175,6 @@ public readonly record struct ContextOverflowDetails(
             || Rune.GetUnicodeCategory(scalar) is System.Globalization.UnicodeCategory.Format
             || scalar.Value is 0x2028 or 0x2029 or 0x27 ? "_" : scalar.ToString()));
     }
-}
-
-/// <summary>Shared operator guidance for every enforced daily budget refusal.</summary>
-public static class BudgetErrorMessages
-{
-    /// <summary>Explains the exact proposed exposure in the UTC ledger period being refused.</summary>
-    public static string WouldExceed(string period, decimal limit, decimal current, decimal additional,
-        string additionalLabel, decimal projected, decimal? replacedReservation = null) =>
-        $"Daily budget limit of ${FormatUsd(limit)} USD for UTC day {period} would be exceeded "
-        + $"(committed+reserved: ${FormatUsd(current)} USD; "
-        + (replacedReservation is { } replaced ? $"replacing reservation: ${FormatUsd(replaced)} USD; " : string.Empty)
-        + $"{additionalLabel}: ${FormatUsd(additional)} USD; projected: ${FormatUsd(projected)} USD). " + Guidance;
-
-    /// <summary>Formats USD invariantly with at least cents and every significant decimal place.</summary>
-    public static string FormatUsd(decimal value) =>
-        value.ToString("0.00##########################", System.Globalization.CultureInfo.InvariantCulture);
-
-    public const string Guidance = "The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.";
 }
 
 /// <summary>The fixed stages at which opening an admitted Grimoire connection can fail.</summary>

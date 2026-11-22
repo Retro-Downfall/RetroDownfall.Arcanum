@@ -8,9 +8,15 @@ namespace RetroDownfall.Arcanum.Tests.ProvingGrounds;
 public sealed class MemoryEvaluationDigestTests
 {
     [Fact]
-    public void Request_has_literal_independently_framed_golden_vector()
+    public void Previously_issued_explicit_limit_preserves_its_literal_request_identity()
     {
-        Assert.Equal("E1FB3B3081F0681DAC1E9818F53B634A5C9DD5CB3136390623E89538BDACDDAF", MemoryEvaluationDigests.Request(MemoryEvaluationValidator.Validate(MemoryEvaluationTestData.ValidRequest()).Value).ToString());
+        var uncapped = MemoryEvaluationTestData.ValidRequest();
+
+        var historical = uncapped with { Options = new(MaxOutputTokens: 512) };
+
+        Assert.Equal("E1FB3B3081F0681DAC1E9818F53B634A5C9DD5CB3136390623E89538BDACDDAF", Digest(historical));
+
+        Assert.NotEqual(Digest(historical), Digest(uncapped));
     }
 
     [Fact]
@@ -185,7 +191,7 @@ public sealed class MemoryEvaluationDigestTests
     private static MemoryEvaluationSourceCoordinate Coordinate() => new(MemoryEvaluationCoordinateRole.Intervention, MemoryEvaluationSource.Saga, "subject", null, "version", 1, Zero(), null, null, MemoryEvaluationScopeKind.Global, null, null, null, null, null, MemoryEvaluationSourceLifecycle.Active, ContentSensitivity.CovenantDerived, null, null);
 
     private static MemoryEvaluationExecutionPlan Plan() => new(
-        MemoryEvaluationValidator.Validate(MemoryEvaluationTestData.ValidRequest()).Value,
+        MemoryEvaluationValidator.Validate(MemoryEvaluationTestData.ValidRequest() with { Options = new(MaxOutputTokens: 512) }).Value,
         new([], "memory", Zero(), [], new(Guid.Parse("55555555-5555-5555-5555-555555555555"), 1, 1, 1, Zero())),
         new("system", "user", "system memory", "user", [], Zero()),
         Zero(), Zero(), Zero(), Zero(), Zero(), 1,

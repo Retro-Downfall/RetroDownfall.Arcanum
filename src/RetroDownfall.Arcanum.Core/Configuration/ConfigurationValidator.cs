@@ -36,7 +36,7 @@ public sealed class ConfigurationValidator(
         "Provider/model tokenization and prompt-caching overrides are no longer supported. Arcanum uses its built-in capability catalog and conservative unknown-model behavior.";
 
     internal const string ObsoleteReasoningCapabilityMessage =
-        "Per-model reasoning capability declarations (controlSupport, supportsSummary, supportsFull, supportsStreaming, reportsReasoningTokens, allowsClientOutput) are no longer supported. Arcanum derives reasoning from the declared reasoning block and wire dialect; retain only wireDialect and maxBudgetTokens for nonstandard third-party endpoints.";
+        "Per-model reasoning capability declarations (controlSupport, supportsSummary, supportsFull, supportsStreaming, reportsReasoningTokens, allowsClientOutput) are no longer supported. Arcanum derives reasoning from the declared reasoning block and wire dialect; retain only wireDialect for nonstandard third-party endpoints.";
 
     internal const string ObsoleteProviderLlamaCppMessage =
         "Provider-level llamaCpp (including modelMap) is no longer supported. List models explicitly under Providers[].Models.";
@@ -87,7 +87,6 @@ public sealed class ConfigurationValidator(
         ("apprentices", "Apprentice enablement moved to Features and host capacity moved to Execution; workflow limits are automatic."),
         ("attachments", "Attachment enablement moved to Features; attachment storage and prompt limits are internal."),
         ("batches", "Batch concurrency moved to Execution; batch size and expiry limits are internal."),
-        ("budget", "Daily budget policy moved to Cost.Budget."),
         ("campaigns", "Campaign path authority moved to Security.CampaignRoots; registry capacity is internal."),
         ("clientToolForwarding", "Client-tool enablement moved to Features.ClientTools; tool-count limits are internal."),
         ("codex", "CODEX size is now an internal host invariant."),
@@ -622,6 +621,11 @@ public sealed class ConfigurationValidator(
 
         foreach (IConfigurationSection child in section.GetChildren())
         {
+            if (IsRetiredBudgetProperty(expectedType, child.Key))
+            {
+                continue;
+            }
+
             if (!TryResolveConfigurationProperty(
                     expectedType,
                     child.Key,
@@ -755,6 +759,11 @@ public sealed class ConfigurationValidator(
 
         foreach (JsonProperty property in element.EnumerateObject())
         {
+            if (IsRetiredBudgetProperty(expectedType, property.Name))
+            {
+                continue;
+            }
+
             if (!TryResolveConfigurationProperty(
                     expectedType,
                     property.Name,
@@ -772,6 +781,11 @@ public sealed class ConfigurationValidator(
                 errors);
         }
     }
+
+    private static bool IsRetiredBudgetProperty(Type parent, string name) =>
+        ((parent == typeof(ArcanumSettings) || parent == typeof(CostSettings)) && name.Equals("budget", StringComparison.OrdinalIgnoreCase))
+        || (parent == typeof(ProviderSettings) && name.Equals("guildUsageReconciliation", StringComparison.OrdinalIgnoreCase))
+        || (parent == typeof(ReasoningCapabilities) && name.Equals("maxBudgetTokens", StringComparison.OrdinalIgnoreCase));
 
     private static bool TryResolveConfigurationProperty(
         Type expectedType,
@@ -1035,15 +1049,6 @@ public sealed class ConfigurationValidator(
                     "OutputTokenLimitWireDialect must be MaxCompletionTokens or MaxTokens."));
             }
 
-            if (!Enum.IsDefined(provider.GuildUsageReconciliation)
-                || provider.GuildUsageReconciliation == GuildUsageReconciliationSource.OpenRouterGeneration
-                    && (provider.Type != AiProviderKind.OpenAICompatible || !ProviderSettings.IsCanonicalOpenRouterEndpoint(provider.Endpoint)))
-            {
-                errors.Add(new ConfigurationValidationError(
-                    $"{providerPointer}.guildUsageReconciliation",
-                    "Guild usage reconciliation must be None or OpenRouterGeneration with the canonical OpenRouter HTTPS endpoint."));
-            }
-
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
 
             if (provider.LocalRuntimeId is not null
@@ -1223,11 +1228,6 @@ public sealed class ConfigurationValidator(
         // A warning, never an error: Long Rest simply cannot run until its recipe resolves, and neither startup nor an ordinary turn is
         // refused for it. A turn that must finish protected Long Rest maintenance first still ends (the detail says so).
         foreach (ConfigurationValidationError warning in ValidateLongRest(settings))
-        {
-            logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
-        }
-
-        foreach (ConfigurationValidationError warning in ValidateBudget(settings))
         {
             logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
         }
@@ -1831,19 +1831,6 @@ public sealed class ConfigurationValidator(
                 "Campaign rollups need an OpenAI-compatible FastModel (or DefaultModel when FastModel is unset). Set Arcanum:FastModel or Arcanum:DefaultModel to a configured OpenAI-compatible provider model, or turn Arcanum:Features:CampaignRollups off. Ordinary turns can continue while summaries remain pending.")];
     }
 
-    /// <summary>Warns when budget configuration requests enforcement without a positive effective daily limit.</summary>
-    public IReadOnlyList<ConfigurationValidationError> ValidateBudget(ArcanumSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(settings);
-
-        BudgetSettings budget = settings.ResolveBudget();
-
-        return budget.Enabled && ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd) <= 0m
-            ? [new ConfigurationValidationError("cost.budget.dailyLimitUsd",
-                "Budget is not enforced: Arcanum:Cost:Budget:Enabled is on, but Arcanum:Cost:Budget:DailyLimitUsd is not positive. Set a positive daily limit or turn enforcement off.")]
-            : [];
-    }
-
     private void ValidateEventBus(ArcanumSettings settings)
     {
         EventBusSettings eventBus = settings.ResolveEventBus();
@@ -1926,41 +1913,11 @@ public sealed class ConfigurationValidator(
         string pointer,
         List<ConfigurationValidationError> errors)
     {
-        if (reasoning is null || (reasoning.WireDialect is null && reasoning.MaxBudgetTokens is null))
-        {
-            return;
-        }
-
-        bool validWireDialect = reasoning.WireDialect is null || Enum.IsDefined(reasoning.WireDialect.Value);
-
-        if (!validWireDialect)
+        if (reasoning?.WireDialect is { } dialect && !Enum.IsDefined(dialect))
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.wireDialect",
-                $"Reasoning WireDialect '{reasoning.WireDialect}' is not defined."));
-        }
-
-        if (reasoning.MaxBudgetTokens is { } maxBudgetTokens)
-        {
-            if (maxBudgetTokens != ArcanumSettingClamps.ReasoningBudgetTokens(maxBudgetTokens))
-            {
-                errors.Add(new ConfigurationValidationError(
-                    $"{pointer}.maxBudgetTokens",
-                    $"Reasoning MaxBudgetTokens ({maxBudgetTokens}) must be within the 1-2,097,152 token clamp range."));
-            }
-        }
-
-        // The adapter enforces this at request time; validating it at config load gives a clearer
-        // operator-facing error and rejects a silently unusable combination. An omitted wireDialect is
-        // the same unusable combination as an explicit "standard": ReasoningRequestValidator treats a
-        // null dialect as "declares no reasoning capability", so the configured budget can never apply.
-        if (validWireDialect
-            && reasoning.MaxBudgetTokens is not null
-            && reasoning.WireDialect is null or ReasoningWireDialect.Standard)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.wireDialect",
-                "A numeric reasoning budget requires an explicitly configured nonstandard wire dialect."));
+                $"Reasoning WireDialect '{dialect}' is not defined."));
         }
     }
 
@@ -2259,7 +2216,7 @@ public sealed class ConfigurationValidator(
             if (peer.Grant is null || peer.Grant.ToGrant() is { IsFailure: true })
             {
                 errors.Add(new ConfigurationValidationError(pointer + ".grant",
-                    "An inbound peer requires a complete valid Guild grant with explicit budget modes and nullable expiry."));
+                    "An inbound peer requires a valid Guild grant with explicit workspace, tool, memory, delegation and expiry fields."));
             }
             else if (peer.Grant.Workspaces is { Length: > 0 } workspaces
                 && (peer.WorkspaceId is null || workspaces.Any(item => item.WorkspaceId != peer.WorkspaceId)))

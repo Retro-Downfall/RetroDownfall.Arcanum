@@ -1,4 +1,3 @@
-using System.Globalization;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
@@ -12,7 +11,7 @@ internal static class MemoryDelegationTaskDigest
     {
         using CovenantCanonicalHashWriter writer = new();
 
-        writer.WriteUtf8("arcanum.memory-delegation.child-task.v1");
+        writer.WriteUtf8("arcanum.memory-delegation.child-task.v2");
 
         writer.WriteInt32((int)MemoryDelegationPurpose.DelegatedTask);
 
@@ -32,16 +31,6 @@ internal static class MemoryDelegationTaskDigest
 
             writer.WriteOptional(attachmentIds[index], static (target, id) => target.WriteGuid(id));
         }
-
-        writer.WriteOptional(request.MaxTokens, static (target, value) => target.WriteInt64(value));
-
-        writer.WriteOptional(request.MaxCostUsd, static (target, value) =>
-        {
-            // G29 removes insignificant decimal scale; the four fixed-width words encode the exact numeric value.
-            decimal canonical = decimal.Parse(value.ToString("G29", CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture);
-
-            foreach (int word in decimal.GetBits(canonical)) target.WriteInt32(word);
-        });
 
         return writer.FinalizeDigest();
     }

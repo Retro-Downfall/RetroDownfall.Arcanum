@@ -137,7 +137,6 @@ public sealed class WeaveService(
             sanitizedBatches.Add(batch);
         }
 
-        long totalApproxTokens = EstimateApproximateTokens(sanitizedBatches.SelectMany(static batch => batch));
         PricingSettings pricingSettings = operationSettings.ResolvePricing();
 
         ModelPricingEntry pricing = pricingSettings.ResolveForModel(embeddings.Model);
@@ -146,7 +145,6 @@ public sealed class WeaveService(
         string model = embeddings.Model ?? "unknown";
         IServiceScope? accountingScope = null;
         ITurnRunWriter? turnRunWriter = TurnAccountingAmbient.Writer;
-        IBudgetReservationService? budgetReservations = null;
         TurnAccountingHandle? accounting = TurnAccountingAmbient.Current;
         bool ownsAccounting = false;
 
@@ -154,27 +152,15 @@ public sealed class WeaveService(
         {
             accountingScope = scopeFactory.CreateScope();
             turnRunWriter = accountingScope.ServiceProvider.GetService<ITurnRunWriter>();
-            budgetReservations = accountingScope.ServiceProvider.GetService<IBudgetReservationService>();
-            decimal reservedUsd = BudgetReservationService.EstimateWorstCaseEmbeddingUsd(pricing, totalApproxTokens);
-            Result<TurnAccountingHandle> begin;
-
-            // Opening the run row is a durable Grimoire write, and it happens before this method's
-            // own try. Only the failed-Result arm below used to give the scope back, so a store
-            // fault — a closed maintenance admission gate among them — escaped with the scope still
-            // live. The rethrow keeps the caller's behaviour exactly as it was.
             try
             {
-                begin = await TurnAccountingHandle.BeginAsync(
+                accounting = await TurnAccountingHandle.BeginAsync(
                         turnRunWriter,
-                        budgetReservations,
-                        pricingSettings,
-                        model,
                         sessionId: null,
                         surface: "embedding",
                         purpose: "embedding",
                         requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
-                        cancellationToken,
-                        reservedUsdOverride: reservedUsd)
+                        cancellationToken)
                     .ConfigureAwait(false);
             }
             catch
@@ -184,13 +170,6 @@ public sealed class WeaveService(
                 throw;
             }
 
-            if (begin.IsFailure)
-            {
-                accountingScope.Dispose();
-                return Result<Embedding<float>[]>.Failure(begin.Error);
-            }
-
-            accounting = begin.Value;
             ownsAccounting = true;
         }
 
@@ -269,7 +248,6 @@ public sealed class WeaveService(
                 {
                     await accounting.CompleteAsync(
                             turnRunWriter,
-                            budgetReservations,
                             accountingStatus,
                             CancellationToken.None)
                         .ConfigureAwait(false);
@@ -277,9 +255,8 @@ public sealed class WeaveService(
                 catch (Exception ex)
                 {
                     logger.LogWarning(
-                        "Standalone embedding accounting completion failed for run {RunId}, reservation {ReservationId} (exception type {ExceptionType}).",
+                        "Standalone embedding accounting completion failed for run {RunId} (exception type {ExceptionType}).",
                         accounting.RunId,
-                        accounting.ReservationId,
                         ex.GetType().FullName);
                 }
 
@@ -358,7 +335,7 @@ public sealed class WeaveService(
         TurnAccountingHandle accounting, string exceptionType, int? actualCount = null, int? expectedCount = null)
     {
         logger.LogWarning(
-            "Embedding operation failed ({Reason}, stage {Stage}, provider {Provider}, model {Model}, provenance {Provenance}, configured provider {ConfiguredProvider}, configured model {ConfiguredModel}, HTTP {HttpStatus}, exception type {ExceptionType}, run {RunId}, reservation {ReservationId}, vectors {ActualCount}/{ExpectedCount}). {Remedy}",
+            "Embedding operation failed ({Reason}, stage {Stage}, provider {Provider}, model {Model}, provenance {Provenance}, configured provider {ConfiguredProvider}, configured model {ConfiguredModel}, HTTP {HttpStatus}, exception type {ExceptionType}, run {RunId}, vectors {ActualCount}/{ExpectedCount}). {Remedy}",
             failure.Reason,
             attempt?.Stage ?? "unknown",
             SafeEmbeddingIdentifier(attempt?.Provenance?.Provider),
@@ -369,7 +346,6 @@ public sealed class WeaveService(
             failure.HttpStatus,
             exceptionType,
             accounting.RunId,
-            accounting.ReservationId,
             actualCount,
             expectedCount,
             failure.Message);

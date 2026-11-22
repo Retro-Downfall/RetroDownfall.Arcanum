@@ -33,7 +33,7 @@ public static class CampaignMaintenanceProviderCallFreezer
         try
         {
             FrozenProviderOptions options = FrozenProviderOptions.Create(new(
-                CampaignMaintenancePayload.MaxOutputTokens,
+                null,
                 null, null, null, null, null, null, [],
                 ProviderToolChoice.None, null, CovenantTriStateBoolean.Absent,
                 ProviderResponseFormat.JsonSchema,

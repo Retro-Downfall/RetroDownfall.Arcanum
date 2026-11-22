@@ -203,7 +203,7 @@ internal sealed class MemoryDelegationCallerDiagnostic(
             PingRequestFailureReason.ReasoningEffort => "parent.reasoning.effort must be a supported named value.",
             PingRequestFailureReason.ReasoningOutput => "parent.reasoning.output must be a supported named value.",
             PingRequestFailureReason.ReasoningExclusive => "parent.reasoning must specify effort or budgetTokens, not both.",
-            PingRequestFailureReason.ReasoningBudget => "parent.reasoning.budgetTokens must be within 1-2097152 tokens.",
+            PingRequestFailureReason.ReasoningBudget => "parent.reasoning.budgetTokens must be a positive integer.",
             PingRequestFailureReason.Temperature => "parent.temperature must be a finite number from 0 through 2.",
             PingRequestFailureReason.TopP => "parent.topP must be a finite number from 0 through 1.",
             PingRequestFailureReason.PresencePenalty => "parent.presencePenalty must be a finite number from -2 through 2.",

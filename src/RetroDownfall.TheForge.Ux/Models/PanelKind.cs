@@ -12,7 +12,6 @@ public enum PanelKind
 
     Gatehouse,
 
-    Treasury,
 
     Arsenal,
 

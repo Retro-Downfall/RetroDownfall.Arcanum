@@ -22,7 +22,7 @@
                               SelectedItem="{Binding Cli.Theme, Mode=TwoWay}" />
 
       <controls:LabeledToggle Label="Show mana bar"
-                              Description="Show the persistent token-budget indicator in chat."
+                              Description="Show context window usage in chat."
                               IsOn="{Binding Cli.ShowManaBar, Mode=TwoWay}" />
 
     </StackPanel>

@@ -3027,34 +3027,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "ReserveAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "AdjustAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "RecheckDailyLimitAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "ExtendExpiryAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "ReconcileAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
@@ -3382,27 +3354,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.DesignTimeOrNativeValidation,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.DesignTimeScratch, "ArcanumDbContextFactory.CreateDbContext(1)", 0)),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs", "BudgetAlertRepository", "RecordAlertAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs", "BudgetAlertRepository", "HasAlertedTodayAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs", "BudgetAlertRepository", "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/BlobEncryptionMetadataStore.cs", "BlobEncryptionMetadataStore", "ListAsync(1)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),

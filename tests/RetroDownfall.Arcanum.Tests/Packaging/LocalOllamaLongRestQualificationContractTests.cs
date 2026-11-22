@@ -565,10 +565,12 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Contains("RunOrdinaryTurnAsync", test, StringComparison.Ordinal);
 
         // Each restart scrapes once before any sweep runs, after requests the exporter should already have recorded (its late start is
-        // a finding, not a given); the held-reservation figure is read from the same read-only reader.
+        // a finding, not a given). Measured usage and the absence of new reservations use the read-only reader.
         Assert.Contains("await Api.ReadMetricsAsync(cancellationToken);", run, StringComparison.Ordinal);
-        Assert.Contains("ReadOutstandingReservationsAsync", run, StringComparison.Ordinal);
-        Assert.Contains("FROM BudgetReservations WHERE Status = 0", grimoire, StringComparison.Ordinal);
+        Assert.Contains("ReadMeasuredSpendAsync", run, StringComparison.Ordinal);
+        Assert.Contains("ReadReservationCountAsync", run, StringComparison.Ordinal);
+        Assert.Contains("SELECT ActualCostUsd FROM BillableOperations", grimoire, StringComparison.Ordinal);
+        Assert.Contains("SELECT count(*) FROM BudgetReservations", grimoire, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -804,8 +806,6 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.False(settings.Features.Covenant);
         Assert.False(settings.Features.CampaignScopedMemory);
         Assert.False(settings.Host.ListenAny);
-        Assert.True(settings.Cost.Budget.Enabled);
-        Assert.Equal(10_000m, settings.Cost.Budget.DailyLimitUsd);
         Assert.Equal(1000m, settings.Cost.Pricing.DefaultPricing.InputPer1M);
         Assert.Equal(250m, settings.Cost.Pricing.DefaultPricing.CachedPer1M);
 

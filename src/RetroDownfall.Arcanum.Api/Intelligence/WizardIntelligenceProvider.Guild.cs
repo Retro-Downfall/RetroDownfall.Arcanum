@@ -18,8 +18,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRuntime
 {
-    bool IGuildLocalInferenceRuntime.IsAvailable => budgetReservationService is BudgetReservationService
-        && chatClientFactory is ChatClientFactory && ModelCallExecutor is RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor;
+    bool IGuildLocalInferenceRuntime.IsAvailable => chatClientFactory is ChatClientFactory
+        && ModelCallExecutor is RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor;
 
     Task<Result<PromptTurnResult>> IGuildLocalInferenceRuntime.ExecuteAsync(GuildLocalInferenceExecution execution,
         GuildLocalExecutionInput input, CancellationToken cancellationToken) =>
@@ -32,7 +32,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
     private async Task<Result<PromptTurnResult>> ExecuteGuildAsync(GuildLocalInferenceExecution execution,
         GuildLocalExecutionInput input, GuildLocalInferenceTurn? turn, CancellationToken ct)
     {
-        if (execution is null || budgetReservationService is not BudgetReservationService daily || input is null
+        if (execution is null || input is null
             || turn is null && input.Mode != GuildLocalExecutionMode.Sterile
             || turn is not null && input.Mode != GuildLocalExecutionMode.Apprentice)
             return GuildContextUnavailable;
@@ -63,7 +63,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
             SkipSpellRouting: true, MaxOutputTokens: input.MaxOutputTokens, ToolPolicy: ToolPolicy.NoTools,
             DisableAllTools: turn?.DisableAllTools ?? true);
 
-        using GuildProviderCallBinding binding = new(execution, input, request, daily,
+        using GuildProviderCallBinding binding = new(execution, input, request,
             settings.Value.ResolvePricing().ResolveForModel(input.Model) with { })
         {
             HasSignedToolGrant = materialized.Value.HasSignedToolGrant,
@@ -117,7 +117,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
             foreach (GuildToolGrant tool in GuildLocalToolRegistry.SupportedTools)
             {
                 GuildSchemaFunction template = tool.Name == ArcanumBuiltInToolNames.DelegateTask
-                    ? new(tool.Name, "Run a self-contained task in an isolated child and return its result. Optional token and cost caps narrow inherited authority.", ArcanumDelegateTaskTool.GuildSchema)
+                    ? new(tool.Name, "Run a self-contained task in an isolated child and return its result.", ArcanumDelegateTaskTool.GuildSchema)
                     : new(tool.Name, ArcanumInternalToolServer.DescribeGuildTool(tool.Name), tool.Name == "search_memory" ? ArcanumInternalToolServer.BuildSearchMemorySchema()
                         : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name, settings.Value.ResolveCodingTools().Search));
 
@@ -155,11 +155,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
 
             using GuildProviderCallBinding round = binding.CreateRound(messages, functions, circleInputs, registry.CaptureWorkspaceDisclosures());
 
-            // The provider's external ceiling is a spend proof, not the requested answer size.
-            // Reuse the existing resolved local reservation for an unspecified output limit.
-            int requestedOutput = binding.Input.MaxOutputTokens ?? BuildModelCallContext(lease, request).ReservedAnswerTokens;
-
-            int? physicalOutput = round.PrepareClient(lease.ChatClient, requestedOutput);
+            int? physicalOutput = round.PrepareClient(lease.ChatClient);
 
             ModelCallContext context = BuildModelCallContext(lease, request with { MaxOutputTokens = physicalOutput }) with { GuildBinding = round };
 

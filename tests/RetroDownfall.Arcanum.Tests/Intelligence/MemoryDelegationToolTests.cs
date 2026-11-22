@@ -15,7 +15,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class MemoryDelegationToolTests
 {
     [SkippableFact]
-    public async Task Exact_executed_task_digest_binds_prompt_model_file_attachment_and_budgets()
+    public async Task Task_identity_binds_the_executed_prompt_model_and_files_and_ignores_retired_allowances()
     {
         await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
 
@@ -28,7 +28,7 @@ public sealed class MemoryDelegationToolTests
                 "SessionAttachment", AttachmentSourceAvailability.Available));
 
         async Task<CovenantDigest> Bind(string prompt = "  actual task  ", string model = "model", string path = "file.txt",
-            string content = "file data", Guid? attachment = null, long tokens = 100, decimal cost = 1m)
+            string content = "file data", Guid? attachment = null, long? tokens = null, decimal? cost = null)
         {
             Guid rootId = Guid.NewGuid();
 
@@ -44,9 +44,9 @@ public sealed class MemoryDelegationToolTests
 
             args["prompt"] = prompt;
 
-            args["max_tokens"] = tokens;
+            if (tokens.HasValue) args["max_tokens"] = tokens.Value;
 
-            args["max_cost_usd"] = cost;
+            if (cost.HasValue) args["max_cost_usd"] = cost.Value;
 
             args["files"] = JsonSerializer.SerializeToElement(new[] { new { path, content, attachment_id = attachment ?? first } }, AdHocJson.Options);
 
@@ -71,11 +71,11 @@ public sealed class MemoryDelegationToolTests
 
         Assert.NotEqual(baseline, await Bind(attachment: second));
 
-        Assert.NotEqual(baseline, await Bind(tokens: 101));
+        Assert.Equal(baseline, await Bind(tokens: 101));
 
-        Assert.NotEqual(baseline, await Bind(cost: 2m));
+        Assert.Equal(baseline, await Bind(cost: 2m));
 
-        Assert.NotEqual(baseline, await Bind(cost: 0.0000000000000000000000000001m));
+        Assert.Equal(baseline, await Bind(cost: 0.0000000000000000000000000001m));
     }
 
     [SkippableFact]
@@ -179,7 +179,7 @@ public sealed class MemoryDelegationToolTests
                 await Release.Task.WaitAsync(cancellationToken);
             }
 
-            return new(true, "summary", Guid.NewGuid(), new(1, 0m, 1, false), null);
+            return new(true, "summary", Guid.NewGuid(), new(1, 0m, 1), null);
         }
     }
 
@@ -261,7 +261,7 @@ public sealed class MemoryDelegationToolTests
 
         Assert.Null(MemoryDelegationRootBinding.TryCapture(parent, ArcanumInvocationContext.None));
 
-        using (SubagentExecutionAmbient.EnterChild(new(10, null)))
+        using (SubagentExecutionAmbient.EnterChild(new()))
         {
             Assert.Null(MemoryDelegationRootBinding.TryCapture(parent, h.Source.Invocation));
         }
@@ -306,7 +306,7 @@ public sealed class MemoryDelegationToolTests
 
     private static AIFunctionArguments Arguments(string? selector)
     {
-        var values = new Dictionary<string, object?> { ["prompt"] = "  actual task  ", ["max_tokens"] = 100 };
+        var values = new Dictionary<string, object?> { ["prompt"] = "  actual task  " };
 
         if (selector is not null) values["memory_grant"] = selector;
 
@@ -346,7 +346,7 @@ public sealed class MemoryDelegationToolTests
 
             Request = request;
 
-            return Task.FromResult(new SubagentRunResult(true, "summary", Guid.NewGuid(), new(1, 0m, 1, false), null));
+            return Task.FromResult(new SubagentRunResult(true, "summary", Guid.NewGuid(), new(1, 0m, 1), null));
         }
     }
 }

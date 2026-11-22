@@ -2,8 +2,6 @@ using System.Data.Common;
 
 using Microsoft.EntityFrameworkCore;
 
-using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -14,7 +12,7 @@ public sealed partial class BudgetReservationServiceTests
     [SkippableTheory]
     [InlineData(10000)]
     [InlineData(30000)]
-    public async Task Large_day_preserves_exact_committed_reservation_and_adjustment_boundaries(int count)
+    public async Task Large_day_preserves_exact_measured_spend(int count)
     {
         RequireSqlCipher();
 
@@ -55,41 +53,13 @@ public sealed partial class BudgetReservationServiceTests
             Assert.Equal(count, await command.ExecuteNonQueryAsync());
         }
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = committed + 1m,
-        });
+        BudgetReservationService service = CreateService();
 
         service.UtcNowForTesting = () => now;
 
         Assert.Equal(committed, await service.GetTodayCommittedSpendAsync());
 
-        BudgetReservation reservation = await ReserveAsync(
-            service, 0.5m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now));
-
-        Result raised = await service.AdjustAsync(reservation.Id, 1m);
-
-        Assert.True(raised.IsSuccess, raised.IsFailure ? raised.Error.Message : null);
-
-        Result refused = await service.AdjustAsync(reservation.Id, 1.00000001m);
-
-        Assert.True(refused.IsFailure);
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, refused.Error.Code);
-
-        Result<BudgetReservation> second = await service.ReserveAsync(new(
-            Guid.NewGuid(), 0.00000001m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
-
-        Assert.True(second.IsFailure);
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, second.Error.Code);
-
-        Assert.Equal(1m, await service.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(committed, await service.GetTodayCommittedSpendAsync());
-
-        Assert.Equal(1L, await CountReservationsAsync());
+        Assert.Equal(0L, await CountReservationsAsync());
 
         await AssertConnectionIsNotInATransactionAsync();
     }

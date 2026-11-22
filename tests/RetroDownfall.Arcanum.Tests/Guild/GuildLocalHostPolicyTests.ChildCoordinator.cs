@@ -176,9 +176,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(parent.Value.Quest.RootQuestId, child.RootQuestId);
 
-        Assert.Equal(unlimited ? GuildBudgetMode.Unlimited : GuildBudgetMode.Finite, child.ResolvedGrant.Budget.Tokens.Mode);
-
-        if (!unlimited) Assert.Equal(narrow ? 50_000L : 100_000L, child.ResolvedGrant.Budget.Tokens.Value);
+        Assert.Equal(GuildBudgetGrant.Unmetered, child.ResolvedGrant.Budget);
 
         if (!cast)
         {
@@ -236,7 +234,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [Theory]
     [InlineData(50_000L)]
     [InlineData(100_000L)]
-    public async Task Prompt_only_child_cannot_allocate_a_finite_parent_envelope_already_held_by_a_sibling(long siblingTokens)
+    public async Task Prompt_only_child_schedules_despite_an_active_siblings_historical_allocation(long siblingTokens)
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
@@ -307,17 +305,27 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Task<GuildQuestDto> scheduled = queue.Pending.Reader.ReadAsync(deadline.Token).AsTask();
 
-        Task first = await Task.WhenAny(invocation, scheduled);
+        Assert.Same(scheduled, await Task.WhenAny(invocation, scheduled));
 
-        Assert.Same(invocation, first);
+        GuildQuestDto child = await scheduled;
 
-        Assert.StartsWith("Guild.GrantExceeded:", Assert.IsType<string>(await invocation));
+        Assert.NotEqual(sibling.Value.Quest.Id, child.Id);
 
-        Assert.False(queue.Pending.Reader.TryRead(out _));
+        Assert.Equal(GuildBudgetGrant.Unmetered, child.ResolvedGrant.Budget);
 
-        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+        try
+        {
+            Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
 
-        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+            Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+        }
+        finally
+        {
+            await deadline.CancelAsync();
+
+            try { await invocation; }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
+        }
     }
 
     [Fact]

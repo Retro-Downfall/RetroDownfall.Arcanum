@@ -190,8 +190,6 @@ internal sealed class RunExecutionDispatcher(
             request.Prompt,
             options.SourceTarget,
             request.Context.Model.Value,
-            options.TokenBudget,
-            options.CostBudget,
             FormatGuid(request.Context.Session.Value),
             outputFormat: null,
             save: null,
@@ -239,9 +237,7 @@ internal sealed class RunExecutionDispatcher(
             additionalSystemPrompt: research
                 ? ResearchSystemPrompt
                 : null,
-            maxOutputTokens: research
-                ? request.Options.TokenBudget
-                : flags.MaxOutputTokens,
+            maxOutputTokens: flags.MaxOutputTokens,
             inferenceFlags: flags,
             preparedContext: request.Context,
             cancellationToken: cancellationToken);
@@ -257,11 +253,9 @@ internal sealed class RunExecutionDispatcher(
 
     private static string? ValidateResearchOptions(RunCommandRequest options)
     {
-        if (options.SourceTarget is < 1
-            || options.TokenBudget < 1
-            || options.CostBudget is < 0)
+        if (options.SourceTarget is < 1)
         {
-            return "Research requires an optional positive source target, a positive explicit synthesis-token budget, and a nonnegative cost budget.";
+            return "Research requires an optional positive source target.";
         }
 
         return null;

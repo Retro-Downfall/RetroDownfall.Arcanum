@@ -12,10 +12,12 @@ public sealed partial class GuildQuestStoreTests
     [InlineData("tokens-equal", true)]
     [InlineData("usd-narrow", true)]
     [InlineData("tokens-narrow", true)]
-    [InlineData("usd-missing", false)]
-    [InlineData("usd-wider", false)]
-    [InlineData("tokens-missing", false)]
-    [InlineData("tokens-wider", false)]
+    [InlineData("usd-missing", true)]
+    [InlineData("usd-wider", true)]
+    [InlineData("tokens-missing", true)]
+    [InlineData("tokens-wider", true)]
+    [InlineData("invalid-usd", false)]
+    [InlineData("negative-tokens", false)]
     [InlineData("missing-parent", false)]
     [InlineData("dropped-parent", false)]
     [InlineData("wrong-root", false)]
@@ -23,7 +25,7 @@ public sealed partial class GuildQuestStoreTests
     [InlineData("receipt-invalid", false)]
     [InlineData("receipt-tokens", false)]
     [InlineData("receipt-unknown-tokens", false)]
-    public async Task Physical_retention_validates_nested_quest_funding_and_current_receipt(string scenario, bool expected)
+    public async Task Physical_retention_validates_ancestry_and_receipts_across_legacy_limits(string scenario, bool expected)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -68,7 +70,7 @@ public sealed partial class GuildQuestStoreTests
 
         mutate.Parameters.AddWithValue("$effect", effect.ToString("D").ToUpperInvariant());
 
-        // Simulate persisted corruption only after creating the real Quest hierarchy and evidence.
+        // Exercise old finite records and newer unmetered descendants alongside damaged lineages and receipts.
         mutate.CommandText = "PRAGMA foreign_keys=OFF; PRAGMA ignore_check_constraints=ON; DROP TRIGGER guild_budget_accounts_guard_update; DROP TRIGGER guild_budget_evidence_guard_update";
 
         await mutate.ExecuteNonQueryAsync();
@@ -83,6 +85,8 @@ public sealed partial class GuildQuestStoreTests
             "usd-wider" => "UPDATE guild_budget_accounts SET UsdLimit=CASE AccountId WHEN $root THEN '10' WHEN $middle THEN '8' ELSE '9' END",
             "tokens-missing" => "UPDATE guild_budget_accounts SET TokenLimit=CASE AccountId WHEN $root THEN 100 WHEN $middle THEN 80 ELSE NULL END",
             "tokens-wider" => "UPDATE guild_budget_accounts SET TokenLimit=CASE AccountId WHEN $root THEN 100 WHEN $middle THEN 80 ELSE 90 END",
+            "invalid-usd" => "UPDATE guild_budget_accounts SET UsdLimit='unparseable' WHERE AccountId=$leaf",
+            "negative-tokens" => "UPDATE guild_budget_accounts SET TokenLimit=-1 WHERE AccountId=$leaf",
             "dropped-parent" => "UPDATE guild_budget_accounts SET ParentAccountId=NULL WHERE AccountId=$leaf",
             "missing-parent" => "UPDATE guild_budget_accounts SET ParentAccountId='AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA' WHERE AccountId=$leaf",
             "wrong-root" => "UPDATE guild_budget_accounts SET RootAccountId=$middle WHERE AccountId=$leaf",

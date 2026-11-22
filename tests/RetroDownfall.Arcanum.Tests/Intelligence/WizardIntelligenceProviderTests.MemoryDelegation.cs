@@ -334,7 +334,6 @@ public sealed partial class WizardIntelligenceProviderTests
         });
         chat.EnqueueStreamResponder(_ => ProviderStream());
         var runs = new BlockingDelegationUsageWriter(new TurnRunWriter(h.Source.Saga.Context), failAccounting);
-        var reservations = new RecordingBudgetReservationService();
         var firstProvider = DelegationProvider("first", true);
         var fallbackProvider = DelegationProvider("fallback", true);
         var factory = new DelegationCandidateFactory(firstProvider, chat, chat);
@@ -346,10 +345,10 @@ public sealed partial class WizardIntelligenceProviderTests
         };
         var wizard = CreateWizard(chat, pricedSettings,
             factory: factory, healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance),
-            turnRunWriter: runs, budgetReservationService: reservations,
+            turnRunWriter: runs,
             covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate(), subagentRunner: new MemoryDelegationCapturingRunner());
         using var scope = streaming
-            ? SubagentExecutionAmbient.EnterChild(new(10000, null), protection: binding.CaptureOutputProtection())
+            ? SubagentExecutionAmbient.EnterChild(new(), protection: binding.CaptureOutputProtection())
             : MemoryDelegationRootBinding.Enter(binding);
         List<IntelligenceEvent> frames = [];
         string? returned = null;
@@ -397,15 +396,12 @@ public sealed partial class WizardIntelligenceProviderTests
         {
             Assert.False(await rows.ReadAsync());
             Assert.Equal(0, runs.Attempts);
-            Assert.Equal(0m, reservations.ReconciledUsd);
             return;
         }
         Assert.Equal(1, runs.Attempts);
         Assert.True(await rows.ReadAsync());
         Assert.Equal((11L, 7L), (rows.GetInt64(0), rows.GetInt64(1)));
         Assert.Equal(0.000025m, rows.GetDecimal(2));
-        Assert.Equal(failAccounting ? 0 : 1, reservations.ReconcileCount);
-        if (!failAccounting) Assert.Equal(rows.GetDecimal(2), reservations.ReconciledUsd);
         Assert.False(await rows.ReadAsync());
         Assert.Equal(fallback ? 2 : 1, streaming ? chat.StreamingCallCount : chat.BufferedCallCount);
         Assert.Equal(fallback ? 2 : 1, factory.Leases.Count);
@@ -646,7 +642,7 @@ public sealed partial class WizardIntelligenceProviderTests
         {
             Request = request;
 
-            return Task.FromResult(new SubagentRunResult(true, "child summary", request.MemoryDelegation!.RunId, new(1, 0, 1, false), null));
+            return Task.FromResult(new SubagentRunResult(true, "child summary", request.MemoryDelegation!.RunId, new(1, 0, 1), null));
         }
     }
 }

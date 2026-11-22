@@ -204,9 +204,7 @@ internal sealed partial class GuildCohortStore
                     if (admitted.IsFailure) return admitted.Error;
 
                     if (admitted.Value.RootAccountId != root.RootAccountId
-                        || admitted.Value.Kind == GuildBudgetOwnerKind.Cohort && node.Kind != GuildBudgetOwnerKind.Quest
-                        || node.UsdLimit is { } parentUsd && (admitted.Value.UsdLimit is null || Usd(admitted.Value.UsdLimit) > Usd(parentUsd))
-                        || node.TokenLimit is { } parentTokens && (admitted.Value.TokenLimit is null || admitted.Value.TokenLimit > parentTokens)) return Unavailable;
+                        || admitted.Value.Kind == GuildBudgetOwnerKind.Cohort && node.Kind != GuildBudgetOwnerKind.Quest) return Unavailable;
 
                     admitted.Value.FiniteUsd = node.FiniteUsd || admitted.Value.UsdLimit is not null;
 

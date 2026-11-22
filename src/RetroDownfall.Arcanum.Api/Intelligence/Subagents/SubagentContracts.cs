@@ -6,8 +6,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 public static class SubagentFailureCodes
 {
-    public const string BudgetExhausted = "Subagent.BudgetExhausted";
-
     public const string DurableStartFailed = "Subagent.DurableStartFailed";
 
     public const string ChildFailed = "Subagent.ChildFailed";
@@ -24,9 +22,7 @@ public static class SubagentFailureCodes
 public sealed record SubagentRunRequest(
     string Prompt,
     string? Model,
-    IReadOnlyList<AttachedFileDto> Files,
-    long? MaxTokens,
-    decimal? MaxCostUsd)
+    IReadOnlyList<AttachedFileDto> Files)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     internal MemoryDelegationExecution? MemoryDelegation { get; init; }

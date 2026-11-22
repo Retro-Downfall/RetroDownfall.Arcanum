@@ -25,6 +25,7 @@ public sealed class UnrestrictedHarnessContractTests
         [
             "ExecuteCommandTimeoutSeconds",
             "MaxModelCallsPerTurn",
+            "SemanticRouterMaxTokens",
             "MaxToolRoundsPerTurn",
             "MaxToolCallsPerTurn",
             "MaxToolResultTokensPerTurn",
@@ -213,7 +214,7 @@ public sealed class UnrestrictedHarnessContractTests
     }
 
     [Fact]
-    public void Isolated_subagents_use_only_explicit_token_or_cost_budgets()
+    public void Isolated_subagents_advertise_no_turn_or_spending_caps()
     {
 
         Assert.Null(
@@ -222,13 +223,6 @@ public sealed class UnrestrictedHarnessContractTests
                 BindingFlags.Instance
                 | BindingFlags.Public
                 | BindingFlags.DeclaredOnly));
-
-        Assert.DoesNotContain(
-            Enum.GetNames<DelegatedBudgetExhaustionReason>(),
-            static name => string.Equals(
-                name,
-                "Turns",
-                StringComparison.Ordinal));
 
         using System.Text.Json.JsonDocument schema =
             System.Text.Json.JsonDocument.Parse(
@@ -241,6 +235,10 @@ public sealed class UnrestrictedHarnessContractTests
             schema.RootElement
                 .GetProperty("properties")
                 .TryGetProperty("max_turns", out _));
+
+        Assert.False(schema.RootElement.GetProperty("properties").TryGetProperty("max_tokens", out _));
+
+        Assert.False(schema.RootElement.GetProperty("properties").TryGetProperty("max_cost_usd", out _));
 
     }
 

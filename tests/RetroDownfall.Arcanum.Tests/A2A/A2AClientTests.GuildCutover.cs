@@ -31,29 +31,6 @@ public sealed partial class A2AClientTests
 
         Assert.Empty(handler.Requests);
     }
-    [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task Guild_transport_refuses_unsupported_finite_axes_before_discovery(bool finiteUsd, bool finiteTokens)
-    {
-        RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
-
-        ArcanumSettings settings = EnabledSettings();
-
-        settings.Features.Guild = true;
-
-        GuildBudgetGrant grant = new(new(finiteUsd ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, finiteUsd ? 1m : null),
-            new(finiteTokens ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, finiteTokens ? 100L : null));
-
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", Guid.NewGuid().ToString("N"),
-            grant), new GuildSendingLifecycle(), default);
-
-        Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, result.Error.Code);
-
-        Assert.Empty(handler.Requests);
-    }
-
     [Fact]
     public async Task Guild_transport_requires_durable_admission_before_discovery()
     {
@@ -65,8 +42,7 @@ public sealed partial class A2AClientTests
 
         GuildSendingLifecycle lifecycle = new() { RefusePreflight = true };
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", Guid.NewGuid().ToString("N"),
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", Guid.NewGuid().ToString("N")), lifecycle, default);
 
         Assert.Equal(ErrorCodes.Guild.AuthorityMismatch, result.Error.Code);
 
@@ -86,8 +62,7 @@ public sealed partial class A2AClientTests
 
         GuildSendingLifecycle lifecycle = new();
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stable-message",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stable-message"), lifecycle, default);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
@@ -113,8 +88,7 @@ public sealed partial class A2AClientTests
 
         GuildSendingLifecycle lifecycle = new() { RefuseSend = true };
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stable-message",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stable-message"), lifecycle, default);
 
         Assert.Equal(ErrorCodes.Guild.AuthorityRevoked, result.Error.Code);
 
@@ -141,8 +115,7 @@ public sealed partial class A2AClientTests
         GuildRemoteTransportDescriptor descriptor = new("multi", $"http://{FakeAgentHost}/agent", "1.0", ["JSONRPC", "HTTP+JSON"], [], null, null, null,
             [new($"http://{FakeAgentHost}/agent", "JSONRPC", "1.0"), new($"http://{FakeAgentHost}/agent-http", "HTTP+JSON", "1.0")]);
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "multi-message",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), Transport: descriptor), new GuildSendingLifecycle(), default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "multi-message", Transport: descriptor), new GuildSendingLifecycle(), default);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 

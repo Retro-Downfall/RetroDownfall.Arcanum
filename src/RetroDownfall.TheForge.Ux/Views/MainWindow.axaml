@@ -74,7 +74,6 @@
           <Separator />
           <MenuItem Header="The Atelier" Command="{Binding ShowAtelierCommand}" />
           <MenuItem Header="The Gatehouse" Command="{Binding ShowGatehouseCommand}" />
-          <MenuItem Header="The Treasury" Command="{Binding ShowTreasuryCommand}" />
           <MenuItem Header="The Arsenal" Command="{Binding ShowArsenalCommand}" />
           <MenuItem Header="The War Table" Command="{Binding ShowWarTableCommand}" />
           <MenuItem Header="Output" Command="{Binding ShowOutputCommand}" />

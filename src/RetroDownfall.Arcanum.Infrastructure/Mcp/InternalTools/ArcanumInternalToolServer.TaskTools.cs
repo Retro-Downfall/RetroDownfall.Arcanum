@@ -85,7 +85,7 @@ internal sealed partial class ArcanumInternalToolServer
                     "cardId":{"type":"string","format":"uuid"},
                     "agent":{"type":"string","minLength":1,"description":"Exact configured remote discovery URL; omit for local work. Mutually exclusive with cardId."},
                     "grant":{
-                      "type":"object","description":"Requested subset of the parent grant. Omitted axes inherit the permitted remaining envelope; scope widening is refused and budget hints are visibly clamped.",
+                      "type":"object","description":"Requested subset of the parent grant. Omitted axes inherit the corresponding permitted authority.",
                       "properties":{
                         "workspaces":{
                           "type":"array","items":{
@@ -122,30 +122,6 @@ internal sealed partial class ArcanumInternalToolServer
                               }
                             },"required":["store","operation","scope"],"additionalProperties":false
                           }
-                        },
-                        "budget":{
-                          "type":"object","properties":{
-                            "usd":{
-                              "type":"object","properties":{
-                                "mode":{"type":"string","enum":["finite","unlimited"]},
-                                "value":{"type":["number","null"],"minimum":0}
-                              },"required":["mode"],"additionalProperties":false,
-                              "oneOf":[
-                                {"properties":{"mode":{"const":"finite"},"value":{"type":"number"}},"required":["value"]},
-                                {"properties":{"mode":{"const":"unlimited"},"value":{"type":"null"}}}
-                              ]
-                            },
-                            "tokens":{
-                              "type":"object","properties":{
-                                "mode":{"type":"string","enum":["finite","unlimited"]},
-                                "value":{"type":["integer","null"],"minimum":0,"maximum":9223372036854775807}
-                              },"required":["mode"],"additionalProperties":false,
-                              "oneOf":[
-                                {"properties":{"mode":{"const":"finite"},"value":{"type":"integer"}},"required":["value"]},
-                                {"properties":{"mode":{"const":"unlimited"},"value":{"type":"null"}}}
-                              ]
-                            }
-                          },"required":["usd","tokens"],"additionalProperties":false
                         },
                         "delegation":{"type":"array","items":{"type":"string","enum":["local","remote","cohort"]}},
                         "expiresAtUtc":{"type":["string","null"],"format":"date-time"}

@@ -14,9 +14,7 @@ public sealed partial class GuildQuestStoreTests
 
         GuildSpendSourceCredential.VerifiedSource source = await scenario.VerifiedAsync();
 
-        using SpendMetadataHandler handler = new();
-
-        var observed = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(source, default);
+        var observed = ReadArchivedSpendObservation(source);
 
         Assert.True(observed.IsSuccess, observed.IsFailure ? observed.Error.Message : null);
 

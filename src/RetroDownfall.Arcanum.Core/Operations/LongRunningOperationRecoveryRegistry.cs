@@ -60,8 +60,8 @@ public static class LongRunningOperationRecoveryRegistry
                 MinCheckpointVersion: 1,
                 MaxCheckpointVersion: 1,
                 LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent: "Reconcile the accepted receipt or retain the same refresh for an explicit retry.",
-                ManualRepairGuidance: "Inspect the refresh and its source; retry the same operation after correcting its eligibility."),
+                RecoveryIntent: "Reconcile an accepted historical receipt or abandon the retired refresh without contacting its provider.",
+                ManualRepairGuidance: "Inspect the historical refresh and saved receipt. The retired operation cannot be retried."),
 
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.GuildQuest,

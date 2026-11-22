@@ -16,7 +16,6 @@ public sealed class DisabledSettingPathsTests
         Assert.Equal("Arcanum:Features:Saga", DisabledSettingPaths.SagaEnabled);
         Assert.Equal("Arcanum:Features:MemoryManagement", DisabledSettingPaths.AllowMemoryManagement);
         Assert.Equal("Arcanum:Workspaces:EnableFileWrite", DisabledSettingPaths.EnableFileWrite);
-        Assert.Equal("Arcanum:Cost:Budget:Enabled", DisabledSettingPaths.BudgetEnabled);
         Assert.Equal("Arcanum:Host:AuditLog:Enabled", DisabledSettingPaths.InferenceAuditLogEnabled);
         Assert.Equal(
             "Arcanum:Security:Guardrails:AuditLog:Enabled",

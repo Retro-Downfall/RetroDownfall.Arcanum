@@ -60,7 +60,7 @@ public sealed class LongRestWindowGateTests
 
         ContextTokenBreakdown breakdown = Estimator.EstimateLongRestChat(provider, model, payload);
 
-        Assert.True(ModelCallExecutor.CheckLongRestWindow(new LongRestProviderAdmission.Chat(new(provider, model, 2048, 0, breakdown))).IsSuccess);
+        Assert.True(ModelCallExecutor.CheckLongRestWindow(new LongRestProviderAdmission.Chat(new(provider, model, LongRestPromptLayout.OutputHeadroomTokens, 0, breakdown))).IsSuccess);
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public sealed class LongRestWindowGateTests
 
         ContextTokenBreakdown breakdown = Estimator.EstimateLongRestChat(provider, "model", payload);
 
-        Result refused = ModelCallExecutor.CheckLongRestWindow(new LongRestProviderAdmission.Chat(new(provider, "model", 2048, 0, breakdown)));
+        Result refused = ModelCallExecutor.CheckLongRestWindow(new LongRestProviderAdmission.Chat(new(provider, "model", LongRestPromptLayout.OutputHeadroomTokens, 0, breakdown)));
 
         Assert.True(refused.IsFailure);
 

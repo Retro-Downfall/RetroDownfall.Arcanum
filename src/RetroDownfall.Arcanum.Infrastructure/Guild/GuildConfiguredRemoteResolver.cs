@@ -164,20 +164,12 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
             if (liveTool.IsFailure) return liveTool.Error;
         }
 
-        BudgetSettings daily = settings.CurrentValue.ResolveBudget();
-
-        if (daily.Enabled && daily.DailyLimitUsd > 0)
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A cannot reserve finite daily spending authority.");
-
         Result<GuildGrant> grant = await signets.VerifyAsync(caller.Execution, ct).ConfigureAwait(false);
 
         if (grant.IsFailure) return grant.Error;
 
         if (!grant.Value.Tools.Contains(toolAdmission?.Tool ?? new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task"))
             || !grant.Value.Delegation.Contains(GuildDelegationKind.Remote)) return Forbidden;
-
-        if (grant.Value.Budget.Usd.Mode != GuildBudgetMode.Unlimited || grant.Value.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A cannot enforce finite spending authority.");
 
         return true;
     }

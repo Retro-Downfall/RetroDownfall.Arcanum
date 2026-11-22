@@ -72,8 +72,6 @@ public sealed partial class OpenAiV1EndpointTests
     [SkippableTheory]
     [InlineData(false, ErrorCodes.Hub.ContextBudgetExceeded, 400, "invalid_request_error", "context_length_exceeded", "arcanum session compact")]
     [InlineData(true, ErrorCodes.Hub.ContextBudgetExceeded, 200, "invalid_request_error", "context_length_exceeded", "arcanum session compact")]
-    [InlineData(false, ErrorCodes.Budget.Exceeded, 429, "insufficient_quota", "insufficient_quota", "Arcanum:Cost:Budget:DailyLimitUsd")]
-    [InlineData(true, ErrorCodes.Budget.Exceeded, 200, "insufficient_quota", "insufficient_quota", "Arcanum:Cost:Budget:DailyLimitUsd")]
     public async Task PostChatCompletions_ContextAndBudgetRefusals_AreActionableWithoutLeakingMessages(
         bool stream, string code, int status, string type, string publicCode, string remedy)
     {
@@ -159,7 +157,6 @@ public sealed partial class OpenAiV1EndpointTests
     [InlineData(ErrorCodes.Hub.Error)]
     [InlineData(ErrorCodes.Hub.InvalidAdmission)]
     [InlineData(ErrorCodes.LongRest.InvalidAdmission)]
-    [InlineData(ErrorCodes.Budget.Exceeded)]
     public void NonOverflowErrors_NeverConsumeAttachedOverflowMetadata(string code)
     {
         Error error = new(code, "SECRET_RESPONSE") { ContextOverflow = new("UNRELATED_PROVIDER", "UNRELATED_MODEL", 9000, 1024, 10024, 8192) };
@@ -674,7 +671,6 @@ public sealed partial class OpenAiV1EndpointTests
                                 Reasoning: new ModelReasoningSettings
                                 {
                                     WireDialect = ReasoningWireDialect.OpenRouter,
-                                    MaxBudgetTokens = 64,
                                 }),
                         ],
                     },
@@ -691,11 +687,8 @@ public sealed partial class OpenAiV1EndpointTests
                 "\"reasoning_budget\": 0",
                 ErrorCodes.Validation.InvalidReasoningBudget),
             (
-                "\"reasoning_budget\": 2097153",
+                "\"reasoning_budget\": -1",
                 ErrorCodes.Validation.InvalidReasoningBudget),
-            (
-                "\"reasoning_budget\": 65",
-                ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit),
         ];
 
         foreach ((string fields, string internalCode) in cases)
@@ -1182,7 +1175,6 @@ public sealed partial class OpenAiV1EndpointTests
                                 Reasoning = new ModelReasoningSettings
                                 {
                                     WireDialect = ReasoningWireDialect.AnthropicThinking,
-                                    MaxBudgetTokens = 32_768,
                                 },
                             },
                         ],
@@ -1210,7 +1202,6 @@ public sealed partial class OpenAiV1EndpointTests
         Assert.Equal("vision-provider", model.ProviderName);
 
         Assert.Equal(ReasoningWireDialect.AnthropicThinking, model.WireDialect);
-        Assert.Equal(32_768, model.MaxBudgetTokens);
         Assert.Equal(PromptCachingControlMode.Explicit, model.PromptCaching?.ControlMode);
         Assert.Equal(
             PromptCachingWireDialect.OpenAiPromptCacheRetention,

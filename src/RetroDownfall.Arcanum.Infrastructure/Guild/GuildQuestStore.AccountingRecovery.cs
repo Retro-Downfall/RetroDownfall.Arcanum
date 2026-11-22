@@ -275,9 +275,7 @@ internal sealed partial class GuildQuestStore
 
             long? parentTokens = reader.IsDBNull(10) ? null : reader.GetInt64(10);
 
-            if (ownUsd < 0 || ownTokens < 0 || parentUsd < 0 || parentTokens < 0
-                || parentUsd is { } usd && (ownUsd is null || ownUsd > usd)
-                || parentTokens is { } tokens && (ownTokens is null || ownTokens > tokens)) return false;
+            if (ownUsd < 0 || ownTokens < 0 || parentUsd < 0 || parentTokens < 0) return false;
 
             if (reader.IsDBNull(14)) continue;
 

@@ -1,23 +1,13 @@
 using System.Globalization;
-using System.Runtime.ExceptionServices;
 using System.Threading;
-using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-internal sealed record BatchReservationLine(
-    string? Model,
-    int? MaxOutputTokens,
-    int? ReasoningBudgetTokens);
-
 /// <summary>
-/// Per-turn (or per-batch) run + reservation + cost-accounting handle. Failures are logged by the
-/// caller; reservation acquisition failures surface as <see cref="ErrorCodes.Budget.Exceeded"/>.
+/// Per-turn or per-batch run and usage accounting. Actual billed usage is persisted as it arrives.
 /// When <see cref="OwnsLifecycle"/> is false, the handle is ambient (batch parent / nested work) —
 /// callers must not <see cref="CompleteAsync"/>.
 /// </summary>
@@ -27,43 +17,25 @@ internal sealed class TurnAccountingHandle
 
     private readonly SemaphoreSlim _writerGate = new(1, 1);
 
-    private readonly SemaphoreSlim _reservationGate = new(1, 1);
-
     private readonly SemaphoreSlim _completionGate = new(1, 1);
 
     private readonly TurnAccountingHandle? _accountingOwner;
 
-    /// <summary>
-    /// How long a turn's reservation stays outstanding without renewal. Admission sets it and every
-    /// pre-call <see cref="EnsureReservationForContextAsync"/> renews it from that moment.
-    /// </summary>
-    internal static readonly TimeSpan ReservationLifetime = TimeSpan.FromHours(1);
-
     private TurnAccountingHandle(
         ITurnBudget budget,
         Guid? runId,
-        Guid? reservationId,
-        bool reservationActive,
         bool ownsLifecycle,
-        decimal reservationHighWaterUsd = 0m,
         TurnAccountingHandle? accountingOwner = null)
     {
         Budget = budget;
         RunId = runId;
-        ReservationId = reservationId;
-        ReservationActive = reservationActive;
         OwnsLifecycle = ownsLifecycle;
-        _reservationHighWaterUsd = Math.Max(0m, reservationHighWaterUsd);
         _accountingOwner = accountingOwner;
     }
 
     public ITurnBudget Budget { get; }
 
     public Guid? RunId { get; }
-
-    public Guid? ReservationId { get; }
-
-    public bool ReservationActive { get; }
 
     /// <summary>When false, this handle is shared ambient accounting — do not complete it.</summary>
     public bool OwnsLifecycle { get; }
@@ -82,9 +54,8 @@ internal sealed class TurnAccountingHandle
     }
 
     /// <summary>
-    /// True once the run this handle ledgers against has frozen its completion: its status and its
-    /// reservation disposition are decided, and nothing recorded from here on is part of either.
-    /// This cuts off ambient reuse even when a durable disposition still needs retry.
+    /// True once the terminal status is frozen for the run. Ambient reuse ends here,
+    /// even if persisting that status needs a retry.
     /// </summary>
     public bool IsSettled
     {
@@ -126,17 +97,7 @@ internal sealed class TurnAccountingHandle
 
     private InferenceRunStatus _completionStatus;
 
-    private decimal _completionCostUsd;
-
-    private bool _completionHasRecordedOperations;
-
-    private bool _completionAccountingFailed;
-
-    private bool _reservationDispositionCompleted;
-
     private bool _runDispositionCompleted;
-
-    private decimal _reservationHighWaterUsd;
 
     private TurnAccountingHandle AccountingRoot => _accountingOwner ?? this;
 
@@ -159,188 +120,41 @@ internal sealed class TurnAccountingHandle
         new(
             UnrestrictedTurnBudget.Instance,
             RunId,
-            ReservationId,
-            ReservationActive,
             ownsLifecycle: false,
-            reservationHighWaterUsd: 0m,
             accountingOwner: AccountingRoot);
 
-    /// <summary>
-    /// The pre-call budget admission for one provider call: raise the reservation when the call's
-    /// estimate grew, recheck the daily limit when it did not (or when delegated spend is known), and
-    /// renew the reservation's expiry.
-    /// </summary>
-    /// <remarks>
-    /// A nested handle (a batch line) never raises or rechecks the batch's shared aggregate
-    /// reservation; it only renews it. Renewal is bookkeeping for an expiry sweep, so a renewal that
-    /// fails is logged and the call goes ahead; only the caller's cancellation propagates from it.
-    /// </remarks>
-    public async Task<Result> EnsureReservationForContextAsync(
-        IBudgetReservationService? budgetReservations,
-        PricingSettings pricing,
-        IExternalSpendLedger? delegatedSpend,
-        string? model,
-        ContextTokenBreakdown breakdown,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        if (!ReservationActive
-            || ReservationId is not Guid reservationId
-            || budgetReservations is null)
-        {
-            return Result.Success();
-        }
-
-        if (!OwnsLifecycle)
-        {
-            await RenewReservationAsync(budgetReservations, reservationId, logger, cancellationToken)
-                .ConfigureAwait(false);
-
-            return Result.Success();
-        }
-
-        ModelPricingEntry entry = pricing.ResolveForModel(model);
-        decimal reservedUsd = BudgetReservationService.EstimateWorstCaseTurnUsd(
-            entry,
-            maxOutputTokens: breakdown.ReservedAnswerTokens,
-            reasoningBudgetTokens: breakdown.ReservedReasoningTokens,
-            estimatedInputTokens: breakdown.InputTokens);
-        TurnAccountingHandle root = AccountingRoot;
-        await root._reservationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            bool raise;
-
-            lock (root._costGate)
-            {
-                raise = reservedUsd > root._reservationHighWaterUsd;
-            }
-
-            Result admitted = Result.Success();
-
-            if (raise)
-            {
-                // A raise rechecks committed + outstanding spend atomically inside the service.
-                admitted = await budgetReservations
-                    .AdjustAsync(reservationId, reservedUsd, cancellationToken)
-                    .ConfigureAwait(false);
-                if (admitted.IsSuccess)
-                {
-                    lock (root._costGate)
-                    {
-                        root._reservationHighWaterUsd = Math.Max(
-                            root._reservationHighWaterUsd,
-                            reservedUsd);
-                    }
-                }
-            }
-
-            if (admitted.IsSuccess)
-            {
-                decimal delegatedUsd = delegatedSpend is null
-                    ? 0m
-                    : (await delegatedSpend.GetTodayAsync(cancellationToken).ConfigureAwait(false)).KnownCostUsd;
-
-                // The estimate plateaued, so nothing was raised, but the spend earlier rounds
-                // committed still counts: without this N rounds could each spend what one admission
-                // was sized for. A raise has already judged the local ledger, so after one this runs
-                // only to add the delegated work a raise cannot see. The days judged (the
-                // reservation's own and, once UTC midnight has passed, today) hold every earlier
-                // round's committed spend and the reservation is sized for the next call alone, so
-                // this checks accumulated actual spend and never multiplies an estimate by a call
-                // count.
-                if (!raise || delegatedUsd > 0m)
-                {
-                    admitted = await budgetReservations
-                        .RecheckDailyLimitAsync(reservationId, delegatedUsd, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-
-            if (admitted.IsFailure)
-            {
-                return admitted;
-            }
-
-            await RenewReservationAsync(budgetReservations, reservationId, logger, cancellationToken)
-                .ConfigureAwait(false);
-
-            return Result.Success();
-        }
-        finally
-        {
-            root._reservationGate.Release();
-        }
-    }
-
-    /// <summary>
-    /// Moves the reservation's expiry to <see cref="ReservationLifetime"/> from now, best-effort.
-    /// </summary>
-    /// <remarks>
-    /// Nothing sweeps an expired reservation in production today, so a lost renewal costs nothing a
-    /// turn can observe, and failing the provider call over it would turn bookkeeping into a refusal.
-    /// </remarks>
-    private static async Task RenewReservationAsync(
-        IBudgetReservationService budgetReservations,
-        Guid reservationId,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await budgetReservations
-                .ExtendExpiryAsync(
-                    reservationId,
-                    DateTimeOffset.UtcNow.Add(ReservationLifetime),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-        {
-            logger.LogWarning(
-                "Budget reservation {ReservationId} could not be renewed; the call goes ahead (exception type {ExceptionType}).",
-                reservationId,
-                ex.GetType().FullName);
-        }
-    }
-
-    /// <summary>Records a confirmed attempted send whose usage is unknown; it is never a bill or authority.</summary>
-    internal async Task RecordUncertainProviderEffectAsync(IBudgetReservationService? reservations, CancellationToken cancellationToken)
+    /// <summary>Records a confirmed attempted send whose usage is unknown.</summary>
+    internal void RecordUncertainProviderEffect()
     {
         TurnAccountingHandle root = AccountingRoot;
 
         lock (root._costGate)
         {
             if (root._completionSnapshotFrozen)
+            {
                 throw new InvalidOperationException("A provider effect cannot be reported after accounting completion has frozen.");
+            }
 
-            // Set before awaiting durable marking: a failed write must not release unknown paid work.
             root._uncertainProviderEffect = true;
-        }
-
-        if (root.ReservationActive && root.ReservationId is Guid reservationId && root.RunId is Guid runId
-            && reservations is not null)
-        {
-            await reservations.MarkPossiblyDispatchedAsync(reservationId, runId, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    /// <summary>Durably retains an upper-bound estimate before a physical send, without inventing actual spend.</summary>
-    public async Task MarkPossiblyDispatchedAsync(IBudgetReservationService reservations, CancellationToken cancellationToken)
+    /// <summary>Marks a possible dispatch before usage is known.</summary>
+    public void MarkPossiblyDispatched()
     {
-        if (!OwnsLifecycle || RunId is not Guid runId) throw new InvalidOperationException("An owning accounted run is required.");
-
-        if (ReservationActive && ReservationId is Guid reservationId)
+        if (!OwnsLifecycle || RunId is null)
         {
-            await reservations.MarkPossiblyDispatchedAsync(reservationId, runId, cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException("An owning accounted run is required.");
         }
 
-        lock (_costGate) _possiblyDispatched = true;
+        lock (_costGate)
+        {
+            _possiblyDispatched = true;
+        }
     }
 
     public async Task CompleteAsync(
         ITurnRunWriter? turnRunWriter,
-        IBudgetReservationService? budgetReservations,
         InferenceRunStatus status,
         CancellationToken cancellationToken)
     {
@@ -350,81 +164,26 @@ internal sealed class TurnAccountingHandle
         }
 
         await _completionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
-            if (!_completionSnapshotFrozen)
+            lock (_costGate)
             {
-                TurnAccountingHandle root = AccountingRoot;
-
-                lock (root._costGate)
+                if (!_completionSnapshotFrozen)
                 {
-                    _completionCostUsd = root._accumulatedCostUsd;
-                    _completionHasRecordedOperations = root._hasRecordedOperations;
-                    _completionAccountingFailed = root._accountingFailed || root._uncertainProviderEffect || (root._possiblyDispatched && !root._hasRecordedOperations);
-                    _completionStatus = _completionAccountingFailed
+                    _completionStatus = _accountingFailed || _uncertainProviderEffect || (_possiblyDispatched && !_hasRecordedOperations)
                         ? InferenceRunStatus.Failed
                         : status;
                     _completionSnapshotFrozen = true;
                 }
             }
 
-            Exception? reservationFailure = null;
-
-            try
+            if (!_runDispositionCompleted && RunId is Guid runId && turnRunWriter is not null)
             {
-                if (!_reservationDispositionCompleted)
-                {
-                    if (!_completionAccountingFailed
-                        && ReservationActive
-                        && ReservationId is Guid reservationId
-                        && budgetReservations is not null)
-                    {
-                        if (_completionStatus == InferenceRunStatus.Completed
-                            || _completionCostUsd > 0m
-                            || _completionHasRecordedOperations)
-                        {
-                            await budgetReservations
-                                .ReconcileAsync(reservationId, _completionCostUsd, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await budgetReservations
-                                .ReleaseAsync(reservationId, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                    }
+                await turnRunWriter.CompleteRunAsync(runId, _completionStatus, cancellationToken).ConfigureAwait(false);
 
-                    _reservationDispositionCompleted = true;
-                }
+                _runDispositionCompleted = true;
             }
-            catch (Exception failure)
-            {
-                reservationFailure = failure;
-            }
-
-            Exception? runFailure = null;
-
-            try
-            {
-                if (!_runDispositionCompleted)
-                {
-                    if (RunId is Guid runId && turnRunWriter is not null)
-                    {
-                        await turnRunWriter
-                            .CompleteRunAsync(runId, _completionStatus, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-
-                    _runDispositionCompleted = true;
-                }
-            }
-            catch (Exception failure)
-            {
-                runFailure = failure;
-            }
-
-            ThrowAccountingFailures(reservationFailure, runFailure, cancellationToken);
         }
         finally
         {
@@ -432,168 +191,28 @@ internal sealed class TurnAccountingHandle
         }
     }
 
-    private static void ThrowAccountingFailures(Exception? reservationFailure, Exception? runFailure, CancellationToken cancellationToken)
-    {
-        if (reservationFailure is not null && runFailure is not null)
-        {
-            AggregateException combined = new(
-                "Reservation and run accounting dispositions both failed.",
-                reservationFailure,
-                runFailure);
-
-            if (cancellationToken.IsCancellationRequested
-                && (reservationFailure is OperationCanceledException || runFailure is OperationCanceledException))
-            {
-                throw new OperationCanceledException("Accounting completion was canceled.", combined, cancellationToken);
-            }
-
-            throw combined;
-        }
-
-        if (reservationFailure is not null) ExceptionDispatchInfo.Capture(reservationFailure).Throw();
-
-        if (runFailure is not null) ExceptionDispatchInfo.Capture(runFailure).Throw();
-    }
-
-    public static async Task<Result<TurnAccountingHandle>> BeginAsync(
+    public static async Task<TurnAccountingHandle> BeginAsync(
         ITurnRunWriter? turnRunWriter,
-        IBudgetReservationService? budgetReservations,
-        PricingSettings pricing,
-        string? model,
         Guid? sessionId,
         string surface,
         string purpose,
         string requestId,
-        CancellationToken cancellationToken,
-        int? maxOutputTokens = null,
-        int? reasoningBudgetTokens = null,
-        decimal? reservedUsdOverride = null)
-    {
-        ITurnBudget budget = UnrestrictedTurnBudget.Instance;
-
-        if (turnRunWriter is null)
-        {
-            return Result<TurnAccountingHandle>.Success(
-                new TurnAccountingHandle(budget, runId: null, reservationId: null, reservationActive: false, ownsLifecycle: true));
-        }
-
-        Guid runId = await turnRunWriter.StartRunAsync(
-                new InferenceRunStart(
-                    RequestId: requestId,
-                    SessionId: sessionId,
-                    Surface: surface,
-                    Purpose: purpose,
-                    IdempotencyClaimId: null,
-                    StartedAt: DateTimeOffset.UtcNow),
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (budgetReservations is null)
-        {
-            return Result<TurnAccountingHandle>.Success(
-                new TurnAccountingHandle(budget, runId, reservationId: null, reservationActive: false, ownsLifecycle: true));
-        }
-
-        Result<BudgetReservation> reserved;
-
-        // The run row is already open. Only BudgetExceededException comes back as a Result failure;
-        // cancellation and every other store fault propagate, and an unclosed row stays Running
-        // forever — there is no expiry sweep for runs the way there is for reservations, and
-        // retention pruning treats a Running run as an active session.
-        try
-        {
-            ModelPricingEntry entry = pricing.ResolveForModel(model);
-
-            decimal reservedUsd = reservedUsdOverride
-                ?? BudgetReservationService.EstimateWorstCaseTurnUsd(
-                    entry,
-                    maxOutputTokens,
-                    reasoningBudgetTokens);
-
-            string period = BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow);
-
-            reserved = await budgetReservations.ReserveAsync(
-                    new BudgetReservationRequest(
-                        runId,
-                        reservedUsd,
-                        ExpiresAt: DateTimeOffset.UtcNow.Add(ReservationLifetime),
-                        period),
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (Exception reservationFailure)
-        {
-            Exception? runFailure = null;
-
-            try
-            {
-                await turnRunWriter.CompleteRunAsync(runId, InferenceRunStatus.Failed, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception failure)
-            {
-                runFailure = failure;
-            }
-
-            ThrowAccountingFailures(reservationFailure, runFailure, cancellationToken);
-
-            throw;
-        }
-
-        if (reserved.IsFailure)
-        {
-            await turnRunWriter.CompleteRunAsync(runId, InferenceRunStatus.Failed, CancellationToken.None)
-                .ConfigureAwait(false);
-
-            return Result<TurnAccountingHandle>.Failure(reserved.Error);
-        }
-
-        bool active = reserved.Value.Status == BudgetReservationStatus.Reserved;
-
-        return Result<TurnAccountingHandle>.Success(
-            new TurnAccountingHandle(
-                budget,
-                runId,
-                active ? reserved.Value.Id : null,
-                active,
-                ownsLifecycle: true,
-                reservationHighWaterUsd: active ? reserved.Value.ReservedUsd : 0m));
-    }
-
-    /// <summary>
-    /// One reservation for an entire OpenAI batch, summed from each valid line's resolved pricing and
-    /// typed output/reasoning budget. Batches force zero tools, so each line reserves one model call.
-    /// </summary>
-    public static Task<Result<TurnAccountingHandle>> BeginBatchAsync(
-        ITurnRunWriter? turnRunWriter,
-        IBudgetReservationService? budgetReservations,
-        PricingSettings pricing,
-        IReadOnlyList<BatchReservationLine> lines,
-        string requestId,
         CancellationToken cancellationToken)
     {
-        decimal reservedUsd = 0m;
+        Guid? runId = turnRunWriter is null
+            ? null
+            : await turnRunWriter.StartRunAsync(
+                    new InferenceRunStart(
+                        RequestId: requestId,
+                        SessionId: sessionId,
+                        Surface: surface,
+                        Purpose: purpose,
+                        IdempotencyClaimId: null,
+                        StartedAt: DateTimeOffset.UtcNow),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-        foreach (BatchReservationLine line in lines)
-        {
-            ModelPricingEntry entry = pricing.ResolveForModel(line.Model);
-            reservedUsd += BudgetReservationService.EstimateWorstCaseBatchLineUsd(
-                entry,
-                line.MaxOutputTokens,
-                line.ReasoningBudgetTokens);
-        }
-
-        return BeginAsync(
-            turnRunWriter,
-            budgetReservations,
-            pricing,
-            model: null,
-            sessionId: null,
-            surface: "batch",
-            purpose: "batch",
-            requestId,
-            cancellationToken,
-            reservedUsdOverride: reservedUsd);
+        return new TurnAccountingHandle(UnrestrictedTurnBudget.Instance, runId, ownsLifecycle: true);
     }
 
     public Task RecordChatUsageAsync(

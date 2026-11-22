@@ -641,7 +641,7 @@ internal sealed partial class LongRestQualificationRun
 
     /// <summary>
     /// The host's accounting must equal what the provider actually reported: every paid call the journal counts is a response that reached
-    /// the host, once, and the tokens and the budget's spend are those responses' tokens. A call that went out and never came back (the
+    /// the host, once, and measured cost uses the tokens in those responses. A call that went out and never came back (the
     /// killed attempt) is counted by neither side as paid.
     /// </summary>
     private void AssertAccounting(
@@ -649,8 +649,7 @@ internal sealed partial class LongRestQualificationRun
         IReadOnlyList<LongRestEffectRow> effects,
         IReadOnlyList<LongRestRecordedRequest> traffic,
         decimal spendDelta,
-        LongRestRecordedRequest? killedRequest,
-        decimal heldUsd = 0m)
+        LongRestRecordedRequest? killedRequest)
     {
         LongRestRecordedRequest[] delivered =
         [
@@ -682,12 +681,12 @@ internal sealed partial class LongRestQualificationRun
         // The host bills the prompt tokens the provider served from its cache at the cached rate and the rest at the input rate.
         decimal expectedSpend = ((((promptTokens - cachedTokens) * LongRestQualificationConfiguration.InputPricePerMillion)
             + (cachedTokens * LongRestQualificationConfiguration.CachedPricePerMillion)
-            + (completionTokens * LongRestQualificationConfiguration.OutputPricePerMillion)) / 1_000_000m) + heldUsd;
+            + (completionTokens * LongRestQualificationConfiguration.OutputPricePerMillion)) / 1_000_000m);
 
         Observe(string.Create(
             CultureInfo.InvariantCulture,
             $"{scenario} accounting: provider delivered {delivered.Length} paid responses ({promptTokens} prompt of which {cachedTokens} cached, {completionTokens} completion tokens); "
-            + $"journal counts {paidCalls} paid calls ({journalInput} input of which {journalCached} cached, {journalOutput} output tokens); budget spend {spendDelta:0.000000} USD against {expectedSpend:0.000000} USD from the provider's figures{(heldUsd > 0m ? $" plus {heldUsd:0.000000} USD held for unknown usage" : string.Empty)}"));
+            + $"journal counts {paidCalls} paid calls ({journalInput} input of which {journalCached} cached, {journalOutput} output tokens); measured spend {spendDelta:0.000000} USD against {expectedSpend:0.000000} USD from the provider's figures"));
 
         Check(
             paidCalls == delivered.Length,
@@ -709,7 +708,7 @@ internal sealed partial class LongRestQualificationRun
 
         Check(
             Math.Abs(spendDelta - expectedSpend) <= tolerance,
-            $"{scenario}: the budget's spend moved by {spendDelta:0.000000} USD but the provider's reported usage prices at {expectedSpend:0.000000} USD (holds for unknown usage included).");
+            $"{scenario}: recorded spend moved by {spendDelta:0.000000} USD but the provider's reported usage prices at {expectedSpend:0.000000} USD.");
     }
 
     /// <summary>

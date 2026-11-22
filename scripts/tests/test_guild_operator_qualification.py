@@ -313,18 +313,20 @@ public sealed class LongArgumentTests
                 case + '(output: "Unhandled exception. System.IO.IOException: Failed"···, expected: True)',
             ]}, authored_scheduler_displays(source))
 
-    def test_spend_refresh_partials_and_runtime_contracts_are_explicit_witnesses(self):
+    def test_historical_accounting_and_unmetered_issuance_are_explicit_witnesses(self):
         declaration = self.manifest()["projects"]["core"]
         sources = set(declaration["caseSources"])
         directory = ROOT / "tests/RetroDownfall.Arcanum.Tests/Guild"
         affected = {str(path.relative_to(ROOT)) for path in directory.glob("GuildLocalHostPolicyTests.Refresh*.cs")
                     if authored_methods(path)}
         affected.update("tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests." + name + ".cs"
-                        for name in ("SpendCorrections", "SpendRefreshAfterRevocation"))
+                        for name in ("SpendCorrections", "ProviderDelegation", "MarketBudget"))
         affected.update("tests/RetroDownfall.Arcanum.Tests/Data/DataRetentionServiceTests." + name + ".cs"
                         for name in ("GuildRefreshPins", "GuildSpendInventory", "GuildCleanup"))
         affected.update("tests/RetroDownfall.Arcanum.Tests/Operations/HostedGrimoireProducerInventoryTests." + name + ".cs"
-                        for name in ("RefreshTrackerSelector", "NestedHeartbeatAdmission", "ActualGuildHeartbeatFinally"))
+                        for name in ("RefreshTrackerSelector", "NestedHeartbeatAdmission"))
+        affected.update("tests/RetroDownfall.Arcanum.Tests/Api/" + name + ".cs"
+                        for name in ("GrimoireMaintenanceAdmissionTests.LiveGuildRefresh", "LongRunningOperationEndpoints.GuildRefreshRetry"))
         self.assertLessEqual(affected, sources)
         for source in sorted(affected):
             for case, displays in authored_scheduler_displays(ROOT / source).items():
@@ -332,15 +334,13 @@ public sealed class LongArgumentTests
         for name in (
             "Api.GrimoireMaintenanceLiveGuildRefreshTests",
             "Api.GuildRefreshRetryEndpointTests",
-            "Backup.BackupRestoreRefreshRecoveryTests",
-            "Configuration.GuildUsageReconciliationConfigurationTests",
             "Data.ExactUsdTextAccumulationTests",
             "Data.Schema.GuildRefreshNormalizedIndexTests",
             "Data.Schema.GuildSpendRefreshIndexTests",
             "Data.Schema.GuildSpendSchemaTests",
             "Guild.GuildOpenRouterSpendParserTests",
+            "Guild.GuildGrantSerializationTests",
             "Guild.GuildSpendCorrectionPolicyTests",
-            "Guild.GuildSpendRefreshConfigurationTests",
             "Guild.GuildSpendRefreshTrackerCleanupScopeTests",
             "Guild.GuildSpendRefreshTrackerOperationTests",
             "Guild.GuildSpendSerializationTests",
@@ -349,18 +349,19 @@ public sealed class LongArgumentTests
             "Operations.LongRunningOperationRecoveryRegistryTests",
             "Operations.RecoveryHandlerCoverageTests",
             "Operations.RecoveryHandlerServingCompositionTests",
-            "Security.GuildSpendRefreshCredentialMutationTests",
         ):
             self.assertIn(PREFIX + name, declaration["requiredClasses"])
-        for name in ("Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat",
-                     "Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_no_refresh_control_with_same_capture_fixture_reaches_commit",
+        for name in ("Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_with_historical_guild_spend_evidence_reaches_commit",
+                     "Api.GuildRefreshRetryEndpointTests.Retry_explains_that_legacy_spend_refresh_is_retired_and_leaves_operation_unchanged",
+                     "Backup.BackupRestoreServiceTests.Encrypted_archive_parks_real_admitted_refresh_with_restored_authority",
                      "Build.AiReflectionProductionClosureTests.Every_compiled_production_project_is_free_of_unsafe_ai_reflection_entry_points",
-                     "Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site"):
+                     "Configuration.ConfigurationSurfaceContractTests.Legacy_budget_controls_load_without_returning_to_saved_configuration",
+                     "Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site",
+                     "Guild.GuildGrantSerializationTests.Retained_signed_grants_round_trip_the_exact_historical_bytes",
+                     "Guild.GuildGrantSerializationTests.New_root_grants_may_omit_the_historical_budget",
+                     "Guild.GuildLocalHostPolicyTests.Native_root_issue_accepts_a_grant_with_only_nonfinancial_authority",
+                     "Guild.GuildLocalHostPolicyTests.Registered_reconciler_retires_never_attempted_historical_refresh_without_provider_dispatch"):
             self.assertEqual(1, declaration["requiredCaseRows"].get(PREFIX + name))
-        compendium = self.manifest()["projects"]["compendium"]
-        for name in ("FamiliarProviderEditorTests.Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar",
-                     "GenericSettingsSectionViewTests.Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page"):
-            self.assertEqual(1, compendium["requiredCaseRows"].get("RetroDownfall.Compendium.Ux.Tests.Compendium." + name))
 
     def test_operator_shell_records_clean_ci_candidate_before_and_after_evidence(self):
         script = (ROOT / "scripts/qualify-guild-operator.sh").read_text()

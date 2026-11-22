@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class CampaignMaintenanceProviderCallFreezerTests
 {
     [Fact]
-    public void Closed_maintenance_payload_preserves_the_existing_v1_wire_digest()
+    public void Closed_maintenance_digest_matches_the_actual_provider_options()
     {
         CampaignMaintenancePayload payload = new("Maintain continuity.", "User: a decision\nAssistant: completed.");
 
@@ -21,7 +21,7 @@ public sealed class CampaignMaintenanceProviderCallFreezerTests
 
         ChatOptions options = new()
         {
-            MaxOutputTokens = CampaignRollupLimits.OutputTokens,
+
             Tools = [],
             ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement,
                 "campaign_summary", "A bounded continuity summary."),
@@ -57,7 +57,7 @@ public sealed class CampaignMaintenanceProviderCallFreezerTests
 
         Assert.Equal(ProviderResponseFormat.JsonSchema, closed.Value.Options.ResponseFormat);
 
-        Assert.Equal((ulong)CampaignRollupLimits.OutputTokens, closed.Value.Options.MaxOutputTokens);
+        Assert.Null(closed.Value.Options.MaxOutputTokens);
     }
 
     [Theory]
@@ -92,7 +92,7 @@ public sealed class CampaignMaintenanceProviderCallFreezerTests
 
         return estimator.EstimateContext(new(
             new ProviderSettings { Name = "provider", Endpoint = "https://provider.test/v1", ContextWindowLimit = 32768 },
-            "model", messages, options, CampaignRollupLimits.OutputTokens, 0));
+            "model", messages, options, CampaignMaintenancePayload.ReservedAnswerTokens, 0));
     }
 
     private static ProviderCallSensitivity CleanSensitivity()

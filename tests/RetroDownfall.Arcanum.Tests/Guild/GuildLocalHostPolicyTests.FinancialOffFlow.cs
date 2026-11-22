@@ -49,7 +49,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.Apprentices = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         if (usage is "qualified-cap" or "qualified-breach" or "qualified-usd" or "qualified-usd-breach")
         {
@@ -102,10 +101,9 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             Features = new() { Guild = true }, DefaultModel = "accepted-model",
             Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
-                Endpoint = "https://example.test/v1", GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+                Endpoint = "https://example.test/v1", Models = ["accepted-model"] }],
         };
 
-        settings.Cost.Budget.Enabled = false;
 
         if (usage == "explicit-zero-price")
             settings.Cost.Pricing.ModelPricing["accepted-model"] = new ModelPricingEntry { InputPer1M = 0m, OutputPer1M = 0m, CachedPer1M = 0m, ReasoningPer1M = 0m };
@@ -116,10 +114,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
             settings.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
                 Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000,
-                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["gpt-5.4-mini-2026-03-17"] }];
+                Models = ["gpt-5.4-mini-2026-03-17"] }];
         }
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         using FinancialOffTransport transport = new() { Usage = usage };
 
@@ -138,7 +136,7 @@ public sealed partial class GuildLocalHostPolicyTests
             var runtime = await wizard.CreateGuildRuntimeAsync(daily, settings, clients, coordinator);
 
             var childRuntime = await childWizard.CreateGuildRuntimeAsync(
-                new BudgetReservationService(childDb, new TestOptionsMonitor<ArcanumSettings>(settings)), settings, clients, coordinator);
+                new BudgetReservationService(childDb), settings, clients, coordinator);
 
             using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
 
@@ -187,14 +185,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             GuildQuestDto child = await scheduled;
 
-            Assert.Equal(usage is "usd-cap" or "qualified-usd" or "qualified-usd-breach" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
-
-            if (usage is "usd-cap" or "qualified-usd" or "qualified-usd-breach") Assert.Equal(1m, child.ResolvedGrant.Budget.Usd.Value);
-
-            Assert.Equal(usage is "cap" or "qualified-cap" or "qualified-breach" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
-
-            if (usage is "cap" or "qualified-cap" or "qualified-breach")
-                Assert.Equal(usage == "cap" ? 100_000 : 600_000, child.ResolvedGrant.Budget.Tokens.Value);
+            Assert.Equal(GuildBudgetGrant.Unmetered, child.ResolvedGrant.Budget);
 
             Assert.Empty(child.ResolvedGrant.Tools);
 
@@ -225,58 +216,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             var result = await invocation;
 
-            if (usage == "qualified-usd-breach")
-            {
-                Assert.True(result.IsFailure);
-
-                Assert.Equal(ErrorCodes.Guild.GrantExceeded, result.Error.Code);
-
-                Assert.Equal(2, transport.Bodies.Count);
-
-                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UsdBound IS NOT NULL AND CAST(KnownUsd AS NUMERIC)>CAST(UsdBound AS NUMERIC) AND KnownTokens<=TokenBound AND KnownTokens=200000 AND CAST(KnownUsd AS NUMERIC)=0.9"));
-
-                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-                return;
-            }
-
-            if (usage == "qualified-breach")
-            {
-                Assert.True(result.IsFailure);
-
-                Assert.Equal(ErrorCodes.Guild.GrantExceeded, result.Error.Code);
-
-                Assert.Equal(2, transport.Bodies.Count);
-
-                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND TokenBound IS NOT NULL AND KnownTokens>TokenBound"));
-
-                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-                return;
-            }
-
             Assert.True(result.IsSuccess, result.Error.Message);
-
-            if (usage is "cap" or "usd-cap")
-            {
-                Assert.Equal(QuestState.Failed, completed.Value.State);
-
-                var refused = await f.Store.ReadLocalResultAsync(owner, child.Id, true, deadline.Token);
-
-                Assert.True(refused.IsSuccess, refused.Error.Message);
-
-                Assert.NotNull(refused.Value.Receipt);
-
-                Assert.Equal(usage == "usd-cap" ? ErrorCodes.Guild.PriceUnavailable : ErrorCodes.Guild.BudgetCapabilityUnavailable, refused.Value.Receipt!.ReasonCode);
-
-                Assert.Equal(2, transport.Bodies.Count);
-
-                Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2"));
-
-                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-                return;
-            }
 
             Assert.Equal("parent used the real child answer", result.Value.Text);
 
@@ -308,9 +248,18 @@ public sealed partial class GuildLocalHostPolicyTests
 
             long knownTokens = usage is "explicit-zero-price" or "absent-price" ? 10 : usage == "partial" ? 7 : 0;
 
-            int unknownTokens = usage is "zero" or "qualified-cap" or "qualified-usd" or "explicit-zero-price" or "absent-price" ? 0 : 1;
+            int unknownTokens = usage is "absent" or "partial" ? 1 : 0;
 
-            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage is "qualified-cap" or "qualified-breach" or "qualified-usd" or "qualified-usd-breach" ? 0 : 1)} AND UnknownTokens={unknownTokens} AND KnownTokens={knownTokens} AND CAST(KnownUsd AS NUMERIC)=0"));
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={unknownTokens} AND UsdBound IS NULL AND TokenBound IS NULL AND CAST(KnownUsd AS NUMERIC)=0"));
+
+            long childKnownTokens = usage switch
+            {
+                "qualified-breach" => 500001,
+                "qualified-usd-breach" => 200000,
+                _ => knownTokens,
+            };
+
+            Assert.Equal(knownTokens * 2 + childKnownTokens, await f.ScalarAsync("SELECT sum(KnownTokens) FROM guild_budget_effects"));
 
             if (usage is "explicit-zero-price" or "absent-price")
             {
@@ -342,7 +291,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.Apprentices = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
             TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
@@ -394,12 +342,11 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             Features = new() { Guild = true }, DefaultModel = "accepted-model",
             Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
-                Endpoint = "https://example.test/v1", GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+                Endpoint = "https://example.test/v1", Models = ["accepted-model"] }],
         };
 
-        settings.Cost.Budget.Enabled = false;
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         using FinancialOffTransport transport = new() { FullParent = true };
 
@@ -418,7 +365,7 @@ public sealed partial class GuildLocalHostPolicyTests
             var runtime = await wizard.CreateGuildRuntimeAsync(daily, settings, clients, coordinator);
 
             var childRuntime = await childWizard.CreateGuildRuntimeAsync(
-                new BudgetReservationService(childDb, new TestOptionsMonitor<ArcanumSettings>(settings)), settings, clients, coordinator);
+                new BudgetReservationService(childDb), settings, clients, coordinator);
 
             using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
 
@@ -554,7 +501,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.Apprentices = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1", ContextWindowLimit = 131072, Models = ["accepted-model"] }];
@@ -652,10 +598,9 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             Features = new() { Guild = true }, DefaultModel = "accepted-model",
             Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
-                Endpoint = "https://example.test/v1", ContextWindowLimit = 131072, GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+                Endpoint = "https://example.test/v1", ContextWindowLimit = 131072, Models = ["accepted-model"] }],
         };
 
-        settings.Cost.Budget.Enabled = false;
 
         using FinancialOffMemberTransport transport = new();
 
@@ -665,7 +610,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db, new TestOptionsMonitor<ArcanumSettings>(settings)), settings, clients, coordinator);
+            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db), settings, clients, coordinator);
 
             using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
 
@@ -908,7 +853,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.Apprentices = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1", ContextWindowLimit = 131072, Models = ["accepted-model"] }];
@@ -953,10 +897,9 @@ public sealed partial class GuildLocalHostPolicyTests
             Features = new() { Guild = true }, DefaultModel = "accepted-model",
             Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
                 Endpoint = "https://example.test/v1", ContextWindowLimit = 131072,
-                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+                Models = ["accepted-model"] }],
         };
 
-        settings.Cost.Budget.Enabled = false;
 
         using FinancialOffCohortTransport transport = new();
 
@@ -966,7 +909,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db, new TestOptionsMonitor<ArcanumSettings>(settings)), settings, clients, coordinator);
+            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db), settings, clients, coordinator);
 
             using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
@@ -1135,7 +1078,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Execution.MaxConcurrentApprentices = 2;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
             TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
@@ -1167,10 +1109,9 @@ public sealed partial class GuildLocalHostPolicyTests
             Features = new() { Guild = true }, DefaultModel = "accepted-model",
             Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
                 Endpoint = "https://example.test/v1", ContextWindowLimit = 131072,
-                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+                Models = ["accepted-model"] }],
         };
 
-        settings.Cost.Budget.Enabled = false;
 
         using FinancialOffMemberTransport loserTransport = new();
 
@@ -1186,10 +1127,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            var loserRuntime = await loserWizard.CreateGuildRuntimeAsync(new BudgetReservationService(loserDb, new TestOptionsMonitor<ArcanumSettings>(settings)),
+            var loserRuntime = await loserWizard.CreateGuildRuntimeAsync(new BudgetReservationService(loserDb),
                 settings, new ChatClientFactory(loserTransport, new TestOptionsMonitor<ArcanumSettings>(settings)), coordinator);
 
-            var winnerRuntime = await winnerWizard.CreateGuildRuntimeAsync(new BudgetReservationService(winnerDb, new TestOptionsMonitor<ArcanumSettings>(settings)),
+            var winnerRuntime = await winnerWizard.CreateGuildRuntimeAsync(new BudgetReservationService(winnerDb),
                 settings, new ChatClientFactory(winnerTransport, new TestOptionsMonitor<ArcanumSettings>(settings)), coordinator);
 
             FinancialOffStoppedRuntime pausedLoser = new(loserRuntime.Runtime);
@@ -1362,265 +1303,6 @@ public sealed partial class GuildLocalHostPolicyTests
             await Release.Task;
 
             return result;
-        }
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Financial_daily_gate_changes_preserve_physical_obligations(bool enableBeforeDispatch)
-    {
-        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
-
-        await using Fixture f = await Fixture.CreateAsync(productionOptions: true);
-
-        f.Settings.CurrentValue.Features.Conclave = true;
-
-        f.Settings.CurrentValue.Features.Apprentices = true;
-
-        f.Settings.CurrentValue.DefaultModel = "gpt-5.4-mini-2026-03-17";
-
-        f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
-            Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000, Models = ["gpt-5.4-mini-2026-03-17"] }];
-
-        await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
-            TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
-
-        f.Readiness.Inner = readiness;
-
-        Assert.True((await readiness.EnsureReadyAsync(default)).IsSuccess);
-
-        GuildCallerContext owner = await f.OperatorAsync();
-
-        var root = await f.IssueAsync(owner);
-
-        Assert.True(root.IsSuccess, root.Error.Message);
-
-        GuildLocalInferenceExecution execution = await ToolExecutionAsync(f, owner, root.Value);
-
-        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
-
-        Assert.True(input.IsSuccess, input.Error.Message);
-
-        var opened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
-
-        Assert.True(opened.IsSuccess, opened.Error.Message);
-
-        await using var connection = opened.Value;
-
-        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
-
-        ArcanumSettings settings = new()
-        {
-            Features = new() { Guild = true }, DefaultModel = "gpt-5.4-mini-2026-03-17",
-            Cost = new() { Budget = new() { Enabled = true, DailyLimitUsd = 10m } },
-            Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
-                Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000,
-                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["gpt-5.4-mini-2026-03-17"] }],
-        };
-
-        settings.Cost.Budget.Enabled = !enableBeforeDispatch;
-
-        FinancialOffPreparedEffectConnections? observed = enableBeforeDispatch ? new(f.Connections, settings) : null;
-
-        if (observed is not null)
-            await f.ExecuteAsync("CREATE TRIGGER fixture_daily_gate_after_preparation AFTER INSERT ON guild_budget_effects BEGIN SELECT fixture_daily_prepared(NEW.StateCode, NEW.ReservationId); END");
-
-        IGrimoireOrdinaryConnectionFactory connections = observed ?? (IGrimoireOrdinaryConnectionFactory)f.Connections;
-
-        using SignetAuthority paidAuthority = new(new(connections), f.Gate, f.Policy, TimeProvider.System);
-
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
-
-        GuildQuestStore paidStore = new(new(connections, f.Gate, TimeProvider.System), paidAuthority, f.Policy,
-            new GuildBudgetLedger(daily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
-
-        var paidCurrent = await f.Store.GetAsync(owner, root.Value.Quest.Id, default);
-
-        Assert.True(paidCurrent.IsSuccess, paidCurrent.Error.Message);
-
-        var paidRecovery = await f.Policy.CreateRecoveryAsync(owner, root.Value.Quest.Id, root.Value.Quest.OperationId,
-            paidCurrent.Value.Quest.SignetRevision, default);
-
-        Assert.True(paidRecovery.IsSuccess, paidRecovery.Error.Message);
-
-        var paidHandle = await paidAuthority.RebindAsync(paidRecovery.Value, default);
-
-        Assert.True(paidHandle.IsSuccess, paidHandle.Error.Message);
-
-        var paidCaller = await f.Policy.CreateRunCallerAsync(paidAuthority, paidHandle.Value, root.Value.Quest.Id, default);
-
-        Assert.True(paidCaller.IsSuccess, paidCaller.Error.Message);
-
-        execution = new(paidStore, execution.Driver with { Execution = paidHandle.Value, Caller = paidCaller.Value }, execution.Dispatch);
-
-        using FinancialOffDailyTransport transport = new(async () =>
-        {
-            Assert.False(enableBeforeDispatch, "The dispatch-time gate must stop before the physical send.");
-
-            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-            settings.Cost.Budget.Enabled = false;
-        });
-
-        ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
-
-        WizardIntelligenceProviderTests wizard = new();
-
-        try
-        {
-            var runtime = await wizard.CreateGuildRuntimeAsync(daily, settings, clients);
-
-            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
-
-            var first = await runtime.Runtime.ExecuteTurnAsync(execution, input.Value, new("Answer the question.", DisableAllTools: true), deadline.Token);
-
-            if (enableBeforeDispatch)
-            {
-                Assert.True(first.IsFailure);
-
-                Assert.Equal(ErrorCodes.Guild.ReconciliationRequired, first.Error.Code);
-
-                Assert.True(observed!.PreparedWithoutReservation);
-
-                Assert.True(settings.Cost.Budget.Enabled);
-
-                Assert.Equal(0, transport.Posts);
-
-                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects"));
-
-                return;
-            }
-
-            Assert.True(first.IsSuccess, first.Error.Message);
-
-            Assert.Equal("received without usage", first.Value.Text);
-
-            Assert.False(settings.Cost.Budget.Enabled);
-
-            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
-
-            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1 AND ReservationId IS NOT NULL"));
-
-            await using (var transaction = connection.Connection.BeginTransaction())
-            {
-                var snapshot = await new GuildBudgetLedger(daily).ReadWithinAsync(connection.Connection, transaction, root.Value.AllocationAccountId, deadline.Token);
-
-                Assert.True(snapshot.IsSuccess, snapshot.Error.Message);
-
-                Assert.True(snapshot.Value.UsdBlocked);
-
-                Assert.True(snapshot.Value.UnknownUsd);
-            }
-
-            var reopened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, deadline.Token);
-
-            Assert.True(reopened.IsSuccess, reopened.Error.Message);
-
-            await using var restartedConnection = reopened.Value;
-
-            await using ArcanumDbContext restartedDb = GrimoireFixture.CreateContext(restartedConnection.Connection);
-
-            BudgetReservationService restartedDaily = new(restartedDb, new TestOptionsMonitor<ArcanumSettings>(settings));
-
-            GuildLocalHostPolicy restartedPolicy = f.NewPolicy();
-
-            using SignetAuthority restartedAuthority = new(new(f.Connections), f.Gate, restartedPolicy, TimeProvider.System);
-
-            GuildQuestStore restartedStore = new(new(f.Connections, f.Gate, TimeProvider.System), restartedAuthority, restartedPolicy,
-                new GuildBudgetLedger(restartedDaily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
-
-            var restartedOwner = await restartedPolicy.CreateNativeOperatorAsync(Guid.NewGuid(), deadline.Token);
-
-            Assert.True(restartedOwner.IsSuccess, restartedOwner.Error.Message);
-
-            var spend = await ((IGuildTreeSpendLedger)restartedStore).ReadAsync(restartedOwner.Value, root.Value.Quest.Id, deadline.Token);
-
-            Assert.True(spend.IsSuccess, spend.Error.Message);
-
-            Assert.True(spend.Value.UnknownUsd);
-
-            await using (var transaction = restartedConnection.Connection.BeginTransaction())
-            {
-                var restarted = await new GuildBudgetLedger(restartedDaily).ReadWithinAsync(restartedConnection.Connection, transaction, root.Value.AllocationAccountId, deadline.Token);
-
-                Assert.True(restarted.IsSuccess, restarted.Error.Message);
-
-                Assert.True(restarted.Value.UsdBlocked);
-
-                Assert.True(restarted.Value.UnknownUsd);
-            }
-
-            Assert.Equal(1, transport.Posts);
-
-            Assert.Equal(0, transport.MetadataGets);
-        }
-        finally
-        {
-            await wizard.DisposeAsync();
-        }
-    }
-
-    private sealed class FinancialOffPreparedEffectConnections(IGrimoireOrdinaryConnectionFactory inner, ArcanumSettings settings)
-        : IGrimoireOrdinaryConnectionFactory
-    {
-        internal bool PreparedWithoutReservation;
-
-        public async Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind kind, CancellationToken ct)
-        {
-            var opened = await inner.OpenFreshAsync(kind, ct);
-
-            if (opened.IsSuccess)
-                opened.Value.Connection.CreateFunction<long, string?, long>("fixture_daily_prepared", (state, reservation) =>
-                {
-                    Assert.Equal(0, state);
-
-                    Assert.Null(reservation);
-
-                    Assert.False(settings.Cost.Budget.Enabled);
-
-                    PreparedWithoutReservation = true;
-
-                    settings.Cost.Budget.Enabled = true;
-
-                    return 1;
-                });
-
-            return opened;
-        }
-
-        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(SqliteConnection connection,
-            CovenantSqliteConnectionMode mode, CancellationToken ct) => inner.AcquireScopedAsync(connection, mode, ct);
-    }
-
-    private sealed class FinancialOffDailyTransport(Func<Task> afterHandoff) : HttpMessageHandler, IHttpClientFactory
-    {
-        internal int Posts;
-
-        internal int MetadataGets;
-
-        public HttpClient CreateClient(string name) => new(this, false);
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-        {
-            if (request.Method == HttpMethod.Get)
-            {
-                Interlocked.Increment(ref MetadataGets);
-
-                throw new InvalidOperationException("Unexpected metadata GET");
-            }
-
-            Assert.Equal(HttpMethod.Post, request.Method);
-
-            Interlocked.Increment(ref Posts);
-
-            await afterHandoff();
-
-            const string json = """{"id":"daily-response","object":"chat.completion","created":1700000000,"model":"gpt-5.4-mini-2026-03-17","choices":[{"index":0,"message":{"role":"assistant","content":"received without usage"},"finish_reason":"stop"}]}""";
-
-            return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         }
     }
 

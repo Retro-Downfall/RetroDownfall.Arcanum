@@ -16,10 +16,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
-// Embedding-Bounded Summary. The recipe carries a summary byte bound derived from the embedding provider's window with the estimator's own
-// worst-case arithmetic; the summary request states it, so an answer that respects it always fits its embedding request. The request's output
-// cap stays the fixed answer reservation at every bound: a byte bound cannot prove a token count, so a cap derived from it would cut off an
-// answer that is within the bound. The embedding window gate stays the last guard for a model that ignores the bound, and counts that case.
+// The declared summary byte limit makes a correctly sized result fit the embedding window.
 public sealed class LongRestSummaryBoundTests
 {
     private const string RefusedMetric = "arcanum.long_rest.summary.embedding_window_refused";
@@ -311,51 +308,11 @@ public sealed class LongRestSummaryBoundTests
     [InlineData(7109)]
     [InlineData(8191)]
     [InlineData(8192)]
-    public void The_summary_answer_cap_is_the_fixed_reservation_at_every_bound_and_the_call_reserves_exactly_that(int bound)
+    public void Summary_input_fit_keeps_the_same_output_headroom_at_each_byte_bound(int bound)
     {
         LongRestProviderPayload payload = LongRestPackingData.SummaryPayload(TwoChildren(), LongRestPackingData.Digest, 5328, bound).Value;
 
-        LongRestChatRequest request = LongRestProviderCallFreezer.RenderChat(payload).Value;
-
-        // The bound is a stated instruction. It never lowers the cap, because a cap derived from bytes would cut off an in-bound answer.
-        Assert.Equal(LongRestPromptLayout.ReservedAnswerTokens, request.MaxOutputTokens);
-
-        Assert.Equal(LongRestPromptLayout.ReservedAnswerTokens, Estimator.EstimateLongRestChat(EmbeddingProvider(8192, false), "model", payload).ReservedAnswerTokens);
-    }
-
-    // Identifier, path and timestamp dense text is the least compressible a summary realistically is (about 2.3 bytes per o200k_base token),
-    // so it is the case where a cap derived from the byte bound would cut a within-bound answer off and park the sweep for an operator.
-    private static string DenseSummary(int bytes)
-    {
-        StringBuilder text = new();
-
-        for (int i = 0; Encoding.UTF8.GetByteCount(text.ToString()) < bytes; i++)
-        {
-            text.Append(CultureInfo.InvariantCulture, $"2026-10-{1 + i % 28:D2}T21:17:{i % 60:D2}Z /src/Api/Tower/Enricher{i}.cs 7E1D9C42-{i % 9999:D4}-4F63-9A0E-3C8B27D641F5 ");
-        }
-
-        return text.ToString()[..bytes].TrimEnd();
-    }
-
-    [Fact]
-    public void A_within_bound_answer_dense_in_identifiers_fits_the_cap_at_the_smallest_bound()
-    {
-        int bound = LongRestPromptLayout.MinimumSummaryUtf8Bytes;
-
-        string answer = "{\"summary\":\"" + DenseSummary(bound) + "\"}";
-
-        // Every character is ASCII and the answer is at most the bound plus the JSON wrapper, so this is a within-bound answer.
-        Assert.True(Encoding.UTF8.GetByteCount(answer) <= bound + 16);
-
-        int tokens = new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance).ResolveTokenizer(null).CountTokens(answer);
-
-        // Guard: the sample must be dense enough to cut off a cap of a quarter of the bound (512 tokens), or this test proves nothing.
-        Assert.True(tokens > bound / 4, $"sample is only {tokens} tokens");
-
-        LongRestProviderPayload payload = LongRestPackingData.SummaryPayload(TwoChildren(), LongRestPackingData.Digest, 5328, bound).Value;
-
-        Assert.True(tokens <= LongRestProviderCallFreezer.RenderChat(payload).Value.MaxOutputTokens,
-            $"{tokens} tokens would be cut off by a cap of {LongRestProviderCallFreezer.RenderChat(payload).Value.MaxOutputTokens}");
+        Assert.Equal(LongRestPromptLayout.OutputHeadroomTokens, Estimator.EstimateLongRestChat(EmbeddingProvider(8192, false), "model", payload).ReservedAnswerTokens);
     }
 
     private static ImmutableArray<LongRestHierarchyChild> TwoChildren() =>
@@ -394,8 +351,6 @@ public sealed class LongRestSummaryBoundTests
 
         Assert.Contains("must not exceed 7109 bytes", request.SystemPrompt, StringComparison.Ordinal);
 
-        Assert.Equal(LongRestPromptLayout.ReservedAnswerTokens, request.MaxOutputTokens);
-
         Assert.Equal(LongRestPromptLayout.SummaryObservation(1, "first child") + LongRestPromptLayout.SummaryObservation(2, "second child"), request.UserPrompt);
 
         Assert.Equal(LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary) + LongRestPromptLayout.SummaryObservationBytes("first child")
@@ -407,12 +362,10 @@ public sealed class LongRestSummaryBoundTests
 
         LongRestProviderPayload maximum = LongRestPackingData.SummaryPayload(TwoChildren(), LongRestPackingData.Digest, 5328).Value;
 
-        Assert.Equal(LongRestPromptLayout.ReservedAnswerTokens, LongRestProviderCallFreezer.RenderChat(maximum).Value.MaxOutputTokens);
-
         Assert.NotEqual(LongRestProviderCallFreezer.PayloadDigest(bounded, provider, "model").Value, LongRestProviderCallFreezer.PayloadDigest(maximum, provider, "model").Value);
 
-        // The estimator reserves exactly the cap the request carries.
-        Assert.Equal(LongRestPromptLayout.ReservedAnswerTokens, Estimator.EstimateLongRestChat(provider, "model", bounded).ReservedAnswerTokens);
+        // Input fit includes conservative output headroom.
+        Assert.Equal(LongRestPromptLayout.OutputHeadroomTokens, Estimator.EstimateLongRestChat(provider, "model", bounded).ReservedAnswerTokens);
     }
 
     private static LongRestRecipeIdentity Recipe(int summaryBound, int budget = 5328) =>
@@ -605,11 +558,11 @@ public sealed class LongRestSummaryBoundTests
             configure: static settings => settings.Providers[0].ContextWindowLimit = 8192);
 
     [Fact]
-    public async Task The_real_summary_request_states_the_bound_and_the_fixed_cap_and_a_bound_sized_answer_completes_the_sweep()
+    public async Task The_real_summary_request_states_the_byte_bound_and_a_bound_sized_answer_completes_the_sweep()
     {
         await using LongRestMaintenanceTests.MaintenanceFixture f = await DefaultWindowFixture();
 
-        // At the default 8,192-token window the bound is 7,109 bytes; the cap is the fixed 2,048-token answer reservation.
+        // At the default 8,192-token embedding window the summary bound is 7,109 bytes.
         LongRestRecipeIdentity recipe = ((ILongRestConfigurationProvider)f.Epoch).Capture().Recipe.Value;
 
         Assert.Equal(7109, recipe.SummaryUtf8Bytes);
@@ -630,7 +583,7 @@ public sealed class LongRestSummaryBoundTests
 
         Assert.Contains("must not exceed 7109 bytes", summary, StringComparison.Ordinal);
 
-        Assert.Matches(new Regex("\"max_(completion_)?tokens\"\\s*:\\s*2048\\b"), summary);
+        Assert.DoesNotMatch(new Regex("\"max_(completion_)?tokens\"\\s*:"), summary);
 
         // The summary was embedded: the bound-sized answer fit the window the bound came from.
         Assert.Contains(bodies, static body => body.Contains("\"input\":", StringComparison.Ordinal));

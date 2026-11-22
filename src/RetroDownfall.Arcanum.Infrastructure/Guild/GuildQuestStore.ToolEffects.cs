@@ -54,46 +54,22 @@ internal sealed partial class GuildQuestStore
     private static Result<string> ToolIssueIntent(Guid parent, GuildIssueChildRequest request) =>
         GuildQuestIntent.Compute(parent, request with { ExpectedRevision = 1 });
 
-    private async Task<Result<GuildIssueChildRequest>> ResolveToolBudgetWithinAsync(SqliteConnection connection,
+    private async Task<Result<GuildIssueChildRequest>> ResolveToolEffectOwnerWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, GuildQuestStored parent, GuildIssueChildRequest request, CancellationToken ct,
-        Guid? fundingAccountId = null, GuildGrant? ceiling = null, bool strict = false)
+        Guid? fundingAccountId = null)
     {
-        if (allocations is not GuildBudgetLedger ledger) return Unavailable;
+        if (allocations is not GuildBudgetLedger) return Unavailable;
 
         if (!await ValidateAccountingOwnershipAsync(connection, transaction, parent.Quest.RootQuestId,
             fundingAccountId ?? parent.AllocationAccountId, ct).ConfigureAwait(false)) return Unavailable;
 
-        Result<GuildBudgetSnapshot> available = await ledger.ReadWithinAsync(connection, transaction,
-            fundingAccountId ?? parent.AllocationAccountId, ct).ConfigureAwait(false);
-
-        if (available.IsFailure) return available.Error;
-
         GuildRequestedGrant requested = request.RequestedGrant ?? new();
 
-        GuildBudgetGrant? budget = requested.Budget.IsSpecified ? requested.Budget.Value : null;
-
-        GuildBudgetGrant policy = (ceiling ?? parent.Quest.ResolvedGrant).Budget;
-
-        Result<GuildBudgetGrant> resolved;
-
-        if (strict)
+        // Intent and replay were already checked using the original wire data. The new child
+        // has the same effect ownership and nonfinancial grant attenuation without a budget.
+        return request with
         {
-            Result<GuildBudgetGrant> attenuated = budget is null ? policy
-                : GuildBudgetAllocationPolicy.ResolveHint(new(budget.Usd, budget.Tokens), policy, policy);
-
-            if (attenuated.IsFailure) return attenuated.Error;
-
-            resolved = GuildBudgetAllocationPolicy.ResolveStrict(attenuated.Value, available.Value.Remaining, policy);
-        }
-        else
-        {
-            resolved = GuildBudgetAllocationPolicy.ResolveHint(
-                budget is null ? null : new(budget.Usd, budget.Tokens), available.Value.Remaining, policy);
-        }
-
-        return resolved.IsFailure ? resolved.Error : request with
-        {
-            RequestedGrant = requested with { Budget = new(true, resolved.Value) },
+            RequestedGrant = requested with { Budget = new(true, GuildBudgetGrant.Unmetered) },
         };
     }
 
@@ -174,11 +150,6 @@ internal sealed partial class GuildQuestStore
         if (tool.Name is "create_agent_task" or "admit_cohort_member" && arguments is not null
             && (remoteTool ? registry.ChildDispatcher?.SupportsRemote != true : registry.ChildDispatcher?.SupportsLocal != true))
             return new Error(ErrorCodes.Guild.Unavailable, "The selected task destination capability is unavailable.");
-
-        if (remoteTool && (live.Value.Budget.Usd.Mode != GuildBudgetMode.Unlimited
-            || live.Value.Budget.Tokens.Mode != GuildBudgetMode.Unlimited
-            || allocations is GuildBudgetLedger { RequiresDailyReservation: true }))
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A cannot enforce the active finite spending authority.");
 
         var current = await ReadDispatchWithinAsync(connection, transaction, execution.Dispatch.DispatchId, ct).ConfigureAwait(false);
 

@@ -26,7 +26,7 @@ public sealed partial class ModelCallExecutor
 
         if (_tokenEstimator is null
             || context.PrecomputedBreakdown is not { } precomputed
-            || context.ReservedAnswerTokens != CampaignMaintenancePayload.MaxOutputTokens
+            || context.ReservedAnswerTokens != CampaignMaintenancePayload.ReservedAnswerTokens
             || context.ReservedReasoningTokens != 0
             || context.PromptCachePlan is not null)
         {
@@ -76,7 +76,6 @@ public sealed partial class ModelCallExecutor
             using JsonDocument schema = JsonDocument.Parse(CampaignMaintenancePayload.SchemaJson);
             ChatOptions options = new()
             {
-                MaxOutputTokens = CampaignMaintenancePayload.MaxOutputTokens,
                 Tools = [],
                 ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement.Clone(),
                     CampaignMaintenancePayload.SchemaName, CampaignMaintenancePayload.SchemaDescription),

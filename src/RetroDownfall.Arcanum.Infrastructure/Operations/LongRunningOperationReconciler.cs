@@ -641,7 +641,7 @@ public sealed class LongRunningOperationReconciler
 
             transitioned = settled is not null;
 
-            if (settled == LongRunningOperationState.Abandoned)
+            if (settled == LongRunningOperationState.Abandoned && result.State != LongRunningOperationState.Abandoned)
                 result = LongRunningOperationRecoveryResult.Abandoned(ErrorCodes.Guild.RefreshCancelled);
         }
         else

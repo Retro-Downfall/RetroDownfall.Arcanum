@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.LongRest;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.ProvingGrounds;
 
@@ -26,7 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.ProvingGrounds;
 public sealed class MemoryEvaluationProviderTests
 {
     [Fact]
-    public async Task ExactFrozenArmsReachWireOnceWithEqualOutputLimitsAndRealBills()
+    public async Task DefaultArmsReachWireWithoutOutputLimitAndRecordRealUsage()
     {
         await using var f = await Fixture.CreateAsync();
 
@@ -100,7 +101,9 @@ public sealed class MemoryEvaluationProviderTests
 
             Assert.False(root.TryGetProperty("prompt_cache_key", out _));
 
-            Assert.Equal(512, root.GetProperty("max_completion_tokens").GetInt32());
+            Assert.False(root.TryGetProperty("max_completion_tokens", out _));
+
+            Assert.False(root.TryGetProperty("max_tokens", out _));
 
             Assert.Equal(2, root.GetProperty("messages").GetArrayLength());
 
@@ -129,9 +132,7 @@ public sealed class MemoryEvaluationProviderTests
 
         Assert.Equal(2L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE Status = 0;"));
 
-        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status IN (0, 4);"));
-
-        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(DISTINCT ReservedUsd) FROM BudgetReservations;"));
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
     }
 
     [Theory]
@@ -206,11 +207,8 @@ public sealed class MemoryEvaluationProviderTests
 
             Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
-            Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 4;"));
+            Assert.Equal((long)InferenceRunStatus.Failed, await f.H.ScalarAsync("SELECT Status FROM InferenceRuns;"));
 
-            await f.Reservations.SweepExpiredAsync(DateTimeOffset.UtcNow.AddDays(2));
-
-            Assert.True(await f.Reservations.GetTodayOutstandingReservationsAsync() > 0m);
         }
         else
         {
@@ -245,7 +243,7 @@ public sealed class MemoryEvaluationProviderTests
     }
 
     [Fact]
-    public async Task ChangedControlPromptFailsPreparationAndDailyAdmissionPrecedesAcknowledgement()
+    public async Task ChangedControlPromptFailsPreparationAndLegacyCostLimitDoesNotBlockAcknowledgement()
     {
         await using var f = await Fixture.CreateAsync();
 
@@ -255,9 +253,7 @@ public sealed class MemoryEvaluationProviderTests
 
         Assert.True((await f.Provider.PrepareAsync(plan.Request, plan.Sources, changed, CancellationToken.None)).IsFailure);
 
-        f.Options.CurrentValue.Cost.Budget.DailyLimitUsd = 0.000001m;
-
-        f.Options.Set(f.Options.CurrentValue);
+        f.Options.Set(LegacyBudgetFixture.ReadWithOldDailyLimit(f.Options.CurrentValue, 0.000001m));
 
         plan = (await f.Prepare()).Value;
 
@@ -266,13 +262,15 @@ public sealed class MemoryEvaluationProviderTests
         var sent = await f.Provider.SendAsync(plan, 0, MemoryEvaluationArm.Control, UnrestrictedTurnBudget.Instance,
             (_, _) => { acknowledged++; return Task.CompletedTask; }, CancellationToken.None);
 
-        Assert.True(sent.IsFailure);
+        Assert.True(sent.IsSuccess, sent.Error.Message);
 
-        Assert.Equal(0, acknowledged);
+        Assert.Equal(1, acknowledged);
 
-        Assert.Empty(f.Server.Bodies);
+        Assert.Single(f.Server.Bodies);
 
-        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
+
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
     }
 
     [Theory]
@@ -337,11 +335,11 @@ public sealed class MemoryEvaluationProviderTests
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
-        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 4;"));
+        Assert.Equal((long)InferenceRunStatus.Failed, await f.H.ScalarAsync("SELECT Status FROM InferenceRuns;"));
     }
 
     [Fact]
-    public async Task ActiveCancellationKeepsUnknownHoldAndStopsFurtherSends()
+    public async Task ActiveCancellationKeepsUnknownUsageAndStopsFurtherSends()
     {
         await using var f = await Fixture.CreateAsync("wait");
 
@@ -358,7 +356,7 @@ public sealed class MemoryEvaluationProviderTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending);
 
-        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 4;"));
+        Assert.Equal((long)InferenceRunStatus.Failed, await f.H.ScalarAsync("SELECT Status FROM InferenceRuns;"));
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
@@ -373,7 +371,7 @@ public sealed class MemoryEvaluationProviderTests
     {
         await using var f = await Fixture.CreateAsync();
 
-        await f.H.ExecuteAsync("CREATE TRIGGER fail_evaluation_settlement BEFORE UPDATE OF Status ON BudgetReservations WHEN NEW.Status = 1 BEGIN SELECT RAISE(ABORT, 'settlement blocked'); END;");
+        await f.H.ExecuteAsync("CREATE TRIGGER fail_evaluation_settlement BEFORE UPDATE OF Status ON InferenceRuns WHEN NEW.Status = 1 BEGIN SELECT RAISE(ABORT, 'settlement blocked'); END;");
 
         var plan = (await f.Prepare()).Value;
 
@@ -384,7 +382,7 @@ public sealed class MemoryEvaluationProviderTests
 
         Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
-        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 4;"));
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
     }
 
     [Fact]
@@ -413,7 +411,7 @@ public sealed class MemoryEvaluationProviderTests
     }
 
     [Fact]
-    public async Task ReservationCoversOutputWhenReasoningHasHigherPriceWithoutEnlargingAnswerBudget()
+    public async Task HigherReasoningPriceDoesNotChangeProviderOutputTokenLimit()
     {
         await using var f = await Fixture.CreateAsync();
 
@@ -421,31 +419,22 @@ public sealed class MemoryEvaluationProviderTests
 
         f.Options.Set(f.Options.CurrentValue);
 
-        var plan = (await f.Prepare()).Value;
+        var plan = (await f.Prepare(new(MaxOutputTokens: 6000))).Value;
 
         var result = await f.Provider.SendAsync(plan, 0, MemoryEvaluationArm.Control, UnrestrictedTurnBudget.Instance,
-            async (_, _) =>
-            {
-                decimal held = decimal.Parse((string)(await f.H.ScalarAsync("SELECT ReservedUsd FROM BudgetReservations;"))!, System.Globalization.CultureInfo.InvariantCulture);
-
-                Assert.True(held >= 0.512m);
-
-                await Task.CompletedTask;
-            }, CancellationToken.None);
+            (_, _) => Task.CompletedTask, CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
         using var wire = JsonDocument.Parse(Assert.Single(f.Server.Bodies));
 
-        Assert.Equal(512, wire.RootElement.GetProperty("max_completion_tokens").GetInt32());
+        Assert.Equal(6000, wire.RootElement.GetProperty("max_completion_tokens").GetInt32());
     }
 
     [Fact]
-    public async Task DisabledFinancialLimitStillRequiresAccountingAndDoesNotInventPaidZeroUsage()
+    public async Task UnrestrictedAccountingDoesNotInventPaidZeroUsage()
     {
         await using var f = await Fixture.CreateAsync("missing-usage");
-
-        f.Options.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Options.Set(f.Options.CurrentValue);
 
@@ -532,7 +521,7 @@ public sealed class MemoryEvaluationProviderTests
 
         Assert.Equal(known ? 1L : 0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE Status = 0;"));
 
-        Assert.Equal(known ? 0L : 1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 4;"));
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
 
         if (known) Assert.Equal(0m, sent.Value.Usage.Cost);
         else
@@ -575,7 +564,7 @@ public sealed class MemoryEvaluationProviderTests
 
         Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE Status = 0;"));
 
-        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 1;"));
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
 
         Assert.True((await f.Provider.ValidateAsync(plan, CancellationToken.None)).IsFailure);
     }
@@ -583,98 +572,46 @@ public sealed class MemoryEvaluationProviderTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task DispatchMarkerFinishesBeforeFinalFenceAndObservedAbaCannotSend(bool changeEpoch)
+    public async Task ConfigurationChangedDuringAuthorityFenceCannotSend(bool changeEpoch)
     {
         await using var f = await Fixture.CreateAsync();
-
-        MarkerBarrier reservations = new(f.Reservations);
-
-        ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
-
-        f.Provider = new(f.Clients, f.Epoch, new ModelCallExecutor(estimator), estimator, new TurnRunWriter(f.H.Saga.Context), reservations);
 
         var plan = (await f.Prepare()).Value;
 
         int acknowledged = 0;
 
-        bool markerFinishedAtCallback = false;
+        var sent = await f.Provider.SendAsync(plan, 0, MemoryEvaluationArm.Control, UnrestrictedTurnBudget.Instance,
+            (_, _) =>
+            {
+                acknowledged++;
 
-        var sending = f.Provider.SendAsync(plan, 0, MemoryEvaluationArm.Control, UnrestrictedTurnBudget.Instance,
-            (_, _) => { acknowledged++; markerFinishedAtCallback = reservations.Finished; return Task.CompletedTask; }, CancellationToken.None);
+                Assert.Empty(f.Server.Bodies);
 
-        await reservations.Arrived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                if (changeEpoch) f.Aba();
 
-        Assert.Empty(f.Server.Bodies);
+                return Task.CompletedTask;
+            }, CancellationToken.None);
 
-        if (changeEpoch) f.Aba();
+        Assert.Equal(1, acknowledged);
 
-        reservations.Continue.TrySetResult();
-
-        var sent = await sending;
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
 
         if (changeEpoch)
         {
             Assert.True(sent.IsFailure);
-
-            Assert.Equal(0, acknowledged);
 
             Assert.Empty(f.Server.Bodies);
 
             Assert.True((await f.Provider.ValidateAsync(plan, CancellationToken.None)).IsFailure);
 
             Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
-
-            // Deliberately conservative: even this proven-unsent marker stays held, never billed.
-            Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BudgetReservations WHERE Status = 4;"));
         }
         else
         {
             Assert.True(sent.IsSuccess && sent.Value.IsValid);
 
-            Assert.True(markerFinishedAtCallback);
-
-            Assert.Equal(1, acknowledged);
-
             Assert.Single(f.Server.Bodies);
         }
-    }
-
-    private sealed class MarkerBarrier(IBudgetReservationService inner) : IBudgetReservationService
-    {
-        internal TaskCompletionSource Arrived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        internal TaskCompletionSource Continue { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        internal bool Finished;
-
-        public async Task MarkPossiblyDispatchedAsync(Guid id, Guid run, CancellationToken ct = default)
-        {
-            await inner.MarkPossiblyDispatchedAsync(id, run, ct);
-
-            Arrived.TrySetResult();
-
-            await Continue.Task.WaitAsync(ct);
-
-            Finished = true;
-        }
-
-        public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken ct = default) => inner.ReserveAsync(request, ct);
-
-        public Task<Result> AdjustAsync(Guid id, decimal amount, CancellationToken ct = default) => inner.AdjustAsync(id, amount, ct);
-
-        public Task<Result> RecheckDailyLimitAsync(Guid id, decimal amount, CancellationToken ct = default) => inner.RecheckDailyLimitAsync(id, amount, ct);
-
-        public Task ExtendExpiryAsync(Guid id, DateTimeOffset expiry, CancellationToken ct = default) => inner.ExtendExpiryAsync(id, expiry, ct);
-
-        public Task ReconcileAsync(Guid id, decimal amount, CancellationToken ct = default) => inner.ReconcileAsync(id, amount, ct);
-
-        public Task ReleaseAsync(Guid id, CancellationToken ct = default) => inner.ReleaseAsync(id, ct);
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken ct = default) => inner.GetTodayCommittedSpendAsync(ct);
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken ct = default) => inner.GetTodayOutstandingReservationsAsync(ct);
-
-        public Task<int> SweepExpiredAsync(DateTimeOffset now, CancellationToken ct = default) => inner.SweepExpiredAsync(now, ct);
     }
 
     internal sealed class Fixture : IAsyncDisposable
@@ -691,8 +628,6 @@ public sealed class MemoryEvaluationProviderTests
 
         internal MemoryEvaluationProvider Provider = null!;
 
-        internal BudgetReservationService Reservations = null!;
-
         internal Guid Generation = Guid.NewGuid();
 
         internal static async Task<Fixture> CreateAsync(string mode = "valid")
@@ -703,7 +638,6 @@ public sealed class MemoryEvaluationProviderTests
 
             settings.Providers[0].Endpoint = f.Server.Endpoint;
 
-            settings.Cost.Budget = new() { Enabled = true, DailyLimitUsd = 100m };
 
             f.Options = new(settings);
 
@@ -713,9 +647,7 @@ public sealed class MemoryEvaluationProviderTests
 
             ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
-            f.Reservations = new(f.H.Saga.Context, f.Options);
-
-            f.Provider = new(f.Clients, f.Epoch, new ModelCallExecutor(estimator), estimator, new TurnRunWriter(f.H.Saga.Context), f.Reservations);
+            f.Provider = new(f.Clients, f.Epoch, new ModelCallExecutor(estimator), estimator, new TurnRunWriter(f.H.Saga.Context));
 
             return f;
         }

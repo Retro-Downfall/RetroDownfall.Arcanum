@@ -10,9 +10,6 @@ internal sealed record PerplexityRequest
     [JsonPropertyName("messages")]
     public required PerplexityMessage[] Messages { get; init; }
 
-    [JsonPropertyName("max_tokens")]
-    public int MaxTokens { get; init; }
-
     [JsonPropertyName("stream")]
     public bool Stream { get; init; }
 

@@ -54,7 +54,7 @@ public sealed partial class GuildQuestStoreTests
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
-    public async Task Remote_execution_binding_refuses_unsupported_finite_grants(bool usd, bool tokens)
+    public async Task Remote_execution_binding_accepts_historical_finite_grants(bool usd, bool tokens)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -73,7 +73,7 @@ public sealed partial class GuildQuestStoreTests
         var created = await GuildRemoteExecutionStore.CreateWithinAsync(connection, transaction, row, input, null,
             DateTimeOffset.UtcNow, default);
 
-        Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, created.Error.Code);
+        Assert.True(created.IsSuccess, created.Error.Message);
     }
     [Fact]
     public async Task Remote_recovery_route_survives_input_erasure_without_reconstructing_its_goal()

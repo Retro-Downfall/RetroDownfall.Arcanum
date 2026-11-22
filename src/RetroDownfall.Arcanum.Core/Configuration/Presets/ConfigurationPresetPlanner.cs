@@ -480,8 +480,6 @@ public sealed class ConfigurationPresetPlanner(
                     : (false, "The research credential is not available."),
             ConfigurationPresetCatalog.LoopbackProviderPrerequisite =>
                 EvaluateLoopbackProvider(settings),
-            ConfigurationPresetCatalog.PositiveBudgetPrerequisite =>
-                EvaluatePositiveBudget(settings),
             _ => (false, $"Unknown prerequisite '{prerequisite.Id}'."),
         };
 
@@ -489,24 +487,6 @@ public sealed class ConfigurationPresetPlanner(
             prerequisite,
             satisfied,
             detail);
-
-    }
-
-    /// <summary>
-    /// A section the operator wrote as explicit JSON <c>null</c> binds as <see langword="null"/> and
-    /// passes both configuration gates, so every settings section this planner reads is treated as
-    /// optional — exactly as <c>ConfigurationValidator</c> and <c>ArcanumRuntimeSettings.Resolve*</c>
-    /// already treat it. An absent <c>cost</c> section simply means budget enforcement is off.
-    /// </summary>
-    private static (bool Satisfied, string Detail) EvaluatePositiveBudget(
-        ArcanumSettings settings)
-    {
-
-        BudgetPolicySettings budget = settings.Cost?.Budget ?? new BudgetPolicySettings();
-
-        return budget.Enabled && budget.DailyLimitUsd > 0m
-            ? (true, $"Daily budget enforcement is enabled at {budget.DailyLimitUsd:0.00} USD.")
-            : (false, "Enable budget enforcement with an explicit daily limit greater than zero.");
 
     }
 

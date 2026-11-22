@@ -108,10 +108,6 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
                             Content = query.Trim(),
                         },
                     ],
-                    MaxTokens = Math.Clamp(
-                        Math.Max(1, options.MaxAnswerBytes / 4),
-                        1,
-                        128_000),
                     Stream = false,
 
                     SearchRecencyFilter = NormalizeFreshness(options.Freshness),

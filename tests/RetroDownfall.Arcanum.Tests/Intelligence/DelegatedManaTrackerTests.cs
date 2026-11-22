@@ -8,9 +8,7 @@ public sealed class DelegatedManaTrackerTests
     [Fact]
     public void RecordUsage_TracksProviderReportedTokensAndCost()
     {
-        DelegatedManaTracker tracker = new(
-            maxTokens: 1_000,
-            maxCostUsd: 1.00m);
+        DelegatedManaTracker tracker = new();
 
         tracker.BeginModelCall();
         tracker.RecordUsage(
@@ -27,39 +25,13 @@ public sealed class DelegatedManaTrackerTests
         Assert.Equal(500, usage.Tokens);
         Assert.Equal(0.25m, usage.CostUsd);
         Assert.Equal(1, usage.ModelCalls);
-        Assert.False(usage.Exhausted);
-    }
 
-    [Fact]
-    public void RecordUsage_WhenTokenCeilingExceeded_ThrowsBudgetExhausted()
-    {
-        DelegatedManaTracker tracker = new(
-            maxTokens: 1_000,
-            maxCostUsd: null);
-
-        tracker.BeginModelCall();
-
-        BudgetExhaustedException exception = Assert.Throws<BudgetExhaustedException>(
-            () => tracker.RecordUsage(
-                new UsageDetails
-                {
-                    InputTokenCount = 900,
-                    OutputTokenCount = 101,
-                    TotalTokenCount = 1_001,
-                },
-                costUsd: 0m));
-
-        Assert.Equal(DelegatedBudgetExhaustionReason.Tokens, exception.Reason);
-        Assert.Equal(1_001, exception.Usage.Tokens);
-        Assert.True(tracker.GetUsage().Exhausted);
     }
 
     [Fact]
     public void BeginModelCall_HasNoArbitraryCallCeiling()
     {
-        DelegatedManaTracker tracker = new(
-            maxTokens: null,
-            maxCostUsd: 1.00m);
+        DelegatedManaTracker tracker = new();
 
         for (int i = 0; i < 100; i++)
         {
@@ -70,15 +42,12 @@ public sealed class DelegatedManaTrackerTests
 
         Assert.Equal(100, tracker.GetUsage().ModelCalls);
 
-        Assert.False(tracker.GetUsage().Exhausted);
     }
 
     [Fact]
     public async Task RecordUsage_IsThreadSafe()
     {
-        DelegatedManaTracker tracker = new(
-            maxTokens: 100_000,
-            maxCostUsd: 100m);
+        DelegatedManaTracker tracker = new();
 
         Task[] writes = Enumerable.Range(0, 100)
             .Select(_ => Task.Run(() =>

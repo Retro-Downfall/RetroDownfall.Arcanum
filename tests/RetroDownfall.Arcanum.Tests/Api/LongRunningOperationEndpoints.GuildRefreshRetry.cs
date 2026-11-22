@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 public sealed class GuildRefreshRetryEndpointTests(ArcanumWebApplicationFactory factory)
 {
     [SkippableFact]
-    public async Task Retry_refuses_refresh_with_invalid_checkpoint_without_resetting_operation()
+    public async Task Retry_explains_that_legacy_spend_refresh_is_retired_and_leaves_operation_unchanged()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -38,6 +38,8 @@ public sealed class GuildRefreshRetryEndpointTests(ArcanumWebApplicationFactory 
         HttpResponseMessage response = await client.PostAsync($"/api/operations/{created.Id:D}/retry", null);
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        Assert.Contains("Spend refresh has been retired", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
         LongRunningOperation after = (await store.GetAsync(created.Id))!;
 

@@ -32,7 +32,7 @@ public sealed class WebWorkflowCommandTests
 
     [InlineData("browse", "--render", "--save", "--attach-to-session")]
 
-    [InlineData("research", "--sources", "--token-budget", "--continue-session")]
+    [InlineData("research", "--sources", "--model", "--continue-session")]
 
     public void Help_exposes_first_class_web_workflows(
         string command,
@@ -601,23 +601,23 @@ public sealed class WebWorkflowCommandTests
     [InlineData("json", false)]
     public void Research_completion_warnings_are_reported_once_and_retained_in_json(string format, bool progressWarned)
     {
-        string progress = progressWarned ? "{\"type\":\"progress\",\"stage\":\"synthesis_warning\",\"message\":\"Increase --token-budget.\"}\n" : "";
+        string progress = progressWarned ? "{\"type\":\"progress\",\"stage\":\"synthesis_warning\",\"message\":\"The provider truncated the research synthesis.\"}\n" : "";
         RecordingHandler handler = new(_ => NdjsonResponse(progress + """
-            {"type":"result","result":{"answer":"Partial answer","citations":[],"provider":"perplexity","model":"resolved-model","truncated":true,"finishReason":"length","warnings":["Increase --token-budget."],"usage":{"totalTokens":42,"searchQueries":2}}}
+            {"type":"result","result":{"answer":"Partial answer","citations":[],"provider":"perplexity","model":"resolved-model","truncated":true,"finishReason":"length","warnings":["The provider truncated the research synthesis."],"usage":{"totalTokens":42,"searchQueries":2}}}
             """));
         CliTestResult result = RunCommand(handler, ["research", "Question", "--format", format]);
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal(1, result.Error.Split("Increase --token-budget.", StringSplitOptions.None).Length - 1);
+        Assert.Equal(1, result.Error.Split("The provider truncated the research synthesis.", StringSplitOptions.None).Length - 1);
         Assert.Contains("Partial answer", result.Output, StringComparison.Ordinal);
         if (format == "json")
         {
             using JsonDocument document = JsonDocument.Parse(result.Output);
             Assert.Equal("length", document.RootElement.GetProperty("finishReason").GetString());
-            Assert.Equal("Increase --token-budget.", Assert.Single(document.RootElement.GetProperty("warnings").EnumerateArray()).GetString());
+            Assert.Equal("The provider truncated the research synthesis.", Assert.Single(document.RootElement.GetProperty("warnings").EnumerateArray()).GetString());
         }
         else
         {
-            Assert.DoesNotContain("--token-budget", result.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain("The provider truncated the research synthesis.", result.Output, StringComparison.Ordinal);
         }
     }
 
@@ -643,10 +643,6 @@ public sealed class WebWorkflowCommandTests
                 "What changed?",
                 "--sources",
                 "4",
-                "--token-budget",
-                "1200",
-                "--cost-budget",
-                "0.25",
                 "--model",
                 "sonar",
                 "--continue-session",
@@ -665,9 +661,9 @@ public sealed class WebWorkflowCommandTests
 
         Assert.Contains("\"sourceTarget\":4", body, StringComparison.Ordinal);
 
-        Assert.Contains("\"tokenBudget\":1200", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"tokenBudget\"", body, StringComparison.Ordinal);
 
-        Assert.Contains("\"costBudgetUsd\":0.25", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"costBudgetUsd\"", body, StringComparison.Ordinal);
 
         Assert.Contains("## Finding", result.Output, StringComparison.Ordinal);
 
@@ -859,7 +855,7 @@ public sealed class WebWorkflowCommandTests
 
     [Theory]
     [InlineData("WebResearch.RequestRejected", "terminal")]
-    [InlineData("WebResearch.BudgetExceeded", "json")]
+    [InlineData("WebResearch.ProviderUnavailable", "json")]
     [InlineData("Hub.Error", "markdown")]
     public void Research_terminal_http_200_error_with_additive_diagnostics_preserves_nonzero_exit(string code, string format)
     {

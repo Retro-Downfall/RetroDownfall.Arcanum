@@ -12,15 +12,15 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// <summary>
 /// Fallback Lexicon entity extraction for inference turns that did not run the SemanticRouter (or
 /// ran it with no entities) — notably <c>OverrideSpellName</c>, pure embedding spell routing
-/// (DirectResonance), and no-spell user-facing turns. Runs a single low-token JSON preflight on the
+/// (DirectResonance), and no-spell user-facing turns. Runs a single JSON preflight on the
 /// supplied <see cref="IChatClient"/> (the caller resolves the fast model when configured) with
 /// <c>SemanticRouterPreflightTimeoutSeconds</c> and no tools. Failures degrade to an empty entity
 /// list — Lexicon retrieval is best-effort and never fails the inference turn.
 /// </summary>
 internal static class LexiconEntityExtractor
 {
-    /// <summary>Low internal token cap for the extractor preflight (kept separate from the router).</summary>
-    public const int MaxOutputTokens = 128;
+    /// <summary>Space allowed for the expected answer when checking context fit.</summary>
+    internal const int ReservedAnswerTokens = 128;
 
     public static async Task<(IReadOnlyList<string> Entities, UsageDetails? Usage)> ExtractAsync(
         IChatClient client,
@@ -53,7 +53,6 @@ internal static class LexiconEntityExtractor
 
         var options = new ChatOptions
         {
-            MaxOutputTokens = MaxOutputTokens,
             Temperature = 0f,
             ResponseFormat = ChatResponseFormat.Json,
         };

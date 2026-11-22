@@ -143,16 +143,6 @@ internal static partial class CliCommandTree
             Description = "Server-configured model for final synthesis.",
         };
 
-        Option<int?> tokenBudget = new("--token-budget")
-        {
-            Description = "Explicit positive synthesis output-token budget (default 2000).",
-        };
-
-        Option<decimal?> costBudget = new("--cost-budget")
-        {
-            Description = "Maximum reported search-provider cost in USD.",
-        };
-
         Option<string?> continueSession = new("--continue-session")
         {
             Description = "Continue an existing session by GUID, exact title, or unique prefix.",
@@ -173,10 +163,6 @@ internal static partial class CliCommandTree
 
         command.Add(model);
 
-        command.Add(tokenBudget);
-
-        command.Add(costBudget);
-
         command.Add(continueSession);
 
         command.Add(format);
@@ -191,8 +177,6 @@ internal static partial class CliCommandTree
                     result.GetValue(question)!,
                     result.GetValue(sourceTarget),
                     result.GetValue(model),
-                    result.GetValue(tokenBudget) ?? 2_000,
-                    result.GetValue(costBudget),
                     result.GetValue(continueSession),
                     result.GetValue(format),
                     result.GetValue(save),

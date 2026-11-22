@@ -1,8 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Guild;
-using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -64,25 +62,19 @@ public sealed class GuildSpendSerializationTests
     }
 
     [Fact]
-    public void Refresh_request_and_envelope_round_trip_through_generated_contexts()
+    public void Archived_refresh_request_and_result_round_trip_through_the_historical_context()
     {
         Guid key = Guid.NewGuid();
 
         string request = JsonSerializer.Serialize(new GuildSpendRefreshRequest(key), GuildJsonContext.Default.GuildSpendRefreshRequest);
 
-        Assert.Equal(key, JsonSerializer.Deserialize(request, ArcanumJsonContext.Default.GuildSpendRefreshRequest)!.IdempotencyKey);
+        Assert.Equal(key, JsonSerializer.Deserialize(request, GuildJsonContext.Default.GuildSpendRefreshRequest)!.IdempotencyKey);
 
         GuildSpendRefreshResultDto data = new(Guid.NewGuid(), null, false, false, true, "Guild.ReconciliationRequired", false);
 
-        ApiResponse<GuildSpendRefreshResultDto> envelope = ApiResponse<GuildSpendRefreshResultDto>.FromResult(Result<GuildSpendRefreshResultDto>.Success(data), "test");
+        string json = JsonSerializer.Serialize(data, GuildJsonContext.Default.GuildSpendRefreshResultDto);
 
-        string json = JsonSerializer.Serialize(envelope, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto);
-
-        Assert.Equal(data, JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto)!.Data);
-
-        using JsonDocument serialized = JsonDocument.Parse(json);
-
-        Assert.False(serialized.RootElement.GetProperty("data").GetProperty("cancelled").GetBoolean());
+        Assert.Equal(data, JsonSerializer.Deserialize(json, GuildJsonContext.Default.GuildSpendRefreshResultDto));
     }
 
     [Theory]

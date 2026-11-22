@@ -154,7 +154,7 @@ public sealed partial class WizardIntelligenceProviderTests
             if (delegateChild)
             {
                 SubagentRunResult child = await childRunner.RunAsync(
-                    new SubagentRunRequest("Complete the child task.", ModelName, [], MaxTokens: 1_000, MaxCostUsd: null),
+                    new SubagentRunRequest("Complete the child task.", ModelName, []),
                     deadline.Token);
 
                 Assert.True(child.Success, child.FailureCode);

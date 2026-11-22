@@ -15,7 +15,7 @@ using RetroDownfall.TheForge.Ux.Services.Whispers;
 namespace RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 
 /// <summary>
-/// Status-bar ViewModel for The Anvil. Mirrors connection state and aggregates budget, wards,
+/// Status-bar ViewModel for The Anvil. Mirrors connection state and aggregates wards,
 /// apprentices, and MCP online/total on a 10s timer (and on connection-state changes).
 /// </summary>
 public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
@@ -57,12 +57,6 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     private string _activeModelName = "No model";
-
-    [ObservableProperty]
-    private double _manaPercent;
-
-    [ObservableProperty]
-    private decimal _todaySpendUsd;
 
     [ObservableProperty]
     private int _activeWardsCount;
@@ -264,12 +258,6 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
     private void FocusModel() => _navigation.FocusPanel(PanelKind.Arsenal);
 
     [RelayCommand]
-    private void FocusMana() => _navigation.FocusPanel(PanelKind.Treasury);
-
-    [RelayCommand]
-    private void FocusBudget() => _navigation.FocusPanel(PanelKind.Treasury);
-
-    [RelayCommand]
     private void FocusWards() => _navigation.FocusPanel(PanelKind.Gatehouse);
 
     [RelayCommand]
@@ -291,17 +279,6 @@ public sealed partial class AnvilViewModel : ViewModelBase, IDisposable
 
         try
         {
-
-            BudgetSummaryDto? budget = await _dataSource.GetBudgetAsync(cancellationToken).ConfigureAwait(true);
-
-            if (budget is not null)
-            {
-
-                TodaySpendUsd = budget.TodaySpendUsd;
-
-                ManaPercent = Math.Clamp(budget.SpentPercent, 0, 100);
-
-            }
 
             ActiveWardsCount = (await _dataSource.ListWardsAsync(cancellationToken).ConfigureAwait(true)).Count;
 

@@ -216,10 +216,9 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             },
             Cost = new CostSettings
             {
-                Budget = new BudgetPolicySettings
+                Pricing = new PricingSettings
                 {
-                    Enabled = true,
-                    DailyLimitUsd = 25m,
+                    DefaultPricing = new ModelPricingEntry { InputPer1M = 25m },
                 },
             },
         });
@@ -243,8 +242,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(["localhost"], built.Integrations.Mcp.AllowedHttpHosts);
         Assert.Equal(7, built.Execution.MaxConcurrentApprentices);
         Assert.Equal(80, built.Execution.MaxSseConnections);
-        Assert.True(built.Cost.Budget.Enabled);
-        Assert.Equal(25m, built.Cost.Budget.DailyLimitUsd);
+        Assert.Equal(25m, built.Cost.Pricing.DefaultPricing.InputPer1M);
     }
 
     [Fact]
@@ -278,7 +276,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             {"integrations":{"a2A":{"inboundPeers":[{
               "peerId":"configured-peer","enabled":true,"credentialEnvironmentVariable":"PRIVATE_PEER_TOKEN",
               "campaignId":null,"grant":{"workspaces":[],"tools":[],"memory":[],
-              "budget":{"usd":{"mode":"finite","value":1.234567890123456789},"tokens":{"mode":"unlimited"}},
               "delegation":["local"],"expiresAtUtc":null}}]}}}
             """;
 
@@ -302,10 +299,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
             "integrations.a2A.inboundPeers.grant.memory.operation",
             "integrations.a2A.inboundPeers.grant.memory.scope.kind",
             "integrations.a2A.inboundPeers.grant.memory.scope.id",
-            "integrations.a2A.inboundPeers.grant.budget.usd.mode",
-            "integrations.a2A.inboundPeers.grant.budget.usd.value",
-            "integrations.a2A.inboundPeers.grant.budget.tokens.mode",
-            "integrations.a2A.inboundPeers.grant.budget.tokens.value",
             "integrations.a2A.inboundPeers.grant.delegation",
             "integrations.a2A.inboundPeers.grant.expiresAtUtc",
         ];
@@ -366,7 +359,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         Assert.Equal("PRIVATE_PEER_TOKEN", peer.CredentialEnvironmentVariable);
 
-        Assert.Equal(1.234567890123456789m, peer.Grant!.Budget!.Usd!.Value);
+        Assert.Single(peer.Grant!.Delegation!);
+
 
         Assert.True(new ConfigurationValidator().Validate(updated).IsSuccess);
     }
@@ -594,7 +588,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
                             Reasoning: new ModelReasoningSettings
                             {
                                 WireDialect = ReasoningWireDialect.OpenRouter,
-                                MaxBudgetTokens = 32768,
                             }),
                     ],
                 },
@@ -610,14 +603,12 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         Assert.True(model.HasReasoning);
         Assert.Equal(ReasoningWireDialect.OpenRouter, model.ReasoningDialect);
-        Assert.Equal(32768, model.ReasoningMaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             provider.CredentialEnvironmentVariable);
 
         model.Name = "reasoner-v2";
         model.ReasoningDialect = ReasoningWireDialect.TopLevelReasoningBudget;
-        model.ReasoningMaxBudgetTokens = 65536;
 
         ArcanumSettings built = vm.BuildSettings();
         ProviderSettings builtProvider = Assert.Single(built.Providers);
@@ -625,7 +616,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         Assert.Equal("reasoner-v2", builtModel.Name);
         Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, builtModel.Reasoning?.WireDialect);
-        Assert.Equal(65536, builtModel.Reasoning?.MaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             builtProvider.CredentialEnvironmentVariable);
@@ -642,7 +632,6 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         Assert.Equal("reasoner-v2", savedModel.Name);
         Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, savedModel.Reasoning?.WireDialect);
-        Assert.Equal(65536, savedModel.Reasoning?.MaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             savedProvider.CredentialEnvironmentVariable);

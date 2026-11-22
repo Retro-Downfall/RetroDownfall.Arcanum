@@ -24,7 +24,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+        BudgetReservationService daily = new(db);
 
         GuildBudgetLedger ledger = new(daily);
 

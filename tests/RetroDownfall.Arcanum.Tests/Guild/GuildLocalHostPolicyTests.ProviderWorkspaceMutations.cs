@@ -47,9 +47,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         settings.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1", ContextWindowLimit = 131072,
-            GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }];
+            Models = ["accepted-model"] }];
 
-        settings.Cost.Budget.Enabled = false;
 
         await using GuildLocalHostReadiness readiness = new(fixture.Settings, fixture.Connections, fixture.Policy, fixture.Authority,
             TimeProvider.System, Path.Combine(fixture.WorkspaceRoot, "host.lock"), fixture.Gate);
@@ -142,7 +141,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            BudgetReservationService daily = new(db, fixture.Settings);
+            BudgetReservationService daily = new(db);
 
             var runtime = await wizard.CreateGuildRuntimeAsync(daily, settings, clients, coordinator, repository);
 
@@ -208,7 +207,7 @@ public sealed partial class GuildLocalHostPolicyTests
         WizardIntelligenceProvider runtime, BudgetReservationService daily, GuildLocalInferenceExecution execution,
         GuildLocalExecutionInput input, string path)
     {
-        using GuildProviderCallBinding binding = new(execution, input, new PingRequest("Exercise patch receipt allocation."), daily, new());
+        using GuildProviderCallBinding binding = new(execution, input, new PingRequest("Exercise patch receipt allocation."), new());
 
         GuildToolGrant patch = new(GuildToolSourceKind.InternalMcp, "arcanum", "apply_patch");
 

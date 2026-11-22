@@ -59,11 +59,7 @@ public sealed record RunCommandRequest(
 
     string? FrequencyPenalty,
 
-    int? SourceTarget,
-
-    int TokenBudget,
-
-    decimal? CostBudget);
+    int? SourceTarget);
 
 internal sealed class RunCommand(
     IRunInputReader inputReader,

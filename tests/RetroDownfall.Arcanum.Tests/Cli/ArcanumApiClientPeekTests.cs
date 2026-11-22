@@ -25,7 +25,7 @@ public sealed class ArcanumApiClientPeekTests
                 secrets,
                 "peek-only-key"));
 
-        _ = await client.GetBudgetAsync(CancellationToken.None);
+        _ = await client.GetConclaveStatusAsync(CancellationToken.None);
 
         Assert.Equal(1, secrets.PeekCalls);
 
@@ -53,7 +53,7 @@ public sealed class ArcanumApiClientPeekTests
                 secrets,
                 "peek-only-key"));
 
-        Result<BudgetSummaryDto> result = await client.GetBudgetAsync(CancellationToken.None);
+        Result<ConclaveStatusDto> result = await client.GetConclaveStatusAsync(CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
@@ -182,7 +182,7 @@ public sealed class ArcanumApiClientPeekTests
 
         using CancellationTokenSource cancellation = new();
 
-        Task<Result<BudgetSummaryDto>> request = client.GetBudgetAsync(cancellation.Token);
+        Task<Result<ConclaveStatusDto>> request = client.GetConclaveStatusAsync(cancellation.Token);
 
         await secrets.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 

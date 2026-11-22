@@ -199,7 +199,6 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive
                 or ErrorCodes.Validation.InvalidReasoningBudget
                 or ErrorCodes.Validation.UnsupportedReasoningControl
-                or ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit
                 or ErrorCodes.Validation.UnsupportedReasoningOutput =>
                 StatusCodes.Status400BadRequest,
 
@@ -410,11 +409,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.RateLimit.TooManyRequests =>
                 StatusCodes.Status429TooManyRequests,
 
-            ErrorCodes.WebResearch.RateLimited
-                or ErrorCodes.WebResearch.BudgetExceeded =>
-                StatusCodes.Status429TooManyRequests,
-
-            ErrorCodes.Budget.Exceeded =>
+            ErrorCodes.WebResearch.RateLimited =>
                 StatusCodes.Status429TooManyRequests,
 
             // The server's own 401 is Auth.Unauthorized, written directly by ApiKeyEndpointFilter and

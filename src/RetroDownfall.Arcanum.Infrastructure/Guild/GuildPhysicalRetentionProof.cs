@@ -100,9 +100,7 @@ internal static class GuildPhysicalRetentionProof
 
                     long? parentTokens = reader.IsDBNull(12) ? null : reader.GetInt64(12);
 
-                    if (ownUsd < 0 || ownTokens < 0 || parentUsd < 0 || parentTokens < 0
-                        || parentUsd is { } usd && (ownUsd is null || ownUsd > usd)
-                        || parentTokens is { } tokens && (ownTokens is null || ownTokens > tokens)) clear[run] = false;
+                    if (ownUsd < 0 || ownTokens < 0 || parentUsd < 0 || parentTokens < 0) clear[run] = false;
 
                     if (reader.IsDBNull(4))
                     {

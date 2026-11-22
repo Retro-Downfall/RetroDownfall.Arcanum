@@ -976,7 +976,7 @@ public sealed class DocumentationCodeContradictionTests
 
         Assert.Contains("Every embedding it makes", bullet, StringComparison.Ordinal);
 
-        Assert.Contains("opens, reserves, settles, and closes its own short `embedding` run", bullet, StringComparison.Ordinal);
+        Assert.Contains("opens and closes its own short `embedding` run", bullet, StringComparison.Ordinal);
 
         // What is not ledgered is the model-backed pair, named by their purposes.
         Assert.Contains("`routing`", bullet, StringComparison.Ordinal);

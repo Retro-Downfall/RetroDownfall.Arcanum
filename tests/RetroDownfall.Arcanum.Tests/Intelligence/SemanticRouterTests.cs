@@ -19,7 +19,6 @@ public sealed class SemanticRouterTests
             "any prompt",
             [],
             TimeSpan.FromSeconds(5),
-            maxOutputTokens: 32,
             temperature: 0f,
             CancellationToken.None);
 
@@ -47,7 +46,6 @@ public sealed class SemanticRouterTests
             "please summon",
             spells,
             TimeSpan.FromSeconds(5),
-            maxOutputTokens: 32,
             temperature: 0f,
             CancellationToken.None);
 
@@ -58,6 +56,8 @@ public sealed class SemanticRouterTests
         Assert.Single(result.Entities);
 
         Assert.Equal("Alice", result.Entities[0]);
+
+        Assert.Null(Assert.Single(client.Calls).Options?.MaxOutputTokens);
     }
 
     [Fact]
@@ -81,7 +81,6 @@ public sealed class SemanticRouterTests
             "summon",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None);
 
@@ -105,7 +104,6 @@ public sealed class SemanticRouterTests
             "unrelated",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None);
 
@@ -133,7 +131,6 @@ public sealed class SemanticRouterTests
             "summon",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None);
 
@@ -157,7 +154,6 @@ public sealed class SemanticRouterTests
             "summon",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             NullLogger.Instance);
@@ -190,7 +186,6 @@ public sealed class SemanticRouterTests
             "summon",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             logger);
@@ -223,7 +218,6 @@ public sealed class SemanticRouterTests
             "summon",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             NullLogger.Instance);
@@ -252,7 +246,6 @@ public sealed class SemanticRouterTests
             "summon",
             spells,
             TimeSpan.FromMilliseconds(50),
-            32,
             0f,
             CancellationToken.None,
             NullLogger.Instance);
@@ -273,7 +266,6 @@ public sealed class SemanticRouterTests
             "it's fine",
             [new SpellMetadata("A", "d", "/a/SPELL.md")],
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None);
 
@@ -301,7 +293,6 @@ public sealed class SemanticRouterTests
             "any prompt",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             candidates: null);
@@ -335,7 +326,6 @@ public sealed class SemanticRouterTests
             "any prompt",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             candidates: candidates);
@@ -378,7 +368,6 @@ public sealed class SemanticRouterTests
             "any prompt",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             candidates: candidates);
@@ -400,7 +389,6 @@ public sealed class SemanticRouterTests
             "any prompt",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None,
             candidates: []);
@@ -429,7 +417,6 @@ public sealed class SemanticRouterTests
             "prompt",
             spells,
             TimeSpan.FromSeconds(5),
-            32,
             0f,
             CancellationToken.None);
 
@@ -449,6 +436,8 @@ public sealed class SemanticRouterTests
             "tell me about Alice and Project Phoenix",
             TimeSpan.FromSeconds(5),
             CancellationToken.None);
+
+        Assert.Null(Assert.Single(client.Calls).Options?.MaxOutputTokens);
 
         Assert.Equal(2, entities.Count);
 

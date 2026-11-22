@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
 /// <summary>
 /// Serializes native web-tool envelopes as valid JSON whose complete UTF-8 representation fits
-/// beneath the generic tool materializer's 2,048-token / 8,192-byte default ceiling.
+/// inside one 8,192-byte web-tool response with explicit omission metadata.
 /// </summary>
 internal static class WebToolResultSerializer
 {

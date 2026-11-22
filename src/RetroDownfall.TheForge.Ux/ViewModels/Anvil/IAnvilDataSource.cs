@@ -1,7 +1,6 @@
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Wards;
-using RetroDownfall.TheForge.Core.Models;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 
@@ -9,7 +8,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 public interface IAnvilDataSource
 {
 
-    Task<BudgetSummaryDto?> GetBudgetAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<WardDto>> ListWardsAsync(CancellationToken cancellationToken);
 

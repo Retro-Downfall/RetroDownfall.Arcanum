@@ -1,6 +1,9 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -14,7 +17,35 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildLocalHostPolicyTests
 {
     [Fact]
-    public async Task Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt()
+    public async Task Native_root_issue_accepts_a_grant_with_only_nonfinancial_authority()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        JsonNode wire = JsonSerializer.SerializeToNode(f.Request, GuildJsonContext.Default.GuildIssueRootRequest)!;
+
+        Assert.True(wire["grant"]!.AsObject().Remove("budget"));
+
+        GuildIssueRootRequest request = Assert.IsType<GuildIssueRootRequest>(wire.Deserialize(GuildJsonContext.Default.GuildIssueRootRequest));
+
+        var accepted = await f.IssueAsync(owner, request);
+
+        Assert.True(accepted.IsSuccess, accepted.Error.Message);
+
+        var replay = await f.IssueAsync(owner, request);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(accepted.Value.Quest.Id, replay.Value.Quest.Id);
+
+        Assert.True(replay.Value.Quest.Receipt!.Replayed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Provider_prompt_only_delegation_reaches_real_coordinator_and_returns_child_receipt(bool historicalFiniteGrant)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
@@ -33,7 +64,14 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildToolGrant tool = new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task");
 
-        var root = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with { Tools = [tool] } });
+        GuildGrant grant = f.Request.Grant with { Tools = [tool] };
+
+        if (historicalFiniteGrant)
+        {
+            grant = grant with { Budget = new(new(GuildBudgetMode.Finite, 0), new(GuildBudgetMode.Finite, 0)) };
+        }
+
+        var root = await f.IssueAsync(owner, f.Request with { Grant = grant });
 
         Assert.True(root.IsSuccess, root.Error.Message);
 
@@ -60,7 +98,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 Endpoint = "https://example.test/v1", Models = ["accepted-model"] }],
         };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         using ChildToolTransport transport = new() { PromptOnly = true };
 
@@ -126,9 +164,34 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(2, transport.Bodies.Count);
 
+            using JsonDocument dispatched = JsonDocument.Parse(transport.Bodies[0]);
+
+            JsonElement function = Assert.Single(dispatched.RootElement.GetProperty("tools").EnumerateArray()).GetProperty("function");
+
+            Assert.Equal("delegate_task", function.GetProperty("name").GetString());
+
+            JsonElement advertisedParameters = function.GetProperty("parameters").GetProperty("properties");
+
+            Assert.False(advertisedParameters.TryGetProperty("max_tokens", out _));
+
+            Assert.False(advertisedParameters.TryGetProperty("max_cost_usd", out _));
+
             Assert.Contains("Completed without an external effect.", transport.Bodies[1], StringComparison.Ordinal);
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
+
+            await using var accounting = connection.Connection.BeginTransaction();
+
+            var settled = await new GuildBudgetLedger().ReadWithinAsync(connection.Connection, accounting,
+                root.Value.AllocationAccountId, deadline.Token);
+
+            Assert.True(settled.IsSuccess, settled.Error.Message);
+
+            Assert.False(settled.Value.PhysicalBlocked);
+
+            Assert.False(settled.Value.UsdBlocked);
+
+            Assert.False(settled.Value.TokensBlocked);
         }
         finally
         {

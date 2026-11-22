@@ -233,7 +233,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
 
-        BudgetReservationService daily = new(db, fixture.Settings);
+        BudgetReservationService daily = new(db);
 
         GuildBudgetEffectRequest effect = new(Guid.NewGuid(), stored.Value.Quest.Id, execution.Dispatch.DispatchId,
             stored.Value.Quest.RunId, GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, null, null);

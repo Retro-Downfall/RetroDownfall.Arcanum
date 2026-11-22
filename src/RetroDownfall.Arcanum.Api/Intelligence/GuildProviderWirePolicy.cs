@@ -1,8 +1,6 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -11,7 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Guild;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>Seals the actual SDK transport and the final text-only request before physical admission.</summary>
-internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string model, GuildSpendSourceCredential? spendSource = null) : PipelinePolicy
+internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string model) : PipelinePolicy
 {
     private static readonly ConditionalWeakTable<IChatClient, GuildProviderWirePolicy> Clients = new();
 
@@ -21,30 +19,28 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
     private readonly string _model = model;
 
-    private readonly GuildSpendSourceCredential? _spendSource = spendSource;
-
     internal void Bind(IChatClient client) => Clients.Add(client, this);
 
     internal static PreparedCall? Prepare(IChatClient client, string providerName, string modelName,
-        IReadOnlyList<ChatMessage> messages, IReadOnlyList<AIFunction> functions, int? maxOutput, ModelPricingEntry configured)
+        IReadOnlyList<ChatMessage> messages, IReadOnlyList<AIFunction> functions, int? maxOutput)
     {
         if (!Clients.TryGetValue(client, out GuildProviderWirePolicy? policy)) return null;
 
         if (policy._provider.Name != providerName || policy._model != modelName)
             throw new InvalidOperationException("The Guild transport identity differs from the accepted model.");
 
-        return new(policy, string.Empty, maxOutput, configured, new(messages, functions));
+        return new(policy, string.Empty, maxOutput, new(messages, functions));
     }
 
     internal static PreparedCall? Prepare(IChatClient client, string providerName, string modelName,
-        string prompt, int? maxOutput, ModelPricingEntry configured)
+        string prompt, int? maxOutput)
     {
         if (!Clients.TryGetValue(client, out GuildProviderWirePolicy? policy)) return null;
 
         if (policy._provider.Name != providerName || policy._model != modelName)
             throw new InvalidOperationException("The Guild transport identity differs from the accepted model.");
 
-        return new(policy, prompt, maxOutput, configured);
+        return new(policy, prompt, maxOutput);
     }
 
     public override void Process(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
@@ -79,11 +75,6 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
     internal sealed class PreparedCall
     {
-        // Code-owned proof, never inferred from configurable context windows or token estimates.
-        // https://developers.openai.com/api/docs/models/gpt-5.4-mini
-        // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
-        private const string ProofVersion = "openai-chat-text-default-v1-2026-11-08";
-
         private readonly byte[] _payload;
 
         private readonly string _prompt;
@@ -104,17 +95,7 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
         internal GuildProviderWirePolicy Policy { get; }
 
-        internal GuildSpendSourceCredential? SpendSource => Policy._spendSource;
-
-        internal decimal? UsdBound { get; }
-
-        internal long? TokenBound { get; }
-
         internal int? MaxOutputTokens => _maxOutput;
-
-        internal ModelPricingEntry Pricing { get; }
-
-        internal string ProofIdentity { get; }
 
         internal bool UsageObserved { get; private set; }
 
@@ -128,7 +109,7 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
         internal long? ObservedReasoningTokens { get; private set; }
 
-        internal PreparedCall(GuildProviderWirePolicy policy, string prompt, int? maxOutput, ModelPricingEntry configured,
+        internal PreparedCall(GuildProviderWirePolicy policy, string prompt, int? maxOutput,
             GuildProviderPayload? structured = null)
         {
             Policy = policy;
@@ -142,41 +123,7 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
             _endpoint = new Uri(policy._provider.Endpoint.TrimEnd('/') + "/chat/completions", UriKind.Absolute);
 
-            Uri endpoint = new(policy._provider.Endpoint, UriKind.Absolute);
-
-            bool qualified = policy._model == "gpt-5.4-mini-2026-03-17"
-                && endpoint.Scheme == "https" && endpoint.Host == "api.openai.com" && endpoint.Port == 443
-                && endpoint.AbsolutePath is "/v1" or "/v1/" && endpoint.Query.Length == 0
-                && endpoint.Fragment.Length == 0 && endpoint.UserInfo.Length == 0
-                && _limitField == "max_completion_tokens" && maxOutput is null or > 0;
-
-            int? physicalOutput = qualified ? Math.Min(maxOutput ?? 128000, 128000) : maxOutput;
-
-            _maxOutput = physicalOutput;
-
-            Pricing = qualified ? new()
-            {
-                InputPer1M = Math.Max(0.75m, configured.InputPer1M),
-                CachedPer1M = Math.Max(0.075m, configured.CachedPer1M),
-                OutputPer1M = Math.Max(4.50m, configured.OutputPer1M),
-                ReasoningPer1M = Math.Max(4.50m, configured.ReasoningPer1M ?? configured.OutputPer1M),
-            } : configured with { };
-
-            if (qualified)
-            {
-                TokenBound = 400000L + physicalOutput!.Value;
-
-                try
-                {
-                    UsdBound = checked(400000m * Math.Max(Pricing.InputPer1M, Pricing.CachedPer1M)
-                        + physicalOutput.Value * Math.Max(Pricing.OutputPer1M, Pricing.ReasoningPer1M!.Value)) / 1000000m;
-                }
-                catch (OverflowException)
-                {
-                    // Token proof remains valid; this price is not representable and cannot authorize finite USD.
-                    UsdBound = null;
-                }
-            }
+            _maxOutput = maxOutput;
 
             using MemoryStream buffer = new();
 
@@ -205,20 +152,16 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
                     writer.WriteEndArray();
                 }
 
-                if (physicalOutput is { } maximum) writer.WriteNumber(_limitField, maximum);
+                if (_maxOutput is { } maximum) writer.WriteNumber(_limitField, maximum);
 
                 writer.WriteNumber("n", 1);
 
                 writer.WriteBoolean("stream", false);
 
-                if (qualified) writer.WriteString("service_tier", "default");
-
                 writer.WriteEndObject();
             }
 
             _payload = buffer.ToArray();
-
-            ProofIdentity = $"{(qualified ? ProofVersion : "unqualified-text-v1")}:{(structured?.HasTools == true ? "functions-v1" : "text")}:{Convert.ToHexString(SHA256.HashData(_payload))}";
         }
 
         internal IDisposable Enter()
@@ -290,7 +233,7 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
                 if (!exact) throw new InvalidOperationException("The Guild SDK request changed its accepted text.");
             }
 
-            // These final bytes (including default service tier) were frozen and hashed before budget admission.
+            // Send only the exact payload frozen before the effect was admitted.
             message.Request.Content = BinaryContent.Create(BinaryData.FromBytes(_payload));
         }
 
@@ -409,30 +352,6 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
             }
 
             return reader.TokenType == JsonTokenType.EndObject;
-        }
-
-        internal string PricingSnapshotJson()
-        {
-            using MemoryStream buffer = new();
-
-            using (Utf8JsonWriter writer = new(buffer))
-            {
-                writer.WriteStartObject();
-
-                writer.WriteNumber("inputPer1M", Pricing.InputPer1M);
-
-                writer.WriteNumber("outputPer1M", Pricing.OutputPer1M);
-
-                writer.WriteNumber("cachedPer1M", Pricing.CachedPer1M);
-
-                if (Pricing.ReasoningPer1M is { } reasoning) writer.WriteNumber("reasoningPer1M", reasoning);
-
-                writer.WriteString("guildProof", ProofIdentity);
-
-                writer.WriteEndObject();
-            }
-
-            return Encoding.UTF8.GetString(buffer.ToArray());
         }
 
         private sealed class Scope(PreparedCall call, PreparedCall? previous) : IDisposable

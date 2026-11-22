@@ -88,10 +88,9 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, false)]
-    [InlineData(true, true)]
-    public async Task Remote_discovery_rechecks_transport_policy_after_DNS_resolution(bool run, bool dailyBudget)
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Remote_discovery_rechecks_transport_policy_after_DNS_resolution(bool run)
     {
         await using Fixture fixture = await Fixture.CreateAsync(localExecution: true);
 
@@ -128,16 +127,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             await dns.Entered.Task;
 
-            if (dailyBudget)
-            {
-                fixture.Settings.CurrentValue.Cost.Budget.Enabled = true;
-
-                fixture.Settings.CurrentValue.Cost.Budget.DailyLimitUsd = 1;
-            }
-            else
-            {
-                fixture.Settings.CurrentValue.Features.A2AClient = false;
-            }
+            fixture.Settings.CurrentValue.Features.A2AClient = false;
         }
         finally
         {

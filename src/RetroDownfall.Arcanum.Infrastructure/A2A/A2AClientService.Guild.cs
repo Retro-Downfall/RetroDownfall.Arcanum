@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 
-internal sealed record A2AGuildSendingRequest(string AgentUrl, string Body, string MessageId, GuildBudgetGrant Grant,
+internal sealed record A2AGuildSendingRequest(string AgentUrl, string Body, string MessageId,
     string? TaskId = null, string? ContextId = null, A2ADispatchMode Mode = A2ADispatchMode.Blocking,
     A2ASendingOptions? Options = null, IReadOnlyList<string>? DelegationChain = null,
     GuildRemoteTransportDescriptor? Transport = null);
@@ -44,9 +44,6 @@ public sealed partial class A2AClientService
         if (request is null || lifecycle is null || string.IsNullOrWhiteSpace(request.Body)
             || string.IsNullOrWhiteSpace(request.MessageId) || !Enum.IsDefined(request.Mode))
             return new Error(ErrorCodes.Guild.InvalidRequest, "The transport request must identify committed Guild work.");
-
-        if (request.Grant.Usd.Mode != GuildBudgetMode.Unlimited || request.Grant.Tokens.Mode != GuildBudgetMode.Unlimited)
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A transport cannot enforce a finite USD or token grant.");
 
         if (!_options.CurrentValue.Features.Guild)
             return new Error(ErrorCodes.Guild.Unavailable, "Guild execution is disabled.");

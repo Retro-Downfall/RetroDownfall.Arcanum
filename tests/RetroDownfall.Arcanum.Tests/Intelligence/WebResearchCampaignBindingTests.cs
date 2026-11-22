@@ -585,7 +585,7 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
                 {
                     Question = "What changed?",
                     SourceTarget = Math.Max(1, Citations.Length),
-                    TokenBudget = 1_200,
+
                     WorkingDirectory = workingDirectory,
                     CampaignId = campaignId,
                     ContinueSessionId = continueSessionId,

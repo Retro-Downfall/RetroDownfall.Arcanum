@@ -57,7 +57,33 @@ internal static class TurnIdempotencyAmbient
     public static void Publish(CancellationToken ownershipLostToken = default) =>
         CurrentLocal.Value = new State(ownershipLostToken, RequestIdentity);
 
+    public static IDisposable SuppressRequestIdentity()
+    {
+        State? previous = CurrentLocal.Value;
+
+        if (previous is not null)
+        {
+            CurrentLocal.Value = previous with { Identity = null };
+        }
+
+        return new RequestIdentityScope(previous);
+    }
+
     public static void Clear() => CurrentLocal.Value = null;
 
     private sealed record State(CancellationToken OwnershipLostToken, TurnIdempotencyRequestIdentity? Identity);
+
+    private sealed class RequestIdentityScope(State? previous) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            CurrentLocal.Value = previous;
+
+            _disposed = true;
+        }
+    }
 }

@@ -241,13 +241,11 @@ public sealed class BackupRestoreRefreshRecoveryTests
 
         var recovered = await GuildLocalHostPolicyTests.RecoverRestoredRefreshAsync(restoredConnectionString, operationId);
 
-        Assert.Equal(0, recovered.Gets);
+        Assert.Equal(operationId, recovered.Id);
 
-        Assert.Equal(operationId, recovered.Operation.Id);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, recovered.State);
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, recovered.Operation.State);
-
-        Assert.Equal("Guild.OwnerUnavailable", recovered.Operation.TerminalErrorCode);
+        Assert.Equal("Guild.OwnerUnavailable", recovered.TerminalErrorCode);
 
         await using SqliteConnection after = await BackupRestoreDatabaseWorker.OpenAsync(fixture.DatabasePath, fixture.GrimoireSecret, false, default);
 

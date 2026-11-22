@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
-using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -8,7 +7,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.ProvingGrounds.MemoryEvaluation;
 
@@ -25,12 +23,10 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
 
     private readonly ITurnRunWriter _writer;
 
-    private readonly IBudgetReservationService _reservations;
-
     private readonly ConditionalWeakTable<MemoryEvaluationExecutionPlan, PreparedBinding> _bindings = new();
 
     public MemoryEvaluationProvider(MemoryEvaluationProviderClientFactory clients, MemoryEvaluationProviderEpoch epoch,
-        IModelCallExecutor executor, IModelTokenEstimator estimator, ITurnRunWriter writer, IBudgetReservationService reservations)
+        IModelCallExecutor executor, IModelTokenEstimator estimator, ITurnRunWriter writer)
     {
         _clients = clients ?? throw new ArgumentNullException(nameof(clients));
 
@@ -42,7 +38,6 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
 
         _writer = writer ?? throw new ArgumentNullException(nameof(writer));
 
-        _reservations = reservations ?? throw new ArgumentNullException(nameof(reservations));
     }
 
     public Task<Result<MemoryEvaluationExecutionPlan>> PrepareAsync(MemoryEvaluationValidatedRequest request,
@@ -84,11 +79,13 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
 
         CovenantDigest sensitivity = CovenantDigests.Sensitivity(provenance.ToDigestInput(derived ? ContentSensitivity.CovenantDerived : ContentSensitivity.None));
 
-        ContextTokenBreakdown control = _estimator.EstimateMemoryEvaluation(provider, entry.Name, prompts.ControlSystemPrompt, prompts.ControlUserPrompt, request.Request.Options.MaxOutputTokens);
+        int reservedAnswerTokens = MemoryEvaluationLimits.ReservedAnswerTokens(request.Request.Options);
 
-        ContextTokenBreakdown treatment = _estimator.EstimateMemoryEvaluation(provider, entry.Name, prompts.TreatmentSystemPrompt, prompts.TreatmentUserPrompt, request.Request.Options.MaxOutputTokens);
+        ContextTokenBreakdown control = _estimator.EstimateMemoryEvaluation(provider, entry.Name, prompts.ControlSystemPrompt, prompts.ControlUserPrompt, reservedAnswerTokens);
 
-        if (provider.ContextWindowLimit <= 0 || control.TotalTokens > provider.ContextWindowLimit || treatment.TotalTokens > provider.ContextWindowLimit)
+        ContextTokenBreakdown treatment = _estimator.EstimateMemoryEvaluation(provider, entry.Name, prompts.TreatmentSystemPrompt, prompts.TreatmentUserPrompt, reservedAnswerTokens);
+
+        if (provider.ContextWindowLimit <= 0 || control.TotalTokensForAdmission > provider.ContextWindowLimit || treatment.TotalTokensForAdmission > provider.ContextWindowLimit)
             return Task.FromResult(Result<MemoryEvaluationExecutionPlan>.Failure(Invalid()));
 
         ImmutableArray<MemoryEvaluationArm>.Builder order = ImmutableArray.CreateBuilder<MemoryEvaluationArm>(request.Request.PairCount * 2);
@@ -109,9 +106,9 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
         MemoryEvaluationExecutionPlan plan = new(request, snapshot, prompts, configuration.Digest, modelDigest,
             Digest("options", MemoryEvaluationDigests.Request(request).ToString()), destination, sensitivity, configuration.Generation, order.MoveToImmutable());
 
-        ModelCallContext controlContext = new(provider, entry.Name, request.Request.Options.MaxOutputTokens, 0, control);
+        ModelCallContext controlContext = new(provider, entry.Name, reservedAnswerTokens, 0, control);
 
-        ModelCallContext treatmentContext = new(provider, entry.Name, request.Request.Options.MaxOutputTokens, 0, treatment);
+        ModelCallContext treatmentContext = new(provider, entry.Name, reservedAnswerTokens, 0, treatment);
 
         ProviderCallEnvelope controlEnvelope = MemoryEvaluationProviderCallFreezer.Freeze(plan, MemoryEvaluationArm.Control, controlContext, mapped,
             MemoryEvaluationProviderCallFreezer.Messages(plan, MemoryEvaluationArm.Control));
@@ -164,23 +161,8 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
 
             PricingSettings pricing = settings.ResolvePricing();
 
-            ContextTokenBreakdown common = binding.Treatment.InputTokens >= binding.Control.InputTokens ? binding.Treatment : binding.Control;
-
-            decimal reservation = BudgetReservationService.EstimateWorstCaseTurnUsd(pricing.ResolveForModel(model),
-                common.ReservedAnswerTokens, common.ReservedAnswerTokens, common.InputTokens);
-
-            var begun = await TurnAccountingHandle.BeginAsync(_writer, _reservations, pricing, model, null,
-                "memory-evaluation", "counterfactual-arm", $"{plan.Request.Request.EvaluationId:N}:{binding.NextSend}", ct,
-                reservedUsdOverride: reservation).ConfigureAwait(false);
-
-            if (begun.IsFailure) return begun.Error;
-
-            accounting = begun.Value;
-
-            Result admitted = await accounting.EnsureReservationForContextAsync(_reservations, pricing, null, model, common,
-                NullLogger.Instance, ct).ConfigureAwait(false);
-
-            if (admitted.IsFailure) return admitted.Error;
+            accounting = await TurnAccountingHandle.BeginAsync(_writer, null, "memory-evaluation", "counterfactual-arm",
+                $"{plan.Request.Request.EvaluationId:N}:{binding.NextSend}", ct).ConfigureAwait(false);
 
             var client = await _clients.ResolveChatAsync(provider!, model, ct).ConfigureAwait(false);
 
@@ -190,7 +172,7 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
 
             ContextTokenBreakdown actual = arm == MemoryEvaluationArm.Control ? binding.Control : binding.Treatment;
 
-            ModelCallContext context = new(provider!, model, plan.Request.Request.Options.MaxOutputTokens, 0, actual);
+            ModelCallContext context = new(provider!, model, actual.ReservedAnswerTokens, 0, actual);
 
             bool callbackUsed = false;
 
@@ -204,7 +186,7 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
 
                 // Accounting preflight must finish before the caller's final authority/disclosure fence.
                 // If that fence refuses, retain the marker conservatively without inventing a bill.
-                await accounting.MarkPossiblyDispatchedAsync(_reservations, cancellation).ConfigureAwait(false);
+                accounting.MarkPossiblyDispatched();
 
                 if ((await ValidateAsync(plan, cancellation).ConfigureAwait(false)).IsFailure)
                     throw new InvalidOperationException("The evaluation configuration changed during accounting preflight.");
@@ -248,7 +230,7 @@ public sealed class MemoryEvaluationProvider : IMemoryEvaluationProvider
         {
             try
             {
-                if (accounting is not null) await accounting.CompleteAsync(_writer, _reservations,
+                if (accounting is not null) await accounting.CompleteAsync(_writer,
                     valid ? InferenceRunStatus.Completed : InferenceRunStatus.Failed, CancellationToken.None).ConfigureAwait(false);
             }
             catch

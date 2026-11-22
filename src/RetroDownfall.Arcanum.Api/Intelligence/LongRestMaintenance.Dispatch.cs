@@ -61,11 +61,11 @@ internal sealed partial class LongRestMaintenance
         LongRestProviderAdmission providerAdmission = payload.Kind == LongRestProviderPayloadKind.Embedding
             ? new LongRestProviderAdmission.Embedding(selected.Provider, selected.Model, selected.Dimensions,
                 estimator.EstimateLongRestEmbedding(selected.Provider, selected.Model, payload).TokenCount, payloadDigest)
-            : new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, 2048, 0,
+            : new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, LongRestPromptLayout.OutputHeadroomTokens, 0,
                 estimator.EstimateLongRestChat(selected.Provider, selected.Model, payload)));
 
         // Admit-then-Prepare: the deterministic local refusals this layer can see (the rendered size above, the context window here) happen
-        // before any provider-effect row or accounting run exists. A refusal only the provider layer can see (the daily budget, a credential)
+        // before any provider-effect row or accounting run exists. A refusal only the provider layer can see (such as a credential)
         // comes after the attempt is prepared; the attempt is then withdrawn below, so none leaves a Prepared row for readmission to meet.
         Require(ModelCallExecutor.CheckLongRestWindow(providerAdmission));
 
@@ -185,7 +185,7 @@ internal sealed partial class LongRestMaintenance
                 }
                 else if (result.IsFailure && attempt.State == LongRestDispatchAttemptState.Prepared)
                 {
-                    // A local refusal after the attempt was prepared (the daily budget, a credential, a stale configuration) ended the call
+                    // A local refusal after the attempt was prepared (such as a credential change or a stale configuration) ended the call
                     // before any send: the attempt is withdrawn, or a later same-boot clean readmission would meet it and refuse.
                     await ReleaseUnsentAsync(attempt).ConfigureAwait(false);
                 }

@@ -21,8 +21,6 @@ internal sealed class GuildSpendSourceCredential
 
     private readonly string _model;
 
-    private readonly GuildUsageReconciliationSource _source;
-
     internal GuildSpendSourceCredential(ProviderSettings provider, string model, string? secret)
     {
         _type = provider.Type;
@@ -33,15 +31,13 @@ internal sealed class GuildSpendSourceCredential
 
         _model = model;
 
-        _source = provider.GuildUsageReconciliation;
-
         _secret = secret;
     }
 
     internal async Task<Result> CaptureWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildBudgetEffectRequest effect, Guid generation, string pricing, CancellationToken ct)
     {
-        if (_type != AiProviderKind.OpenAICompatible || _source != GuildUsageReconciliationSource.OpenRouterGeneration
+        if (_type != AiProviderKind.OpenAICompatible
             || !ProviderSettings.IsCanonicalOpenRouterEndpoint(_endpoint) || !ValidSecret(_secret)
             || string.IsNullOrWhiteSpace(_provider) || string.IsNullOrWhiteSpace(_model) || generation == Guid.Empty)
             return Unavailable;
@@ -156,7 +152,6 @@ internal sealed class GuildSpendSourceCredential
             Guid effectId, Guid generation, CancellationToken ct, string? exactBillId)
         {
             if (credential._type != AiProviderKind.OpenAICompatible
-                || credential._source != GuildUsageReconciliationSource.OpenRouterGeneration
                 || !ProviderSettings.IsCanonicalOpenRouterEndpoint(credential._endpoint)
                 || string.IsNullOrWhiteSpace(credential._provider) || string.IsNullOrWhiteSpace(credential._model))
                 return GuildSpendSourceFailure.ConfigurationChanged;
@@ -278,11 +273,9 @@ internal sealed class GuildSpendSourceCredential
 
             if (!bill.Matches(stored.Snapshot)) return GuildSpendSourceFailure.SourceInvalid;
 
-            return new VerifiedSource(generationId, credential._model, credential._secret!, generation,
+            return new VerifiedSource(generationId, credential._model, generation,
                 authorityKeyId, authorityEpoch, endpoint, provider, pricing, saved, stored);
         }
-
-        private readonly string _secret;
 
         private readonly Guid _installation;
 
@@ -300,14 +293,12 @@ internal sealed class GuildSpendSourceCredential
 
         private readonly GuildStoredInitialSpend _initial;
 
-        private VerifiedSource(string generationId, string model, string secret, Guid installation, string authorityKeyId,
+        private VerifiedSource(string generationId, string model, Guid installation, string authorityKeyId,
             string authorityEpoch, string endpoint, string provider, string pricing, byte[] fingerprint, GuildStoredInitialSpend initial)
         {
             GenerationId = generationId;
 
             Model = model;
-
-            _secret = secret;
 
             _installation = installation;
 
@@ -381,15 +372,6 @@ internal sealed class GuildSpendSourceCredential
 
         internal string Model { get; }
 
-        internal async Task<HttpResponseMessage> SendAsync(HttpClient client, CancellationToken ct)
-        {
-            using HttpRequestMessage request = new(HttpMethod.Get,
-                "https://openrouter.ai/api/v1/generation?id=" + Uri.EscapeDataString(GenerationId));
-
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _secret);
-
-            return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        }
     }
 
     private static string Id(Guid id) => id.ToString("D").ToUpperInvariant();

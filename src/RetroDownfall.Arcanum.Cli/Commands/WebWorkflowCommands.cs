@@ -171,8 +171,6 @@ public sealed class WebWorkflowCommands(
         string question,
         int? sourceTarget,
         string? model,
-        int tokenBudget,
-        decimal? costBudget,
         string? continueSession,
         string? outputFormat,
         string? save,
@@ -238,10 +236,6 @@ public sealed class WebWorkflowCommands(
                     SourceTarget = sourceTarget,
 
                     Model = model,
-
-                    TokenBudget = tokenBudget,
-
-                    CostBudgetUsd = costBudget,
 
                     ContinueSessionId = continuation.Id,
 

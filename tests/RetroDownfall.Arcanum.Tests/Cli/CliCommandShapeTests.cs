@@ -63,6 +63,21 @@ public sealed class CliCommandShapeTests
     }
 
     [Fact]
+    public void Retired_budget_command_is_absent_from_the_operator_command_tree()
+    {
+        Dictionary<string, CliSurfaceCommand> commands = AllCommands();
+
+        Assert.DoesNotContain("budget", commands.Keys);
+        Assert.DoesNotContain("guild task spend", commands.Keys);
+        Assert.DoesNotContain(commands.Keys, path => path.StartsWith("guild spend", StringComparison.Ordinal));
+
+        foreach (CliSurfaceCommand command in new[] { commands["run"], commands["research"] })
+        {
+            Assert.DoesNotContain(command.Options, option => option.Name is "--token-budget" or "--cost-budget");
+        }
+    }
+
+    [Fact]
     public void Every_single_resource_read_is_spelled_show()
     {
         Dictionary<string, CliSurfaceCommand> commands = AllCommands();

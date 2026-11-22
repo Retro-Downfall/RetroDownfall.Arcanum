@@ -9,6 +9,23 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 public sealed partial class GuildEndpointTests
 {
     [Fact]
+    public async Task Budget_management_routes_are_absent_from_the_Guild_operator_surface()
+    {
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        _ = await client.GetAsync("/api/guild/status");
+
+        RouteEndpoint[] endpoints = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>().ToArray();
+
+        Assert.Contains(endpoints, endpoint => endpoint.RoutePattern.RawText == "/api/guild/status");
+
+        Assert.DoesNotContain(endpoints, endpoint =>
+            endpoint.RoutePattern.RawText?.StartsWith("/api/guild/quests/{questId:guid}/spend", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
     public async Task Guild_operator_route_contract_is_registered_with_unique_names()
     {
         await using ArcanumWebApplicationFactory factory = new();
@@ -33,13 +50,6 @@ public sealed partial class GuildEndpointTests
             ("GET", "/api/guild/quests/{questId:guid}/tree", "GuildGetQuestTree"),
             ("POST", "/api/guild/quests/{questId:guid}/messages", "GuildSendOperatorMessage"),
             ("POST", "/api/guild/quests/{questId:guid}/cancel", "GuildCancelQuest"),
-            ("GET", "/api/guild/quests/{questId:guid}/spend", "GuildGetTreeSpend"),
-            ("GET", "/api/guild/quests/{questId:guid}/spend/effects", "GuildListSpendEffects"),
-            ("GET", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}", "GuildGetSpendEffect"),
-            ("POST", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/corrections", "GuildCorrectSpendEffect"),
-            ("POST", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/refreshes", "GuildRefreshSpendEffect"),
-            ("GET", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/receipts", "GuildListSpendReceipts"),
-            ("GET", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/receipts/{receiptId:guid}", "GuildGetSpendReceipt"),
             ("POST", "/api/guild/content/resolve", "GuildResolveContent"),
             ("GET", "/api/guild/content/{contentId:guid}", "GuildGetContent"),
             ("POST", "/api/guild/signets/{signetId:guid}/revoke", "GuildRevokeSignet"),

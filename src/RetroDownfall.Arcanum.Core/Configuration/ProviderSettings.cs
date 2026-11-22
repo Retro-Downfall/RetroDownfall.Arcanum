@@ -45,9 +45,6 @@ public sealed record ProviderSettings
     /// <summary>Output-limit field accepted by this HTTP provider. The default preserves the SDK wire contract.</summary>
     public OutputTokenLimitWireDialect OutputTokenLimitWireDialect { get; set; }
 
-    /// <summary>Provider metadata source for Guild spend; disabled by default.</summary>
-    public GuildUsageReconciliationSource GuildUsageReconciliation { get; set; }
-
     public int ContextWindowLimit { get; set; } = 8192;
 
     /// <summary>Only the canonical OpenRouter inference base is eligible for provider reconciliation.</summary>

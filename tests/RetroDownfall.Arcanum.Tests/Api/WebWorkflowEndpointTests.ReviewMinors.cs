@@ -20,6 +20,38 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed partial class WebWorkflowEndpointTests
 {
+    [SkippableFact]
+    public async Task Research_with_legacy_cost_and_token_limits_returns_the_synthesis_without_capping_the_provider()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new()
+        {
+            SearchResults = [new WebSearchResult("A source", [new WebCitation(1, "https://example.test/1", "Source")],
+                new WebResearchUsage(SearchQueries: 1, CostUsd: 0.01m))],
+        };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+
+        using var body = new StringContent(
+            """{"question":"What changed?","sourceTarget":1,"costBudgetUsd":0.001,"tokenBudget":1}""",
+            Encoding.UTF8, "application/json");
+
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsync("/api/web/research", body);
+
+        string frames = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.NotNull(intelligence.Request);
+
+        Assert.Null(intelligence.Request.MaxOutputTokens);
+
+        Assert.Contains("Synthesized answer", frames);
+    }
+
     [SkippableTheory]
     [InlineData(null, false, 50)]
     [InlineData(null, true, 50)]
@@ -170,8 +202,6 @@ public sealed partial class WebWorkflowEndpointTests
     [SkippableTheory]
     [InlineData("{\"question\":\" \"}", "question", "nonempty")]
     [InlineData("{\"question\":\"private-canary\",\"sourceTarget\":0}", "sourceTarget", "positive")]
-    [InlineData("{\"question\":\"private-canary\",\"tokenBudget\":0}", "tokenBudget", "positive")]
-    [InlineData("{\"question\":\"private-canary\",\"costBudgetUsd\":-1}", "costBudgetUsd", "nonnegative")]
     public async Task Review_research_validation_names_field_and_is_a_traced_terminal_http_200_error(string body, string field, string rule)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -215,21 +245,20 @@ public sealed partial class WebWorkflowEndpointTests
     }
 
     [SkippableTheory]
-    [InlineData(false, true)]
-    [InlineData(false, false)]
-    [InlineData(true, true)]
-    public async Task Review_late_research_failure_reports_known_spend_and_the_same_safe_trace(bool budget, bool reportedCost)
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Review_late_research_failure_reports_known_spend_and_the_same_safe_trace(bool reportedCost)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
         StubWebProvider provider = new()
         {
-            ThrowOnSearchCall = budget ? 0 : 2,
+            ThrowOnSearchCall = 2,
             SearchResults = [new WebSearchResult("private-provider-summary", [new WebCitation(1, "https://example.test/1", "Source")], new WebResearchUsage(SearchQueries: 1, CostUsd: reportedCost ? 0.01m : null))],
         };
         StubIntelligence intelligence = new();
         CapturedLogProvider logs = new();
         await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence, additionalServices: services => CaptureLogs(services, logs));
-        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync("/api/web/research", new WebResearchWorkflowRequest { Question = "Research?", CostBudgetUsd = budget ? 0.015m : null }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync("/api/web/research", new WebResearchWorkflowRequest { Question = "Research?" }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
         string wire = await response.Content.ReadAsStringAsync();
         string[] lines = wire.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         using JsonDocument document = JsonDocument.Parse(lines[^1]);
@@ -237,9 +266,9 @@ public sealed partial class WebWorkflowEndpointTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.True(lines.Length > 1);
         Assert.Equal("Error", frame.GetProperty("type").GetString());
-        Assert.Equal(budget ? ErrorCodes.WebResearch.BudgetExceeded : ErrorCodes.Hub.Error, frame.GetProperty("code").GetString());
+        Assert.Equal(ErrorCodes.Hub.Error, frame.GetProperty("code").GetString());
         Assert.Null(intelligence.Request);
-        AssertFailureDiagnostics(frame, logs, provider.SearchActivityId, budget ? 2 : 1, reportedCost ? (budget ? 0.02m : 0.01m) : null);
+        AssertFailureDiagnostics(frame, logs, provider.SearchActivityId, 1, reportedCost ? 0.01m : null);
         Assert.DoesNotContain("private-provider-summary", wire);
         Assert.All(logs.Entries.Where(e => e.Category.Contains("WebWorkflowEndpoints", StringComparison.Ordinal)), e =>
         {
@@ -306,14 +335,14 @@ public sealed partial class WebWorkflowEndpointTests
     }
 
     [SkippableFact]
-    public async Task Review_success_at_exact_cost_limit_retains_usage_and_one_trace_on_every_frame()
+    public async Task Review_success_retains_usage_and_one_trace_on_every_frame()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
         StubWebProvider provider = new();
         CapturedLogProvider logs = new();
         await using ArcanumWebApplicationFactory factory = Factory(provider, new StubIntelligence(), additionalServices: services => CaptureLogs(services, logs));
         using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync("/api/web/research",
-            new WebResearchWorkflowRequest { Question = "Evidence?", SourceTarget = 1, CostBudgetUsd = 0.01m }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+            new WebResearchWorkflowRequest { Question = "Evidence?", SourceTarget = 1 }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string[] lines = (await response.Content.ReadAsStringAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
         foreach (string line in lines)
@@ -403,7 +432,7 @@ public sealed partial class WebWorkflowEndpointTests
         else
         {
             WebResearchWorkflowRequest request = JsonSerializer.Deserialize("{\"question\":\"Evidence?\"}", ArcanumJsonContext.Default.WebResearchWorkflowRequest)!;
-            Assert.Equal(2_000, request.TokenBudget);
+            Assert.Equal("Evidence?", request.Question);
         }
     }
 
@@ -427,7 +456,7 @@ public sealed partial class WebWorkflowEndpointTests
         else
         {
             Assert.Equal(WebResearchStreamFrameType.Result, ParseResearchFrames(body).Last().Type);
-            Assert.Equal(2_000, intelligence.Request!.MaxOutputTokens);
+            Assert.Null(intelligence.Request!.MaxOutputTokens);
         }
     }
 

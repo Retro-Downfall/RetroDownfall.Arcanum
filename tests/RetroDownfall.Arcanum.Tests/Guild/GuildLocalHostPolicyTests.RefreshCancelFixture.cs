@@ -38,12 +38,11 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(dispatch.IsSuccess, dispatch.IsFailure ? dispatch.Error.Message : null);
 
         ProviderSettings provider = new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = ["provider/model"],
-            GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration,
             CredentialEnvironmentVariable = "ARCANUM_TEST_REFRESH_" + Guid.NewGuid().ToString("N") };
 
         f.Settings.CurrentValue.Providers = [provider];
 
-        BudgetReservationService daily = new(db, f.Settings);
+        BudgetReservationService daily = new(db);
 
         GuildQuestStore store = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, readiness: f.Readiness);

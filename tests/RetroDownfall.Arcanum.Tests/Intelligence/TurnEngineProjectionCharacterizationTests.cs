@@ -111,7 +111,6 @@ public sealed class TurnEngineProjectionCharacterizationTests
     [InlineData(ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive, "invalid_reasoning_options")]
     [InlineData(ErrorCodes.Validation.InvalidReasoningBudget, "invalid_reasoning_budget")]
     [InlineData(ErrorCodes.Validation.UnsupportedReasoningControl, "unsupported_reasoning_control")]
-    [InlineData(ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit, "reasoning_budget_exceeds_model_limit")]
     [InlineData(ErrorCodes.Validation.UnsupportedReasoningOutput, "unsupported_reasoning_output")]
     public void OpenAiStreamErrorMapper_MapsReasoningValidationToInvalidRequestError(
         string internalCode,

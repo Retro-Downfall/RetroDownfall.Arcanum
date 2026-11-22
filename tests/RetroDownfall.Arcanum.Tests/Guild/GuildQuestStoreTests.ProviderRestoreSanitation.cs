@@ -141,7 +141,7 @@ public sealed partial class GuildQuestStoreTests
     {
         await using RefreshApplicationScenario scenario = await RefreshApplicationScenario.CreateAsync();
 
-        Assert.True((await scenario.ApplyAsync()).IsSuccess);
+        await scenario.SeedAcceptedReceiptAsync();
 
         await using SqliteCommand command = scenario.Connection.CreateCommand();
 

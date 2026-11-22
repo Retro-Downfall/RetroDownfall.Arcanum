@@ -64,30 +64,6 @@ public sealed class ConfigurationValidatorTests
         Assert.True(_validator.Validate(settings).IsSuccess);
     }
 
-    [Theory]
-    [InlineData(true, 0, true)]
-    [InlineData(false, 0, false)]
-    [InlineData(true, 10, false)]
-    public void Budget_enabled_without_a_positive_limit_warns_without_changing_legacy_validation(bool enabled, int limit, bool warningExpected)
-    {
-        TestCapturingLogger<ConfigurationValidator> logger = new();
-
-        ArcanumSettings settings = new()
-        {
-            Cost = new CostSettings { Budget = new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit } },
-        };
-
-        Result result = new ConfigurationValidator(logger).Validate(settings);
-
-        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
-
-        bool warned = logger.Entries.Any(entry => entry.Level == LogLevel.Warning
-            && entry.Message.Contains("Arcanum:Cost:Budget:Enabled", StringComparison.Ordinal)
-            && entry.Message.Contains("Arcanum:Cost:Budget:DailyLimitUsd", StringComparison.Ordinal));
-
-        Assert.Equal(warningExpected, warned);
-    }
-
     [Fact]
     public void Validate_ValidOpenAiCompatibleProvider_ReturnsSuccess()
     {
@@ -1219,7 +1195,7 @@ public sealed class ConfigurationValidatorTests
     [Fact]
     public void Validate_ProviderModelWithReasoningDefaults_ReturnsSuccess()
     {
-        Result result = _validator.Validate(SettingsWithReasoning(null, null));
+        Result result = _validator.Validate(SettingsWithReasoning(null));
 
         Assert.True(result.IsSuccess);
     }
@@ -1233,56 +1209,9 @@ public sealed class ConfigurationValidatorTests
         ReasoningWireDialect wireDialect,
         bool expectedValid)
     {
-        Result result = _validator.Validate(SettingsWithReasoning(wireDialect, null));
+        Result result = _validator.Validate(SettingsWithReasoning(wireDialect));
 
         Assert.Equal(expectedValid, result.IsSuccess);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    [InlineData(2_097_153)]
-    public void Validate_ReasoningMaxBudgetOutsideClamp_ReturnsFailure(int maxBudgetTokens)
-    {
-        Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.OpenRouter, maxBudgetTokens));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.maxBudgetTokens");
-    }
-
-    [Fact]
-    public void Validate_BudgetControlWithStandardDialect_ReturnsFailure()
-    {
-        Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.Standard, 32768));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
-    }
-
-    [Fact]
-    public void Validate_MaxBudgetWithStandardDialect_ReturnsFailure()
-    {
-        Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.Standard, 32768));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
-    }
-
-    [Fact]
-    public void Validate_MaxBudgetWithOmittedDialect_ReturnsFailure()
-    {
-        Result result = _validator.Validate(SettingsWithReasoning(null, 32768));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
     }
 
     [Fact]
@@ -1351,9 +1280,9 @@ public sealed class ConfigurationValidatorTests
     [InlineData(ReasoningWireDialect.OpenRouter)]
     [InlineData(ReasoningWireDialect.TopLevelReasoningBudget)]
     [InlineData(ReasoningWireDialect.AnthropicThinking)]
-    public void Validate_BudgetControlWithExplicitNumericDialect_ReturnsSuccess(ReasoningWireDialect dialect)
+    public void Validate_ReasoningWithExplicitNumericDialect_ReturnsSuccess(ReasoningWireDialect dialect)
     {
-        Result result = _validator.Validate(SettingsWithReasoning(dialect, 32768));
+        Result result = _validator.Validate(SettingsWithReasoning(dialect));
 
         Assert.True(result.IsSuccess);
     }
@@ -2382,7 +2311,7 @@ public sealed class ConfigurationValidatorTests
             Daemon = new DaemonSettings { Jobs = [.. jobs] },
         };
 
-    private static ArcanumSettings SettingsWithReasoning(ReasoningWireDialect? wireDialect, int? maxBudgetTokens) =>
+    private static ArcanumSettings SettingsWithReasoning(ReasoningWireDialect? wireDialect) =>
         new()
         {
             Providers =
@@ -2395,12 +2324,11 @@ public sealed class ConfigurationValidatorTests
                     [
                         new ModelEntry("reasoner")
                         {
-                            Reasoning = wireDialect is null && maxBudgetTokens is null
+                            Reasoning = wireDialect is null
                                 ? null
                                 : new ModelReasoningSettings
                                 {
                                     WireDialect = wireDialect,
-                                    MaxBudgetTokens = maxBudgetTokens,
                                 },
                         },
                     ],

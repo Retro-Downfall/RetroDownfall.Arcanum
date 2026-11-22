@@ -10,8 +10,6 @@ public static class CampaignRollupLimits
     public const int SummaryUtf8Bytes = 8192;
 
     public const int InputPageUtf8Bytes = 32768;
-
-    public const int OutputTokens = 2048;
 }
 
 /// <summary>An immutable summary and the exact inputs that gave it its authority and sensitivity.</summary>

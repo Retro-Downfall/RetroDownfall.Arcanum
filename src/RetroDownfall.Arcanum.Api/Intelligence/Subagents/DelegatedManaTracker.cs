@@ -2,44 +2,16 @@ using Microsoft.Extensions.AI;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
-public enum DelegatedBudgetExhaustionReason
-{
-    Tokens = 1,
-    Cost = 2,
-}
-
 public sealed record DelegatedManaUsage(
     long Tokens,
     decimal CostUsd,
-    int ModelCalls,
-    bool Exhausted);
-
-public sealed class BudgetExhaustedException : Exception
-{
-    public BudgetExhaustedException(
-        DelegatedBudgetExhaustionReason reason,
-        DelegatedManaUsage usage)
-        : base($"Delegated subagent budget exhausted ({reason}).")
-    {
-        Reason = reason;
-        Usage = usage;
-    }
-
-    public DelegatedBudgetExhaustionReason Reason { get; }
-
-    public DelegatedManaUsage Usage { get; }
-}
+    int ModelCalls);
 
 /// <summary>
-/// Thread-safe hierarchical accounting ledger for a single isolated subagent run.
-/// Provider-authoritative usage is charged after every model call.
+/// Records the observed usage of a single isolated subagent run.
 /// </summary>
 public sealed class DelegatedManaTracker
 {
-    private readonly long? _maxTokens;
-
-    private readonly decimal? _maxCostUsd;
-
     private readonly object _costGate = new();
 
     private long _tokens;
@@ -48,51 +20,10 @@ public sealed class DelegatedManaTracker
 
     private int _modelCalls;
 
-    private int _exhaustionReason;
-
-    public DelegatedManaTracker(
-        long? maxTokens,
-        decimal? maxCostUsd)
-    {
-        if (maxTokens is null && maxCostUsd is null)
-        {
-            throw new ArgumentException(
-                "A delegated token or cost ceiling is required.");
-        }
-
-        if (maxTokens is <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxTokens));
-        }
-
-        if (maxCostUsd is <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxCostUsd));
-        }
-
-        _maxTokens = maxTokens;
-        _maxCostUsd = maxCostUsd;
-    }
-
     public void BeginModelCall()
     {
-        ThrowIfExhausted();
-
         _ = Interlocked.Increment(ref _modelCalls);
     }
-
-    public void RecordUsage(
-        UsageDetails? usage,
-        decimal costUsd)
-    {
-        RecordUsageCore(usage, costUsd);
-        ThrowIfExhausted();
-    }
-
-    internal void RecordUsageDeferred(
-        UsageDetails? usage,
-        decimal costUsd) =>
-        RecordUsageCore(usage, costUsd);
 
     public DelegatedManaUsage GetUsage()
     {
@@ -106,25 +37,10 @@ public sealed class DelegatedManaTracker
         return new DelegatedManaUsage(
             Interlocked.Read(ref _tokens),
             cost,
-            Volatile.Read(ref _modelCalls),
-            Volatile.Read(ref _exhaustionReason) != 0);
+            Volatile.Read(ref _modelCalls));
     }
 
-    public void ThrowIfExhausted()
-    {
-        int rawReason = Volatile.Read(ref _exhaustionReason);
-
-        if (rawReason == 0)
-        {
-            return;
-        }
-
-        throw new BudgetExhaustedException(
-            (DelegatedBudgetExhaustionReason)rawReason,
-            GetUsage());
-    }
-
-    private void RecordUsageCore(
+    public void RecordUsage(
         UsageDetails? usage,
         decimal costUsd)
     {
@@ -142,32 +58,7 @@ public sealed class DelegatedManaTracker
                 _costUsd += costUsd;
             }
         }
-
-        if (_maxTokens is { } maxTokens
-            && Interlocked.Read(ref _tokens) > maxTokens)
-        {
-            MarkExhausted(DelegatedBudgetExhaustionReason.Tokens);
-        }
-
-        decimal currentCost;
-
-        lock (_costGate)
-        {
-            currentCost = _costUsd;
-        }
-
-        if (_maxCostUsd is { } maxCostUsd
-            && currentCost > maxCostUsd)
-        {
-            MarkExhausted(DelegatedBudgetExhaustionReason.Cost);
-        }
     }
-
-    private void MarkExhausted(DelegatedBudgetExhaustionReason reason) =>
-        _ = Interlocked.CompareExchange(
-            ref _exhaustionReason,
-            (int)reason,
-            comparand: 0);
 
     private static long ResolveTotalTokens(UsageDetails? usage)
     {

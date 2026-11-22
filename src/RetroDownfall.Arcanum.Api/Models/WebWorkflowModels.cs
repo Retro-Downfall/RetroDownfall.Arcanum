@@ -37,22 +37,11 @@ public sealed record WebBrowseWorkflowRequest
 
 public sealed record WebResearchWorkflowRequest
 {
-    // Preserve omitted numeric defaults in source-generated construction; explicit zero is invalid.
-    [JsonConstructor]
-    public WebResearchWorkflowRequest(int tokenBudget = 2_000)
-    {
-        TokenBudget = tokenBudget;
-    }
-
     public string Question { get; init; } = string.Empty;
 
     public int? SourceTarget { get; init; }
 
     public string? Model { get; init; }
-
-    public int TokenBudget { get; init; } = 2_000;
-
-    public decimal? CostBudgetUsd { get; init; }
 
     public Guid? ContinueSessionId { get; init; }
 

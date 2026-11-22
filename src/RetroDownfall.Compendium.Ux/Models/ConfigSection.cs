@@ -51,7 +51,7 @@ public static class SectionDescriptors
         new(ConfigSection.Features, "Features", "\ue7c8", "Explicit capability opt-ins"),
         new(ConfigSection.Integrations, "Integrations", "\ue774", "A2A, CommLink, embeddings, MCP, and checks"),
         new(ConfigSection.Execution, "Execution", "\ue7c3", "Host concurrency and backpressure"),
-        new(ConfigSection.Cost, "Cost", "\ue7cc", "Provider pricing and daily budget"),
+        new(ConfigSection.Cost, "Cost", "\ue7cc", "Provider pricing for reported usage"),
 
         new(ConfigSection.Retention, "Retention", "\ue74d", "Data lifecycle, pruning, and protected sessions"),
 

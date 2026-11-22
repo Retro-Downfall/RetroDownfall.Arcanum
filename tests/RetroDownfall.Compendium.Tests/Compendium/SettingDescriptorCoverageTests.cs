@@ -28,7 +28,7 @@ public sealed class SettingDescriptorCoverageTests
     [Fact]
     public void Editable_descriptor_count_matches_the_documented_total()
     {
-        Assert.Equal(209, SettingDescriptors.All.Count);
+        Assert.Equal(201, SettingDescriptors.All.Count);
 
         string documentation = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -317,6 +317,12 @@ public sealed class SettingDescriptorCoverageTests
             string key = string.IsNullOrEmpty(prefix)
                 ? name
                 : $"{prefix}.{name}";
+
+            // Old signed peer grants retain their budget member for identity continuity only.
+            if (key == "integrations.a2A.inboundPeers.grant.budget")
+            {
+                continue;
+            }
 
             Type propertyType = UnwrapNullable(property.PropertyType);
 

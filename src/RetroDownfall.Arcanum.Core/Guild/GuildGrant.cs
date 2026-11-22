@@ -6,12 +6,17 @@ namespace RetroDownfall.Arcanum.Core.Guild;
 
 /// <summary>Serializable authority description, never proof of authenticated or live authority.</summary>
 public sealed record GuildGrant(
-    [property: JsonRequired] ImmutableArray<GuildWorkspaceGrant> Workspaces,
-    [property: JsonRequired] ImmutableArray<GuildToolGrant> Tools,
-    [property: JsonRequired] ImmutableArray<GuildMemoryGrant> Memory,
-    [property: JsonRequired] GuildBudgetGrant Budget,
-    [property: JsonRequired] ImmutableArray<GuildDelegationKind> Delegation,
-    [property: JsonRequired] DateTimeOffset? ExpiresAtUtc);
+    [property: JsonRequired, JsonPropertyOrder(0)] ImmutableArray<GuildWorkspaceGrant> Workspaces,
+    [property: JsonRequired, JsonPropertyOrder(1)] ImmutableArray<GuildToolGrant> Tools,
+    [property: JsonRequired, JsonPropertyOrder(2)] ImmutableArray<GuildMemoryGrant> Memory,
+    GuildBudgetGrant Budget,
+    [property: JsonRequired, JsonPropertyOrder(4)] ImmutableArray<GuildDelegationKind> Delegation,
+    [property: JsonRequired, JsonPropertyOrder(5)] DateTimeOffset? ExpiresAtUtc)
+{
+    // The signed grant format has a fixed property order. New callers may omit this legacy axis.
+    [JsonPropertyOrder(3)]
+    public GuildBudgetGrant Budget { get; init; } = Budget ?? GuildBudgetGrant.Unmetered;
+}
 
 public sealed record GuildWorkspaceGrant(
     [property: JsonRequired] Guid WorkspaceId,
@@ -34,7 +39,10 @@ public sealed record GuildMemoryScope(
 
 public sealed record GuildBudgetGrant(
     [property: JsonRequired] GuildUsdBudget Usd,
-    [property: JsonRequired] GuildTokenBudget Tokens);
+    [property: JsonRequired] GuildTokenBudget Tokens)
+{
+    internal static GuildBudgetGrant Unmetered => new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited));
+}
 
 public sealed record GuildUsdBudget(
     [property: JsonRequired] GuildBudgetMode Mode,

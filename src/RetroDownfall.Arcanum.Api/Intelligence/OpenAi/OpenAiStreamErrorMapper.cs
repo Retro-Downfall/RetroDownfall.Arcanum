@@ -39,13 +39,6 @@ internal static class OpenAiStreamErrorMapper
                     Param: null,
                     Code: "context_length_exceeded"),
 
-            ErrorCodes.Budget.Exceeded =>
-                new OpenAiErrorDetail(
-                    "Daily budget limit exceeded. " + BudgetErrorMessages.Guidance,
-                    "insufficient_quota",
-                    Param: null,
-                    Code: "insufficient_quota"),
-
             ErrorCodes.ClientTools.ModelUnsupported =>
                 new OpenAiErrorDetail(
                     PublicInferenceErrorMessages.ToolChoiceModelUnsupported,
@@ -129,8 +122,6 @@ internal static class OpenAiStreamErrorMapper
             ErrorCodes.Validation.InvalidReasoningBudget => "invalid_reasoning_budget",
             ErrorCodes.Validation.UnsupportedReasoningControl =>
                 "unsupported_reasoning_control",
-            ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit =>
-                "reasoning_budget_exceeds_model_limit",
             ErrorCodes.Validation.UnsupportedReasoningOutput =>
                 "unsupported_reasoning_output",
             _ => null,

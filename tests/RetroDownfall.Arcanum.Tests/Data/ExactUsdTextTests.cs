@@ -17,7 +17,6 @@ public sealed class ExactUsdTextTests
             "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AExternalSpendLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchAccountingRecoveryStore.cs",
-            "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.GuildTransactions.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireEntitySql.cs",

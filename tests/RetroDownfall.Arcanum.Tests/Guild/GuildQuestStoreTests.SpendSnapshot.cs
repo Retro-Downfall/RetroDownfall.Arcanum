@@ -1,5 +1,4 @@
 using Microsoft.Data.Sqlite;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -15,7 +14,7 @@ public sealed partial class GuildQuestStoreTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Original_provider_settlement_replays_its_saved_outcome_after_later_bill_and_effect_changes(bool dailyEnabled)
+    public async Task Original_provider_settlement_replays_its_saved_outcome_after_later_bill_and_effect_changes(bool suppliedLegacyEstimates)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -23,9 +22,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        ArcanumSettings settings = new() { Cost = new() { Budget = new() { Enabled = dailyEnabled, DailyLimitUsd = 10m } } };
-
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         GuildBudgetLedger ledger = new(daily);
 
@@ -41,7 +38,8 @@ public sealed partial class GuildQuestStoreTests
         GuildLocalInferenceExecution execution = new(f.Store, driver, dispatch);
 
         GuildBudgetEffectRequest effect = new(Guid.NewGuid(), quest.Quest.Id, dispatch.DispatchId, quest.Quest.RunId,
-            GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, dailyEnabled ? 1m : null, dailyEnabled ? 100 : null);
+            GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, suppliedLegacyEstimates ? 1m : null,
+            suppliedLegacyEstimates ? 100 : null);
 
         Assert.True((await f.Store.ExecuteProviderEffectAsync(execution, daily, effect,
             _ => Task.FromResult(Result<string>.Success("answer")), default)).IsSuccess);
@@ -55,7 +53,7 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(initial.IsSuccess, initial.Error.Message);
 
-        Assert.Equal(dailyEnabled, initial.Value.Request.ReservationId.HasValue);
+        Assert.Null(initial.Value.Request.ReservationId);
 
         await using (SqliteTransaction tx = connection.BeginTransaction())
         {
@@ -206,7 +204,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+        BudgetReservationService daily = new(db);
 
         f.UseBudgetParticipant(new GuildBudgetLedger(daily));
 
@@ -341,7 +339,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+        BudgetReservationService daily = new(db);
 
         f.UseBudgetParticipant(new GuildBudgetLedger(daily));
 
@@ -432,7 +430,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+        BudgetReservationService daily = new(db);
 
         f.UseBudgetParticipant(new GuildBudgetLedger(daily));
 

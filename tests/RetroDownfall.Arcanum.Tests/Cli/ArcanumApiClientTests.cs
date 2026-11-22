@@ -798,7 +798,7 @@ public sealed class ArcanumApiClientTests
         // Preserve the fixture's original five-second bound as a hang guard, not a success path.
         // A model turn is no longer the probe: it runs on the unbounded client, which the short-call
         // client's own timeout never reaches.
-        Result<BudgetSummaryDto> result = await client.GetBudgetAsync(CancellationToken.None)
+        Result<ConclaveStatusDto> result = await client.GetConclaveStatusAsync(CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(result.IsFailure);

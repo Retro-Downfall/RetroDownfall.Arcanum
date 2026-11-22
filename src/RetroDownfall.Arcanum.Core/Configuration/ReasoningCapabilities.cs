@@ -69,7 +69,4 @@ public sealed record ReasoningCapabilities
     public bool AllowsClientOutput { get; set; }
 
     public ReasoningWireDialect WireDialect { get; set; } = ReasoningWireDialect.Standard;
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? MaxBudgetTokens { get; set; }
 }

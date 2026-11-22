@@ -91,7 +91,6 @@ public sealed class ModelsProvidersEndpointTests
                     Reasoning = new ModelReasoningSettings
                     {
                         WireDialect = ReasoningWireDialect.OpenRouter,
-                        MaxBudgetTokens = 65_536,
                     },
                 },
                 new ModelEntry("text-model"),
@@ -166,7 +165,6 @@ public sealed class ModelsProvidersEndpointTests
         ModelInfoDto reasoner = body.Data!.Single(m => m.Model == "vision-model");
 
         Assert.Equal(ReasoningWireDialect.OpenRouter, reasoner.WireDialect);
-        Assert.Equal(65_536, reasoner.MaxBudgetTokens);
         Assert.Null(reasoner.PromptCaching);
 
         Assert.Null(body.Data!.Single(m => m.Model == "text-model").WireDialect);

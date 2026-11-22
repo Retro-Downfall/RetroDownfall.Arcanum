@@ -220,7 +220,6 @@ internal sealed partial class GuildPortalStore
         prompt.AppendLine($"Bidder member: {bid.Value.MemberId:D}");
         prompt.AppendLine($"Bidder Agent: {bid.Value.AgentId:D}");
         prompt.AppendLine($"Card revision: {bid.Value.CardRevision.ToString(CultureInfo.InvariantCulture)}");
-        prompt.AppendLine($"Claimed cost (unverified): {bid.Value.ClaimedCostUsd?.ToString(CultureInfo.InvariantCulture) ?? "unspecified"}");
 
         SystemPromptBuilder.AppendUntrusted(prompt, "Bid note", note.Value);
 

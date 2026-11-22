@@ -36,7 +36,7 @@ public sealed partial class WizardIntelligenceProviderCovenantTests
         await using var sourceUse = MemoryEvaluationSourceHarness.Require(await child.AdmitEffectAsync());
         var selected = child.Sources;
         var protection = new MemoryDelegationProtection(child.Sensitivity, child.Revocation, child.AdmitEffectAsync);
-        using var isolated = SubagentExecutionAmbient.EnterChild(new(10000, null), child, protection, selected);
+        using var isolated = SubagentExecutionAmbient.EnterChild(new(), child, protection, selected);
         var chat = Scripted();
         var wizard = Wizard(chat, Gate(confirmed: 4, proposed: 4));
         var request = new PingRequest("task", ModelName, "", DisableMcpTools: true, DisableAllTools: true,
@@ -60,7 +60,7 @@ public sealed partial class WizardIntelligenceProviderCovenantTests
         var child = MemoryEvaluationSourceHarness.Require(await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest));
         await using var sourceUse = MemoryEvaluationSourceHarness.Require(await child.AdmitEffectAsync());
         var protection = new MemoryDelegationProtection(child.Sensitivity, child.Revocation, child.AdmitEffectAsync);
-        using var isolated = SubagentExecutionAmbient.EnterChild(new(10000, null), child, protection, child.Sources);
+        using var isolated = SubagentExecutionAmbient.EnterChild(new(), child, protection, child.Sources);
         var journal = new CapsuleJournal(revokeAfterAck, () => h.Time.Advance(TimeSpan.FromMinutes(5)));
         var gate = new CovenantDispatchGate(new PlannedContextProvider(CovenantCompositionFixture.Plan(0, 0)), journal,
             new CleanSensitivityLedger(), new EstablishedAuthority(), TimeProvider.System,
@@ -133,7 +133,7 @@ public sealed partial class WizardIntelligenceProviderCovenantTests
         var child = MemoryEvaluationSourceHarness.Require(await coordinator.ConsumeAsync(root, rootId, Guid.NewGuid(), new(new byte[32])));
         await using var sourceUse = MemoryEvaluationSourceHarness.Require(await child.AdmitEffectAsync());
         var protection = new MemoryDelegationProtection(child.Sensitivity, child.Revocation, child.AdmitEffectAsync);
-        using var isolated = SubagentExecutionAmbient.EnterChild(new(10000, null), child, protection, child.Sources);
+        using var isolated = SubagentExecutionAmbient.EnterChild(new(), child, protection, child.Sources);
         var chat = Scripted();
         var audit = new FakeInferenceAuditLogger();
         var wizard = Wizard(chat, Gate(0, 0), audit, insufficientBudget ? 128 : 32768);
@@ -165,7 +165,7 @@ public sealed partial class WizardIntelligenceProviderCovenantTests
         await child.DisposeAsync();
         var binding = new MemoryDelegationRootBinding(new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
         var protection = binding.CaptureOutputProtection();
-        using var isolated = SubagentExecutionAmbient.EnterChild(new(10000, null), protection: protection);
+        using var isolated = SubagentExecutionAmbient.EnterChild(new(), protection: protection);
         var chat = Scripted();
         var wizard = Wizard(chat, Gate(4, 4));
         var result = await wizard.ExecutePromptAsync(new("explicit derived task", ModelName, "", DisableAllTools: true, DisableMcpTools: true,

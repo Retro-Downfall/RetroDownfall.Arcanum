@@ -299,13 +299,13 @@ internal static class TurnContextGuards
         ArgumentNullException.ThrowIfNull(breakdown);
         int limit = ArcanumSettingClamps.ContextWindowLimit(contextWindowLimit);
 
-        if (breakdown.TotalTokens <= limit)
+        if (breakdown.TotalTokensForAdmission <= limit)
         {
             return Result.Success();
         }
 
         ContextOverflowDetails overflow = new(breakdown.Provider, breakdown.Model,
-            breakdown.InputTokens, breakdown.ReservedTokens, breakdown.TotalTokens, limit);
+            breakdown.InputTokensForAdmission, breakdown.ReservedTokensForAdmission, breakdown.TotalTokensForAdmission, limit);
 
         return Result.Failure(new Error(ErrorCodes.Hub.ContextBudgetExceeded, overflow.ToPublicMessage())
         {

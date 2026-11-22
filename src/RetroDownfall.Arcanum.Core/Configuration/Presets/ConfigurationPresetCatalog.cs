@@ -18,8 +18,6 @@ public static class ConfigurationPresetCatalog
 
     public const string LoopbackProviderPrerequisite = "loopback-provider";
 
-    public const string PositiveBudgetPrerequisite = "positive-budget";
-
     public static ImmutableArray<ConfigurationPresetDefinition> Versions { get; } =
     [
         GeneralAssistant(),
@@ -112,7 +110,7 @@ public static class ConfigurationPresetCatalog
                 "Automatic long-term-memory extraction and destructive memory management.",
                 "Ordinary tools do not pause for Ward approval; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
                 "A configured inference provider and model are required for first success.",
-                "No budget or concurrency limit is changed."),
+                "Existing concurrency settings are preserved."),
             Prerequisites(ProviderModel()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Verify the selected model can answer a simple request.",
@@ -173,7 +171,7 @@ public static class ConfigurationPresetCatalog
                 "No local memory, citation, retry, hop, timeout, or loop setting is changed.",
                 "Research sends queries and selected page requests to external services.",
                 "An inference provider/model and a securely stored Perplexity credential are required.",
-                "External research can incur provider cost; existing explicit budgets remain unchanged."),
+                "External research can incur provider charges."),
             Prerequisites(ProviderModel(), ResearchCredential()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Run one cited research request.",
@@ -201,7 +199,7 @@ public static class ConfigurationPresetCatalog
                 "Built-in external web research, enterprise telemetry, and non-loopback host binding.",
                 "Configured third-party integrations are not erased; inspect them before assuming fully offline operation.",
                 "The selected inference provider endpoint must be loopback.",
-                "No budget, storage-retention, or concurrency value is changed."),
+                "Storage retention and concurrency settings are preserved."),
             Prerequisites(LoopbackProvider()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Verify the local provider answers without external research.",
@@ -216,7 +214,7 @@ public static class ConfigurationPresetCatalog
             "automation",
             1,
             "Automation",
-            "Enables unattended execution only after an operator supplies a positive explicit budget.",
+            "Enables unattended execution after a provider and model are configured.",
             Owned(
                 SafetySetting("security.ward.enabled", "true"),
                 SafetySetting("security.ward.autoDenyInUnattendedMode", "true"),
@@ -227,13 +225,13 @@ public static class ConfigurationPresetCatalog
                 "No unsandboxed child process, destructive memory action, or untrusted MCP server.",
                 "Ordinary calls do not pause for approval; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
                 "A configured inference provider/model is required.",
-                "An already enabled, positive daily budget is required and is never invented or enlarged."),
-            Prerequisites(ProviderModel(), PositiveBudget()),
+                "Hosted providers may charge for unattended work."),
+            Prerequisites(ProviderModel()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Inspect daemon state before scheduling unattended work.",
                 "arcanum daemon status")),
             Progressive(
-                "Set and review an explicit positive daily budget.",
+                "Review the selected provider before scheduling unattended work.",
                 "Jobs, schedules, apprentices, and integration-specific permissions remain separate choices.",
                 "Run arcanum daemon status."));
 
@@ -249,7 +247,7 @@ public static class ConfigurationPresetCatalog
                 "Nothing automatically.",
                 "The operator is responsible for reviewing every enabled capability and boundary.",
                 "No provider is selected or modified.",
-                "No budget, concurrency, retry, timeout, or loop value is changed."),
+                "Existing concurrency, retry, timeout, and loop settings are preserved."),
             [],
             Recommendations(new ConfigurationPresetRecommendation(
                 "Inspect and validate the effective configuration.",
@@ -276,7 +274,7 @@ public static class ConfigurationPresetCatalog
                 "Automatic long-term-memory extraction and destructive memory management.",
                 "Ward records are informational; Covenant retirement remains separately authorized, and unsandboxed child processes remain disabled.",
                 "A configured inference provider and model are required for first success.",
-                "No budget or concurrency limit is changed."),
+                "Existing concurrency settings are preserved."),
             Prerequisites(ProviderModel()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Verify the selected model can answer a simple request.",
@@ -333,7 +331,7 @@ public static class ConfigurationPresetCatalog
                 "No local memory, citation, retry, hop, timeout, or loop setting is changed.",
                 "Research sends queries and selected page requests to external services.",
                 "An inference provider/model and a securely stored Perplexity credential are required.",
-                "External research can incur provider cost; existing explicit budgets remain unchanged."),
+                "External research can incur provider charges."),
             Prerequisites(ProviderModel(), ResearchCredential()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Run one cited research request.",
@@ -359,7 +357,7 @@ public static class ConfigurationPresetCatalog
                 "Built-in external web research, enterprise telemetry, and non-loopback host binding.",
                 "Configured third-party integrations are not erased; inspect them before assuming fully offline operation.",
                 "The selected inference provider endpoint must be loopback.",
-                "No budget, storage-retention, or concurrency value is changed."),
+                "Storage retention and concurrency settings are preserved."),
             Prerequisites(LoopbackProvider()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Verify the local provider answers without external research.",
@@ -374,7 +372,7 @@ public static class ConfigurationPresetCatalog
             "automation",
             2,
             "Automation",
-            "Enables unattended execution only after an operator supplies a positive explicit budget.",
+            "Enables unattended execution after a provider and model are configured.",
             Owned(
                 Setting("security.ward.unattendedMode", "true"),
                 SafetySetting("security.allowUnsandboxedToolChildren", "false")),
@@ -383,13 +381,13 @@ public static class ConfigurationPresetCatalog
                 "No unsandboxed child process, destructive memory action, or untrusted MCP server.",
                 "Ward records are informational; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
                 "A configured inference provider/model is required.",
-                "An already enabled, positive daily budget is required and is never invented or enlarged."),
-            Prerequisites(ProviderModel(), PositiveBudget()),
+                "Hosted providers may charge for unattended work."),
+            Prerequisites(ProviderModel()),
             Recommendations(new ConfigurationPresetRecommendation(
                 "Inspect daemon state before scheduling unattended work.",
                 "arcanum daemon status")),
             Progressive(
-                "Set and review an explicit positive daily budget.",
+                "Review the selected provider before scheduling unattended work.",
                 "Jobs, schedules, apprentices, and integration-specific permissions remain separate choices.",
                 "Run arcanum daemon status."));
 
@@ -418,13 +416,6 @@ public static class ConfigurationPresetCatalog
         new(
             LoopbackProviderPrerequisite,
             "The selected provider endpoint must resolve to this computer's loopback interface.",
-            "arcanum config open",
-            Required: true);
-
-    private static ConfigurationPresetPrerequisite PositiveBudget() =>
-        new(
-            PositiveBudgetPrerequisite,
-            "Daily budget enforcement must already be enabled with a value greater than zero.",
             "arcanum config open",
             Required: true);
 

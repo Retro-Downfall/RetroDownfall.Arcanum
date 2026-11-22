@@ -3,7 +3,6 @@ using System.Data.Common;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -59,13 +58,13 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         Guid run = await new TurnRunWriter(_db!).StartRunAsync(new("evaluation:0", null, "memory-evaluation", "counterfactual-arm", null, now));
 
-        var held = (await service.ReserveAsync(new(run, 8m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        var held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 8m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         await service.MarkPossiblyDispatchedAsync(held.Id, run);
 
@@ -81,7 +80,7 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
 
         await using ArcanumDbContext recoveredDb = _fixture.CreateContext(_dbPath);
 
-        var recovered = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m }, recoveredDb);
+        var recovered = CreateService(recoveredDb);
 
         await recovered.ReconcileRecordedUsageAsync(run);
 
@@ -105,13 +104,11 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetPolicySettings policy = new() { Enabled = true, DailyLimitUsd = 10m };
-
-        BudgetReservationService service = CreateService(policy);
+        BudgetReservationService service = CreateService();
 
         DateTimeOffset yesterday = DateTimeOffset.UtcNow.AddDays(-1);
 
-        BudgetReservation held = await ReserveAsync(service, 8m, yesterday.AddHours(1), BudgetReservationService.UtcBudgetPeriod(yesterday));
+        BudgetReservation held = await SeedLegacyReservationAsync(8m, yesterday.AddHours(1), BudgetReservationService.UtcBudgetPeriod(yesterday));
 
         await service.MarkPossiblyDispatchedAsync(held.Id, held.RunId);
 
@@ -119,7 +116,7 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
 
         await using ArcanumDbContext recoveredDb = _fixture.CreateContext(_dbPath);
 
-        BudgetReservationService recovered = CreateService(policy, recoveredDb);
+        BudgetReservationService recovered = CreateService(recoveredDb);
 
         await recovered.ReleaseAsync(held.Id);
 
@@ -128,11 +125,6 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
         Assert.Equal(8m, await recovered.GetTodayOutstandingReservationsAsync());
 
         Assert.Equal(0m, await recovered.GetTodayCommittedSpendAsync());
-
-        Result<BudgetReservation> refused = await recovered.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 3m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow)));
-
-        Assert.True(refused.IsFailure);
-        Assert.Contains("Outstanding reservations from prior days may still count", refused.Error.Message);
 
         Assert.Equal((BudgetReservationStatus.UncertainPaid, 0m), await ReadReservationStateAsync(held.Id));
 
@@ -150,9 +142,9 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
-        BudgetReservation held = await ReserveAsync(service, 8m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow));
+        BudgetReservation held = await SeedLegacyReservationAsync(8m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.MarkPossiblyDispatchedAsync(held.Id, Guid.NewGuid()));
 
@@ -162,68 +154,11 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ReserveAsync_WhenBudgetSettingsAreMissing_ReturnsSyntheticReleasedReservation()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(budget: null);
-        Guid runId = Guid.NewGuid();
-        DateTimeOffset expiresAt = DateTimeOffset.UtcNow.AddMinutes(15);
-        const string period = "2035-02-03";
-        DateTimeOffset before = DateTimeOffset.UtcNow;
-
-        Result<BudgetReservation> result = await service.ReserveAsync(
-            new BudgetReservationRequest(runId, 17.25m, expiresAt, period));
-
-        DateTimeOffset after = DateTimeOffset.UtcNow;
-        Assert.True(result.IsSuccess);
-        Assert.NotEqual(Guid.Empty, result.Value.Id);
-        Assert.Equal(runId, result.Value.RunId);
-        Assert.Equal(period, result.Value.BudgetPeriod);
-        Assert.Equal(0m, result.Value.ReservedUsd);
-        Assert.Equal(0m, result.Value.ReconciledUsd);
-        Assert.Equal(BudgetReservationStatus.Released, result.Value.Status);
-        Assert.Equal(expiresAt, result.Value.ExpiresAt);
-        Assert.InRange(result.Value.CreatedAt, before, after);
-        Assert.Equal(0L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task ReserveAsync_WhenEnabledLimitIsZero_DoesNotPersistReservation()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 0m,
-        });
-        Guid runId = Guid.NewGuid();
-
-        Result<BudgetReservation> result = await service.ReserveAsync(
-            new BudgetReservationRequest(
-                runId,
-                ReservedUsd: 2m,
-                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
-                BudgetPeriod: "2035-02-03"));
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(runId, result.Value.RunId);
-        Assert.Equal(BudgetReservationStatus.Released, result.Value.Status);
-        Assert.Equal(0m, result.Value.ReservedUsd);
-        Assert.Equal(0L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
     public async Task SpendQueries_WhenLedgerIsEmpty_ReturnZeroAndOpenClosedConnection()
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 100m,
-        });
+        BudgetReservationService service = CreateService();
 
         await _db!.Database.CloseConnectionAsync();
         Assert.Equal(ConnectionState.Closed, _db.Database.GetDbConnection().State);
@@ -236,62 +171,11 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ReserveAsync_UsesUtcLedgerBoundariesAndAllowsExactLimit()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset dayStart = new(2035, 2, 3, 0, 0, 0, TimeSpan.Zero);
-        string period = BudgetReservationService.UtcBudgetPeriod(dayStart);
-        TurnRunWriter runs = new(_db!);
-        Guid runId = await runs.StartRunAsync(new InferenceRunStart(
-            RequestId: "budget-boundary",
-            SessionId: null,
-            Surface: "test",
-            Purpose: "coverage",
-            IdempotencyClaimId: null,
-            StartedAt: dayStart.AddHours(-1)));
-
-        await InsertBillableOperationAsync(runId, dayStart.AddTicks(-1), 50m);
-        await InsertBillableOperationAsync(runId, dayStart, 0.20m);
-        await InsertBillableOperationAsync(runId, dayStart.AddDays(1).AddTicks(-1), 0.30m);
-        await InsertBillableOperationAsync(runId, dayStart.AddDays(1), 75m);
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 1m,
-        });
-
-        Result<BudgetReservation> exactLimit = await service.ReserveAsync(
-            new BudgetReservationRequest(
-                Guid.NewGuid(),
-                ReservedUsd: 0.50m,
-                ExpiresAt: dayStart.AddHours(1),
-                BudgetPeriod: period));
-        Result<BudgetReservation> overLimit = await service.ReserveAsync(
-            new BudgetReservationRequest(
-                Guid.NewGuid(),
-                ReservedUsd: 0.01m,
-                ExpiresAt: dayStart.AddHours(1),
-                BudgetPeriod: period));
-
-        Assert.True(exactLimit.IsSuccess);
-        Assert.Equal(0.50m, exactLimit.Value.ReservedUsd);
-        Assert.True(overLimit.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, overLimit.Error.Code);
-        Assert.Equal(
-            "Daily budget limit of $1.00 USD for UTC day 2035-02-03 would be exceeded (committed+reserved: $1.00 USD; requested: $0.01 USD; projected: $1.01 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
-            overLimit.Error.Message);
-        Assert.Equal(1L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task ReserveAsync_CountsOnlyBillableOperationsAndIgnoresCostAdjustments()
+    public async Task MeasuredSpendCountsOnlyBillableOperationsOnTheUtcDay()
     {
         RequireSqlCipher();
 
         DateTimeOffset dayStart = new(2035, 4, 7, 0, 0, 0, TimeSpan.Zero);
-        string period = BudgetReservationService.UtcBudgetPeriod(dayStart);
         TurnRunWriter runs = new(_db!);
         Guid runId = await runs.StartRunAsync(new InferenceRunStart(
             RequestId: "budget-adjustments",
@@ -302,24 +186,15 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
             StartedAt: dayStart));
 
         await InsertBillableOperationAsync(runId, dayStart.AddHours(1), 0.60m);
+        await InsertBillableOperationAsync(runId, dayStart.AddMilliseconds(-1), 30m);
+        await InsertBillableOperationAsync(runId, dayStart.AddDays(1), 40m);
         await InsertCostAdjustmentAsync(runId, dayStart.AddHours(2), 50m);
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 1m,
-        });
+        BudgetReservationService service = CreateService();
 
-        Result<BudgetReservation> result = await service.ReserveAsync(
-            new BudgetReservationRequest(
-                Guid.NewGuid(),
-                ReservedUsd: 0.40m,
-                ExpiresAt: dayStart.AddHours(3),
-                BudgetPeriod: period));
+        service.UtcNowForTesting = () => dayStart.AddHours(4);
 
-        Assert.True(result.IsSuccess, result.Error.Message);
-        Assert.Equal(BudgetReservationStatus.Reserved, result.Value.Status);
-        Assert.Equal(1L, await CountReservationsAsync());
+        Assert.Equal(0.60m, await service.GetTodayCommittedSpendAsync());
     }
 
     [SkippableFact]
@@ -327,18 +202,14 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 100m,
-        });
+        BudgetReservationService service = CreateService();
         DateTimeOffset now = DateTimeOffset.UtcNow;
         string period = BudgetReservationService.UtcBudgetPeriod(now);
 
-        BudgetReservation reconciled = await ReserveAsync(service, 1m, now.AddHours(1), period);
-        BudgetReservation released = await ReserveAsync(service, 2m, now.AddHours(1), period);
-        BudgetReservation expired = await ReserveAsync(service, 3m, now.AddTicks(-1), period);
-        BudgetReservation live = await ReserveAsync(service, 4m, now.AddHours(1), period);
+        BudgetReservation reconciled = await SeedLegacyReservationAsync(1m, now.AddHours(1), period);
+        BudgetReservation released = await SeedLegacyReservationAsync(2m, now.AddHours(1), period);
+        BudgetReservation expired = await SeedLegacyReservationAsync(3m, now.AddTicks(-1), period);
+        BudgetReservation live = await SeedLegacyReservationAsync(4m, now.AddHours(1), period);
 
         Assert.Equal(10m, await service.GetTodayOutstandingReservationsAsync());
 
@@ -364,513 +235,6 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
         Assert.Equal(4m, await service.GetTodayOutstandingReservationsAsync());
     }
 
-    [SkippableFact]
-    public async Task AdjustAsync_RaisesWithoutLoweringAndRejectsARaiseThatWouldExceedTheDailyLimit()
-    {
-        RequireSqlCipher();
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 10m,
-        });
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        string period = BudgetReservationService.UtcBudgetPeriod(now);
-        BudgetReservation first = await ReserveAsync(service, 2m, now.AddHours(1), period);
-
-        Result raised = await service.AdjustAsync(first.Id, 5m);
-        Result ignoredLower = await service.AdjustAsync(first.Id, 1m);
-        _ = await ReserveAsync(service, 4m, now.AddHours(1), period);
-        Result rejected = await service.AdjustAsync(first.Id, 7m);
-
-        Assert.True(raised.IsSuccess);
-        Assert.True(ignoredLower.IsSuccess);
-        Assert.True(rejected.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, rejected.Error.Code);
-        Assert.Contains("00:00 UTC", rejected.Error.Message);
-        Assert.Equal(9m, await service.GetTodayOutstandingReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task ReserveAsync_WhenTwoConnectionsReserveConcurrently_NeverExceedsTheDailyLimit()
-    {
-        RequireSqlCipher();
-
-        BudgetPolicySettings budget = new()
-        {
-            Enabled = true,
-            DailyLimitUsd = 1m,
-        };
-
-        BudgetReservationService first = CreateService(budget);
-
-        await using ArcanumDbContext secondDb = _fixture.CreateContext(_dbPath);
-
-        BudgetReservationService second = CreateService(budget, secondDb);
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        string period = BudgetReservationService.UtcBudgetPeriod(now);
-
-        TaskCompletionSource firstAtDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        TaskCompletionSource releaseFirst = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        TaskCompletionSource secondAboutToBegin = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        TaskCompletionSource secondAtDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        first.AfterSumsBeforeReserveInsertForTesting = async cancellationToken =>
-        {
-            firstAtDecision.TrySetResult();
-
-            await releaseFirst.Task.WaitAsync(cancellationToken);
-        };
-
-        second.BeforeWriteTransactionForTesting = _ =>
-        {
-            secondAboutToBegin.TrySetResult();
-
-            return Task.CompletedTask;
-        };
-
-        second.AfterSumsBeforeReserveInsertForTesting = _ =>
-        {
-            secondAtDecision.TrySetResult();
-
-            return Task.CompletedTask;
-        };
-
-        Task<Result<BudgetReservation>> firstReserve = Task.Run(
-            () => first.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 0.60m, now.AddHours(1), period)));
-
-        try
-        {
-            // Generous orchestration budget: coverage-instrumented CI runners can delay a thread-pool start well
-            // past 5s under parallel load.
-            await firstAtDecision.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        }
-        catch
-        {
-            releaseFirst.TrySetResult();
-
-            throw;
-        }
-
-        Task<Result<BudgetReservation>> secondReserve = Task.Run(
-            () => second.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 0.60m, now.AddHours(1), period)));
-
-        try
-        {
-            // The window below is a negative observation, so it starts only once the second reservation is about to
-            // ask for its write lock. Starting it when the task was merely queued would let a starved thread pool
-            // spend the whole window before the second reservation ran, and a deferred transaction would then pass
-            // this test unseen.
-            await secondAboutToBegin.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        }
-        catch
-        {
-            releaseFirst.TrySetResult();
-
-            throw;
-        }
-
-        // While the first reservation is parked after its sums and before its insert, the immediate write
-        // transaction keeps the second from reaching an authoritative decision. Its optional read-ahead is
-        // untrusted until validated under that writer; reaching this hook would decide on the same ledger.
-        Task windowOutcome = await Task.WhenAny(secondAtDecision.Task, Task.Delay(TimeSpan.FromMilliseconds(500)));
-
-        bool secondDecidedWhileFirstWasParked = windowOutcome == secondAtDecision.Task;
-
-        releaseFirst.TrySetResult();
-
-        // Checked before the results are awaited: a deferred transaction that overlapped the first would otherwise
-        // spend Microsoft.Data.Sqlite's whole 30 second busy-snapshot retry before this could report the overlap.
-        Assert.False(
-            secondDecidedWhileFirstWasParked,
-            "The second connection reached its budget decision while the first reservation was between its sums and its insert.");
-
-        Result<BudgetReservation> firstResult = await firstReserve.WaitAsync(TimeSpan.FromSeconds(30));
-
-        Result<BudgetReservation> secondResult = await secondReserve.WaitAsync(TimeSpan.FromSeconds(30));
-
-        Assert.True(firstResult.IsSuccess, firstResult.IsFailure ? firstResult.Error.Message : string.Empty);
-
-        Assert.True(secondResult.IsFailure);
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, secondResult.Error.Code);
-
-        Assert.Equal(0.60m, await first.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(1L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task ReserveAsync_WhenReservedUsdIsNegative_IsRejectedAndDoesNotLowerOutstanding()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 10m,
-        });
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        string period = BudgetReservationService.UtcBudgetPeriod(now);
-
-        _ = await ReserveAsync(service, 4m, now.AddHours(1), period);
-
-        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReserveAsync(
-            new BudgetReservationRequest(Guid.NewGuid(), ReservedUsd: -3m, now.AddHours(1), period)));
-
-        Assert.Equal(4m, await service.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(1L, await CountReservationsAsync());
-    }
-
-    /// <summary>
-    /// A negative reservation is a caller defect whatever the budget settings are, so it is refused before the
-    /// disabled-budget no-op rather than being answered with a synthetic released record.
-    /// </summary>
-    /// <remarks>
-    /// The argument does not become valid because enforcement is off: a caller that built a negative amount
-    /// would otherwise ship that defect unseen until an operator turned the budget on.
-    /// </remarks>
-    [SkippableFact]
-    public async Task ReserveAsync_WhenReservedUsdIsNegative_ThrowsEvenWhenTheBudgetIsDisabled()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = false,
-            DailyLimitUsd = 10m,
-        });
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReserveAsync(
-            new BudgetReservationRequest(
-                Guid.NewGuid(),
-                ReservedUsd: -3m,
-                now.AddHours(1),
-                BudgetReservationService.UtcBudgetPeriod(now))));
-
-        Assert.Equal(0L, await CountReservationsAsync());
-    }
-
-    [SkippableTheory]
-    [InlineData(false, 100)]
-    [InlineData(true, 0)]
-    public async Task AdjustAsync_WhenBudgetDisabledOrLimitNonPositive_ReturnsWithoutPersistence(
-        bool enabled,
-        double dailyLimit)
-    {
-        RequireSqlCipher();
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = enabled,
-            DailyLimitUsd = (decimal)dailyLimit,
-        });
-
-        Result result = await service.AdjustAsync(Guid.NewGuid(), reservedUsd: 5m);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(0L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task AdjustAsync_WhenBudgetSettingsMissing_ReturnsWithoutPersistence()
-    {
-        RequireSqlCipher();
-        BudgetReservationService service = CreateService(budget: null);
-
-        Result result = await service.AdjustAsync(Guid.NewGuid(), reservedUsd: 5m);
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(0L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task ReserveAsync_WhenTheTokenIsCancelledMidTransaction_LeavesTheScopedConnectionInAutocommit()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 100m,
-        });
-
-        using CancellationTokenSource cancellation = new();
-        await ArrangeCancelOnWriteAsync("BEFORE INSERT ON \"BudgetReservations\"", cancellation);
-
-        _ = await Assert.ThrowsAnyAsync<SqliteException>(() => service.ReserveAsync(
-            new BudgetReservationRequest(
-                Guid.NewGuid(),
-                ReservedUsd: 1m,
-                ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(15),
-                BudgetPeriod: "2035-02-03"),
-            cancellation.Token));
-
-        await AssertConnectionIsNotInATransactionAsync();
-        Assert.Equal(0L, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task AdjustAsync_WhenTheTokenIsCancelledMidTransaction_LeavesTheScopedConnectionInAutocommit()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 100m,
-        });
-
-        BudgetReservation reservation = await ReserveAsync(
-            service,
-            amount: 1m,
-            DateTimeOffset.UtcNow.AddMinutes(15),
-            "2035-02-03");
-
-        using CancellationTokenSource cancellation = new();
-        await ArrangeCancelOnWriteAsync("BEFORE UPDATE ON \"BudgetReservations\"", cancellation);
-
-        _ = await Assert.ThrowsAnyAsync<SqliteException>(() => service.AdjustAsync(
-            reservation.Id,
-            reservedUsd: 2m,
-            cancellation.Token));
-
-        await AssertConnectionIsNotInATransactionAsync();
-    }
-
-    /// <summary>
-    /// R-053: an owning turn renews its reservation before every provider call. Renewal moves a
-    /// Reserved expiry forward, never back, and leaves a settled reservation alone.
-    /// </summary>
-    [SkippableFact]
-    public async Task ExtendExpiryAsync_MovesAReservedExpiryForwardOnly()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 100m,
-        });
-        DateTimeOffset admitted = DateTimeOffset.UtcNow.AddMinutes(15);
-        DateTimeOffset renewed = admitted.AddHours(1);
-        BudgetReservation reservation = await ReserveAsync(service, amount: 1m, admitted, "2035-02-03");
-        BudgetReservation settled = await ReserveAsync(service, amount: 1m, admitted, "2035-02-03");
-
-        await service.ExtendExpiryAsync(reservation.Id, renewed);
-        await service.ExtendExpiryAsync(reservation.Id, admitted);
-        await service.ReconcileAsync(settled.Id, actualCostUsd: 0.5m);
-        await service.ExtendExpiryAsync(settled.Id, renewed);
-
-        Assert.Equal(UtcInstantText.Format(renewed), await ReadExpiresAtAsync(reservation.Id));
-        Assert.Equal(UtcInstantText.Format(admitted), await ReadExpiresAtAsync(settled.Id));
-    }
-
-    /// <summary>
-    /// The per-call recheck of a reservation that was not raised judges the ledger a raise judges:
-    /// committed spend and outstanding reservations of the reservation's own budget period, this one
-    /// included, against the limit configured now. On the day the reservation was admitted, known
-    /// delegated spend (today's) is added on top; a settled reservation has nothing left to check.
-    /// </summary>
-    [SkippableFact]
-    public async Task RecheckDailyLimitAsync_JudgesTheReservationsOwnPeriodAgainstTheLiveLimit()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset admittedDay = new(2035, 2, 3, 0, 0, 0, TimeSpan.Zero);
-        string period = BudgetReservationService.UtcBudgetPeriod(admittedDay);
-        TurnRunWriter runs = new(_db!);
-        Guid runId = await runs.StartRunAsync(new InferenceRunStart(
-            RequestId: "budget-recheck",
-            SessionId: null,
-            Surface: "test",
-            Purpose: "coverage",
-            IdempotencyClaimId: null,
-            StartedAt: admittedDay));
-
-        await InsertBillableOperationAsync(runId, admittedDay.AddHours(23), 0.85m);
-
-        BudgetPolicySettings policy = new()
-        {
-            Enabled = true,
-            DailyLimitUsd = 1m,
-        };
-        BudgetReservationService service = CreateService(policy);
-        service.UtcNowForTesting = () => admittedDay.AddHours(23).AddMinutes(30);
-        BudgetReservation reservation = await ReserveAsync(service, 0.10m, admittedDay.AddDays(1), period);
-
-        Result withinLimit = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
-        Result withDelegated = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0.10m);
-
-        policy.DailyLimitUsd = 0.90m;
-        Result underLoweredLimit = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
-
-        await service.ReconcileAsync(reservation.Id, actualCostUsd: 0.10m);
-        Result settled = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 5m);
-
-        Assert.True(withinLimit.IsSuccess, withinLimit.IsFailure ? withinLimit.Error.Message : null);
-        Assert.True(withDelegated.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, withDelegated.Error.Code);
-        Assert.Equal(
-            "Daily budget limit of $1.00 USD for UTC day 2035-02-03 would be exceeded (committed+reserved: $0.95 USD; delegated: $0.10 USD; projected: $1.05 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
-            withDelegated.Error.Message);
-        Assert.True(underLoweredLimit.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, underLoweredLimit.Error.Code);
-        Assert.True(settled.IsSuccess);
-    }
-
-    /// <summary>
-    /// A turn admitted before UTC midnight keeps running after it. Its reservation stays in the day
-    /// it was admitted on, but every round it finishes from then on is committed to the new day, so
-    /// judging the admitted day alone stopped the figure growing at midnight and let a plateaued
-    /// turn spend without limit on the next day. The recheck judges both days: the admitted day's
-    /// committed and outstanding spend, and the new day's with this reservation (sized for the next
-    /// call, whose spend lands there) and today's delegated spend added.
-    /// </summary>
-    [SkippableFact]
-    public async Task RecheckDailyLimitAsync_AfterUtcMidnight_JudgesTheNewDaysSpendAndStillTheAdmittedDay()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset admittedAt = new(2035, 2, 3, 23, 50, 0, TimeSpan.Zero);
-        DateTimeOffset nextDay = new(2035, 2, 4, 0, 0, 0, TimeSpan.Zero);
-        Guid runId = await StartRunAsync("budget-recheck-midnight", admittedAt);
-        await InsertBillableOperationAsync(runId, admittedAt.AddMinutes(-30), 2m);
-        BudgetPolicySettings policy = new()
-        {
-            Enabled = true,
-            DailyLimitUsd = 10m,
-        };
-        BudgetReservationService service = CreateService(policy);
-        service.UtcNowForTesting = () => admittedAt;
-        BudgetReservation reservation = await ReserveAsync(
-            service,
-            0.50m,
-            admittedAt.AddHours(1),
-            BudgetReservationService.UtcBudgetPeriod(admittedAt));
-        service.UtcNowForTesting = () => nextDay.AddHours(1);
-
-        // The admitted day still binds: $2.00 committed + $0.50 reserved is over a lowered limit
-        // while the new day holds only the reservation and the delegated spend.
-        policy.DailyLimitUsd = 2.40m;
-        Result admittedDayOver = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0.60m);
-        policy.DailyLimitUsd = 10m;
-
-        await InsertBillableOperationAsync(runId, nextDay.AddMinutes(10), 9m);
-        Result withinBothDays = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
-        Result withTodaysDelegated = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0.60m);
-
-        await InsertBillableOperationAsync(runId, nextDay.AddMinutes(20), 0.60m);
-        Result newDayOver = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 0m);
-
-        Assert.True(withinBothDays.IsSuccess, withinBothDays.IsFailure ? withinBothDays.Error.Message : null);
-        Assert.True(newDayOver.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, newDayOver.Error.Code);
-        Assert.Equal(
-            "Daily budget limit of $10.00 USD for UTC day 2035-02-04 would be exceeded (committed+reserved: $10.10 USD; delegated: $0.00 USD; projected: $10.10 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
-            newDayOver.Error.Message);
-        Assert.True(withTodaysDelegated.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, withTodaysDelegated.Error.Code);
-        Assert.Equal(
-            "Daily budget limit of $10.00 USD for UTC day 2035-02-04 would be exceeded (committed+reserved: $9.50 USD; delegated: $0.60 USD; projected: $10.10 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
-            withTodaysDelegated.Error.Message);
-        Assert.True(admittedDayOver.IsFailure);
-        Assert.Equal(
-            "Daily budget limit of $2.40 USD for UTC day 2035-02-03 would be exceeded (committed+reserved: $2.50 USD; delegated: $0.00 USD; projected: $2.50 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
-            admittedDayOver.Error.Message);
-    }
-
-    /// <summary>
-    /// The recheck reads the live budget policy: once the budget is switched off, or its daily limit
-    /// is no longer positive, there is no limit to judge, so a reservation whose spend plus delegated
-    /// spend the enabled policy refuses passes, and the recheck leaves the reservation as it was.
-    /// </summary>
-    [SkippableTheory]
-    [InlineData(false, 1)]
-    [InlineData(true, 0)]
-    public async Task RecheckDailyLimitAsync_WhenBudgetDisabledOrLimitNonPositive_ReturnsSuccessWithoutJudging(
-        bool enabled,
-        double dailyLimit)
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset admittedAt = new(2035, 2, 3, 12, 0, 0, TimeSpan.Zero);
-        BudgetPolicySettings policy = new()
-        {
-            Enabled = true,
-            DailyLimitUsd = 1m,
-        };
-        BudgetReservationService service = CreateService(policy);
-        service.UtcNowForTesting = () => admittedAt;
-        BudgetReservation reservation = await ReserveAsync(
-            service,
-            0.50m,
-            admittedAt.AddHours(1),
-            BudgetReservationService.UtcBudgetPeriod(admittedAt));
-
-        Result refusedWhileEnabled = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 5m);
-
-        policy.Enabled = enabled;
-        policy.DailyLimitUsd = (decimal)dailyLimit;
-        Result unjudged = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 5m);
-
-        Assert.True(refusedWhileEnabled.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, refusedWhileEnabled.Error.Code);
-        Assert.True(unjudged.IsSuccess, unjudged.IsFailure ? unjudged.Error.Message : null);
-        (BudgetReservationStatus status, decimal reconciledUsd) = await ReadReservationStateAsync(reservation.Id);
-        Assert.Equal(BudgetReservationStatus.Reserved, status);
-        Assert.Equal(0m, reconciledUsd);
-    }
-
-    /// <summary>
-    /// A raise after UTC midnight is what the turn's next call may spend, and that spend lands in the
-    /// new day, so the raise is judged against the new day's committed and outstanding spend as well
-    /// as the admitted day's. A refused raise leaves the reservation as it was.
-    /// </summary>
-    [SkippableFact]
-    public async Task AdjustAsync_AfterUtcMidnight_RefusesARaiseTheNewDayCannotCover()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset admittedAt = new(2035, 2, 3, 23, 50, 0, TimeSpan.Zero);
-        DateTimeOffset nextDay = new(2035, 2, 4, 0, 0, 0, TimeSpan.Zero);
-        Guid runId = await StartRunAsync("budget-adjust-midnight", admittedAt);
-        await InsertBillableOperationAsync(runId, admittedAt.AddMinutes(-30), 2m);
-        BudgetReservationService service = CreateService(new BudgetPolicySettings
-        {
-            Enabled = true,
-            DailyLimitUsd = 10m,
-        });
-        service.UtcNowForTesting = () => admittedAt;
-        BudgetReservation reservation = await ReserveAsync(
-            service,
-            0.50m,
-            admittedAt.AddHours(1),
-            BudgetReservationService.UtcBudgetPeriod(admittedAt));
-        service.UtcNowForTesting = () => nextDay.AddHours(1);
-        await InsertBillableOperationAsync(runId, nextDay.AddMinutes(10), 9m);
-
-        Result raisedToTheLimit = await service.AdjustAsync(reservation.Id, 1.00m);
-        Result refused = await service.AdjustAsync(reservation.Id, 1.50m);
-
-        Assert.True(raisedToTheLimit.IsSuccess, raisedToTheLimit.IsFailure ? raisedToTheLimit.Error.Message : null);
-        Assert.True(refused.IsFailure);
-        Assert.Equal(ErrorCodes.Budget.Exceeded, refused.Error.Code);
-        Assert.Equal(
-            "Daily budget limit of $10.00 USD for UTC day 2035-02-04 would be exceeded (committed+reserved: $9.00 USD; requested reservation: $1.50 USD; projected: $10.50 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
-            refused.Error.Message);
-        service.UtcNowForTesting = () => admittedAt;
-        Assert.Equal(1.00m, await service.GetTodayOutstandingReservationsAsync());
-    }
-
     private async Task<Guid> StartRunAsync(string requestId, DateTimeOffset startedAt)
     {
         TurnRunWriter runs = new(_db!);
@@ -882,34 +246,6 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
             Purpose: "coverage",
             IdempotencyClaimId: null,
             StartedAt: startedAt));
-    }
-
-    private async Task ArrangeCancelOnWriteAsync(string triggerScope, CancellationTokenSource cancellation)
-    {
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
-        {
-            await _db.Database.OpenConnectionAsync();
-        }
-
-        connection.CreateFunction(
-            "cancel_reservation_token",
-            () =>
-            {
-                cancellation.Cancel();
-
-                return 1L;
-            });
-
-        await ExecuteAsync(
-            $"""
-            CREATE TRIGGER cancel_reservation_write
-            {triggerScope}
-            BEGIN
-                SELECT RAISE(ABORT, 'cancelled mid transaction') WHERE cancel_reservation_token() = 1;
-            END;
-            """);
     }
 
     private async Task AssertConnectionIsNotInATransactionAsync()
@@ -933,38 +269,13 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-    private BudgetReservationService CreateService(BudgetPolicySettings? budget) =>
-        CreateService(budget, _db!);
+    private BudgetReservationService CreateService() => CreateService(_db!);
 
-    private static BudgetReservationService CreateService(BudgetPolicySettings? budget, ArcanumDbContext db)
-    {
-        ArcanumSettings settings = new()
-        {
-            Cost = new CostSettings
-            {
-                Budget = budget is null
-                    ? null!
-                    : budget,
-            },
-        };
+    private static BudgetReservationService CreateService(ArcanumDbContext db) =>
+        new(db);
 
-        return new BudgetReservationService(
-            db,
-            new TestOptionsMonitor<ArcanumSettings>(settings));
-    }
-
-    private static async Task<BudgetReservation> ReserveAsync(
-        BudgetReservationService service,
-        decimal amount,
-        DateTimeOffset expiresAt,
-        string period)
-    {
-        Result<BudgetReservation> result = await service.ReserveAsync(
-            new BudgetReservationRequest(Guid.NewGuid(), amount, expiresAt, period));
-
-        Assert.True(result.IsSuccess, result.Error.Message);
-        return result.Value;
-    }
+    private Task<BudgetReservation> SeedLegacyReservationAsync(decimal amount, DateTimeOffset expiresAt, string period) =>
+        LegacyBudgetFixture.SeedAsync(_db!, new(Guid.NewGuid(), amount, expiresAt, period));
 
     private async Task InsertBillableOperationAsync(
         Guid runId,

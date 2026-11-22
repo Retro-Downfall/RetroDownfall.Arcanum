@@ -50,7 +50,7 @@ public sealed record MemoryEvaluationOptions(
     double? Temperature = null,
     double? TopP = null,
     long? Seed = null,
-    int MaxOutputTokens = 512,
+    int? MaxOutputTokens = null,
     ReasoningEffortLevel? ReasoningEffort = null);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

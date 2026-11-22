@@ -114,8 +114,7 @@ public sealed partial class A2AClientTests
 
         GuildSendingLifecycle lifecycle = new();
 
-        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "final-proof",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
+        var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "final-proof"), lifecycle, default);
 
         Assert.True(result.IsSuccess, result.Error.Message);
 

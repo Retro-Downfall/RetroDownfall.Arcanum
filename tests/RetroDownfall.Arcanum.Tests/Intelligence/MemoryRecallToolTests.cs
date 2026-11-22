@@ -115,7 +115,7 @@ public sealed class MemoryRecallToolTests
 
         var tool = Tool(reader);
 
-        using var child = SubagentExecutionAmbient.EnterChild(new DelegatedManaTracker(100, null));
+        using var child = SubagentExecutionAmbient.EnterChild(new DelegatedManaTracker());
 
         var result = await tool.InvokeAsync(Arguments());
 

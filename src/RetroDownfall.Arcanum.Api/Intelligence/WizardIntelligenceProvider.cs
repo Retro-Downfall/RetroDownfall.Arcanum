@@ -86,7 +86,6 @@ public sealed partial class WizardIntelligenceProvider(
     IInferenceAuditLogger inferenceAuditLogger,
     StructuredOutputValidator structuredOutputValidator,
     InferenceTokenizerResolver tokenizerResolver,
-    BudgetMonitor budgetMonitor,
     ISessionAttachmentStore sessionAttachmentStore,
     IHumanPromptRegistry humanPromptRegistry,
     IServiceProvider serviceProvider,
@@ -97,7 +96,6 @@ public sealed partial class WizardIntelligenceProvider(
     GuardrailsPipeline? guardrailsPipeline = null,
     IModelCallExecutor? modelCallExecutor = null,
     ITurnRunWriter? turnRunWriter = null,
-    IBudgetReservationService? budgetReservationService = null,
     Lazy<ITurnExecutionFacade>? turnCoordinator = null,
     IModelTokenEstimator? modelTokenEstimator = null,
     IWebResearchProviderCatalog? webResearchProviderCatalog = null,
@@ -700,13 +698,6 @@ public sealed partial class WizardIntelligenceProvider(
             return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
         }
 
-        Result budgetGate = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);
-
-        if (budgetGate.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(budgetGate.Error);
-        }
-
         CancellationToken callerToken = cancellationToken;
 
         CancellationToken inferenceToken = callerToken;
@@ -1121,15 +1112,6 @@ public sealed partial class WizardIntelligenceProvider(
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
         {
             yield return ErrorFrame(new Error(ErrorCodes.Validation.InvalidPrompt, "Prompt is required."));
-
-            yield break;
-        }
-
-        Result streamBudgetGate = await budgetMonitor.CheckAsync(cancellationToken).ConfigureAwait(false);
-
-        if (streamBudgetGate.IsFailure)
-        {
-            yield return ErrorFrame(streamBudgetGate.Error);
 
             yield break;
         }
@@ -2606,56 +2588,14 @@ public sealed partial class WizardIntelligenceProvider(
                         .ToList(),
             };
 
-            Result<TurnAccountingHandle> streamAccountingBegin;
-
-            if (TurnAccountingAmbient.Current is { } streamAmbientAccounting)
-            {
-                streamAccountingBegin = Result<TurnAccountingHandle>.Success(streamAmbientAccounting);
-            }
-            else
-            {
-                streamAccountingBegin = await TurnAccountingHandle.BeginAsync(
-                        turnRunWriter,
-                        budgetReservationService,
-                        settings.Value.ResolvePricing(),
-                        targetModel,
-                        grimoireTurn.SessionId ?? request.SessionId,
-                        surface: streaming ? "stream" : "buffered",
-                        purpose: "chat",
-                        requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
-                        cancellationToken: inferenceToken,
-                        maxOutputTokens: request.MaxOutputTokens,
-                        reasoningBudgetTokens: request.Reasoning?.BudgetTokens)
-                    .ConfigureAwait(false);
-            }
-
-            if (streamAccountingBegin.IsFailure)
-            {
-                SessionAttachmentTurnBudget.EndTurn();
-
-                ContextMaterializationLedgerAmbient.End(streamTurnAmbients.MaterializationTurn);
-
-                streamTurnAmbients.MaterializationTurn = null;
-
-                if (!streaming)
-                {
-                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamAccountingBegin.Error);
-                }
-
-                if (streaming)
-                {
-                    yield return await FailureFrameAsync(streamAccountingBegin.Error);
-                }
-
-                await grimoireTurnWriter
-                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None,
-                        interruptionOutcome: RecordTerminal(streamAccountingBegin.Error))
-                    .ConfigureAwait(false);
-
-                yield break;
-            }
-
-            TurnAccountingHandle streamAccountingLocal = streamAccountingBegin.Value;
+            TurnAccountingHandle streamAccountingLocal = TurnAccountingAmbient.Current
+                ?? await TurnAccountingHandle.BeginAsync(
+                    turnRunWriter,
+                    grimoireTurn.SessionId ?? request.SessionId,
+                    surface: streaming ? "stream" : "buffered",
+                    purpose: "chat",
+                    requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
+                    cancellationToken: inferenceToken).ConfigureAwait(false);
 
             streamAccounting = streamAccountingLocal;
 
@@ -3682,20 +3622,6 @@ public sealed partial class WizardIntelligenceProvider(
                     if (CaptureToolEvidenceEviction(callBreakdown) is { } evictionNotice && streaming)
                         yield return new IntelligenceEvent(IntelligenceEventType.Status, evictionNotice.Message) { Notices = [evictionNotice] };
 
-                    if (streamContextGate.IsSuccess)
-                    {
-                        streamContextGate = await streamAccountingLocal
-                            .EnsureReservationForContextAsync(
-                                budgetReservationService,
-                                settings.Value.ResolvePricing(),
-                                serviceProvider.GetService<IExternalSpendLedger>(),
-                                targetModel,
-                                callBreakdown,
-                                logger,
-                                inferenceToken)
-                            .ConfigureAwait(false);
-                    }
-
                     if (streamContextGate.IsFailure)
                     {
                         inferenceError = streamContextGate.Error.Message;
@@ -3827,7 +3753,7 @@ public sealed partial class WizardIntelligenceProvider(
                         if (modelCall.IsFailure)
                         {
                             if (modelCall.Failure.HasUncertainProviderEffect)
-                                await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+                                streamAccountingLocal.RecordUncertainProviderEffect();
 
                             if (TrySelectOrdinaryCacheFallback(modelCall.Failure.RetryDirective))
                             {
@@ -3879,8 +3805,6 @@ public sealed partial class WizardIntelligenceProvider(
                                     streamPurpose,
                                     CancellationToken.None, roundUsageCommit)
                                 .ConfigureAwait(false);
-
-                            SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
 
                             string bufferedText = bufferedRoundResponse.Text ?? string.Empty;
 
@@ -3956,10 +3880,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     // classifies it as connectivity so the turn defers to the next
                                     // candidate instead of being finalized on the way out.
                                     //
-                                    // A client disconnect must not make a round that already
-                                    // streamed real provider bytes look like it spent nothing — that
-                                    // both loses the spend from budget accounting and returns the
-                                    // reservation via ReleaseAsync instead of ReconcileAsync.
+                                    // Retain usage already reported by the provider before the client disconnected.
                                     await RecordPartialRoundUsageAsync(
                                             roundUpdates,
                                             streamAccountingLocal,
@@ -4042,7 +3963,7 @@ public sealed partial class WizardIntelligenceProvider(
                                 if (modelUpdate is ModelCallFailureUpdate failureUpdate)
                                 {
                                     if (failureUpdate.HasUncertainProviderEffect)
-                                        await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+                                        streamAccountingLocal.RecordUncertainProviderEffect();
 
                                     if (TrySelectOrdinaryCacheFallback(failureUpdate.RetryDirective))
                                     {
@@ -4277,8 +4198,6 @@ public sealed partial class WizardIntelligenceProvider(
                                 streamPurpose,
                                 CancellationToken.None, roundUsageCommit)
                             .ConfigureAwait(false);
-
-                        SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
 
                         streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, streamingUsage);
                     }
@@ -4659,11 +4578,6 @@ public sealed partial class WizardIntelligenceProvider(
 
                                 if (CanDiscloseWorkspaceMutations())
                                     toolLoopProgressDetector.WorkspaceMutations.Associate(chatMessages[^1], processed.CommittedWorkspaceMutations);
-
-                                SubagentParentContextInjector.AppendBudgetFailureIfRequired(
-                                    chatMessages,
-                                    processed.ToolName,
-                                    processed.ResultText);
 
                                 if (processed.AdditionalContextContents is { Count: > 0 } extras)
                                 {
@@ -5087,21 +5001,6 @@ public sealed partial class WizardIntelligenceProvider(
                                             throw new ModelCallAdmissionException(retryContextGate.Error);
                                         }
 
-                                        Result retryReservation = await streamAccountingLocal
-                                            .EnsureReservationForContextAsync(
-                                                budgetReservationService,
-                                                settings.Value.ResolvePricing(),
-                                                serviceProvider.GetService<IExternalSpendLedger>(),
-                                                targetModel,
-                                                retryContextBreakdown,
-                                                logger,
-                                                ct)
-                                            .ConfigureAwait(false);
-                                        if (retryReservation.IsFailure)
-                                        {
-                                            throw new ModelCallAdmissionException(retryReservation.Error);
-                                        }
-
                                         Result<CovenantDispatchAdmission?> retryAdmission = await AcknowledgeCovenantDispatchAsync(
                                             covenantScope, streamCovenantDispatch, lease, targetModel, false,
                                             streamSystemPromptDocument, chatMessages, retryOptions, retryContextBreakdown, ct)
@@ -5143,7 +5042,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         if (retryCall.IsFailure)
                                         {
                                             if (retryCall.Failure.HasUncertainProviderEffect)
-                                                await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+                                                streamAccountingLocal.RecordUncertainProviderEffect();
 
                                             if (TrySelectOrdinaryCacheFallback(retryCall.Failure.RetryDirective))
                                             {
@@ -5173,8 +5072,6 @@ public sealed partial class WizardIntelligenceProvider(
                                                 ModelCallPurpose.StructuredOutputRetry,
                                                 CancellationToken.None, retryUsageCommit)
                                             .ConfigureAwait(false);
-
-                                        SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
 
                                         if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
                                         {
@@ -5585,7 +5482,6 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     await streamAccounting.CompleteAsync(
                             turnRunWriter,
-                            budgetReservationService,
                             completionStatus,
                             CancellationToken.None)
                         .ConfigureAwait(false);
@@ -6156,9 +6052,6 @@ public sealed partial class WizardIntelligenceProvider(
                     ArcanumSettingClamps.SemanticRouterPreflightTimeoutSeconds(
                         settings.Value.ResolveIntelligence().SemanticRouterPreflightTimeoutSeconds));
 
-                int routerMaxTokens = ArcanumSettingClamps.SemanticRouterMaxTokens(
-                    settings.Value.ResolveIntelligence().SemanticRouterMaxTokens);
-
                 float routerTemperature = ArcanumSettingClamps.SemanticRouterTemperature(
                     settings.Value.ResolveIntelligence().SemanticRouterTemperature);
 
@@ -6191,7 +6084,6 @@ public sealed partial class WizardIntelligenceProvider(
                             semanticProbe,
                             spellMetadata,
                             spellPreflight,
-                            routerMaxTokens,
                             routerTemperature,
                             cancellationToken,
                             logger,
@@ -6200,7 +6092,7 @@ public sealed partial class WizardIntelligenceProvider(
                             new ModelCallContext(
                                 routerLease?.Provider ?? mainProvider,
                                 routerLease?.ResolvedModel ?? mainModel,
-                                ReservedAnswerTokens: routerMaxTokens,
+                                ReservedAnswerTokens: SemanticRouter.ReservedAnswerTokens,
                                 ReservedReasoningTokens: 0,
                                 PromptCachePlan: PromptCachePlan.NonCacheable(
                                     (routerLease?.Provider ?? mainProvider).Name,
@@ -6384,7 +6276,7 @@ public sealed partial class WizardIntelligenceProvider(
                         new ModelCallContext(
                             extractorLease?.Provider ?? mainProvider,
                             extractorLease?.ResolvedModel ?? mainModel,
-                            ReservedAnswerTokens: LexiconEntityExtractor.MaxOutputTokens,
+                            ReservedAnswerTokens: LexiconEntityExtractor.ReservedAnswerTokens,
                             ReservedReasoningTokens: 0,
                             PromptCachePlan: PromptCachePlan.NonCacheable(
                                 (extractorLease?.Provider ?? mainProvider).Name,
@@ -8628,7 +8520,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         breakdown = latestFullBreakdown ?? Measure(chatMessages);
 
-        if (breakdown.TotalTokens > contextWindowLimit)
+        if (breakdown.TotalTokensForAdmission > contextWindowLimit)
         {
             _ = TurnContextGuards.TryTrimOldestToolExchanges(
                 chatMessages,
@@ -8646,7 +8538,7 @@ public sealed partial class WizardIntelligenceProvider(
         {
             breakdown = Measure(chatMessages);
 
-            if (breakdown.TotalTokens > contextWindowLimit)
+            if (breakdown.TotalTokensForAdmission > contextWindowLimit)
             {
                 progress.WorkspaceMutations.RemoveProjection(chatMessages);
                 breakdown = Measure(chatMessages);
@@ -9122,8 +9014,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     /// <remarks>
     /// The same conversion the completed-round path uses, from the raw updates that arrived, and on
-    /// <see cref="CancellationToken.None"/>: the spend happened either way, and a round with no ledger
-    /// row hands its reservation back as unspent. A round that reported no usage records nothing.
+    /// <see cref="CancellationToken.None"/>. A round that reported no usage records nothing.
     /// </remarks>
     private Task RecordPartialRoundUsageAsync(
         List<ChatResponseUpdate> roundUpdates,

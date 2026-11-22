@@ -262,7 +262,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 1,
 
-                    TokenBudget = 512,
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
@@ -462,7 +461,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 2,
 
-                    TokenBudget = 1_200,
 
                     ContinueSessionId = sessionId,
 
@@ -521,7 +519,7 @@ public sealed partial class WebWorkflowEndpointTests
 
         Assert.True(intelligence.Request.DisableAllTools);
 
-        Assert.Equal(1_200, intelligence.Request.MaxOutputTokens);
+        Assert.Null(intelligence.Request.MaxOutputTokens);
 
         Assert.Equal(sessionId, intelligence.Request.SessionId);
 
@@ -583,7 +581,6 @@ public sealed partial class WebWorkflowEndpointTests
                 {
                     Question = "Keep gathering changing evidence",
 
-                    TokenBudget = 1_200,
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
@@ -643,7 +640,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 2,
 
-                    TokenBudget = 1_200,
 
                     AttachedFiles =
                     [
@@ -707,7 +703,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 2,
 
-                    TokenBudget = 1_200,
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
@@ -753,7 +748,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 2,
 
-                    TokenBudget = 1_200,
 
                     Model = "provider/unknown-model",
                 },
@@ -820,7 +814,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 2,
 
-                    TokenBudget = 1_200,
 
                     AttachToSessionId = sessionId,
                 },
@@ -883,7 +876,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 2,
 
-                    TokenBudget = 1_200,
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
@@ -968,7 +960,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 1,
 
-                    TokenBudget = 1_200,
 
                     CampaignId = campaign.Data.Id,
                 },
@@ -1154,7 +1145,6 @@ public sealed partial class WebWorkflowEndpointTests
                 {
                     Question = "What changed?",
 
-                    TokenBudget = 1_200,
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
@@ -1219,7 +1209,6 @@ public sealed partial class WebWorkflowEndpointTests
                 {
                     Question = "What changed?",
 
-                    TokenBudget = 1_200,
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
@@ -1309,7 +1298,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 1,
 
-                    TokenBudget = 1_200,
 
                     AttachToSessionId = session.Data.Id,
                 },
@@ -1469,7 +1457,7 @@ public sealed partial class WebWorkflowEndpointTests
         await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
         using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
             "/api/web/research",
-            new WebResearchWorkflowRequest { Question = "What changed?", TokenBudget = 1_200 },
+            new WebResearchWorkflowRequest { Question = "What changed?" },
             ArcanumJsonContext.Default.WebResearchWorkflowRequest);
         string ndjson = await response.Content.ReadAsStringAsync();
         WebResearchStreamFrame terminal = ParseResearchFrames(ndjson).Last();
@@ -1502,7 +1490,7 @@ public sealed partial class WebWorkflowEndpointTests
         await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
         using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
             "/api/web/research",
-            new WebResearchWorkflowRequest { Question = "What changed?", TokenBudget = 1_200 },
+            new WebResearchWorkflowRequest { Question = "What changed?" },
             ArcanumJsonContext.Default.WebResearchWorkflowRequest);
         WebResearchStreamFrame terminal = ParseResearchFrames(await response.Content.ReadAsStringAsync()).Last();
         Assert.Equal(WebResearchStreamFrameType.Result, terminal.Type);
@@ -1746,7 +1734,7 @@ public sealed partial class WebWorkflowEndpointTests
         Assert.Equal(finishReason, payload.GetProperty("finishReason").GetString());
         Assert.Contains(payload.GetProperty("warnings").EnumerateArray(), item => item.GetString() == "Structured output could not be guaranteed.");
         Assert.Contains(frames, frame => frame.Stage == "synthesis_warning" && frame.Message == "Structured output could not be guaranteed.");
-        Assert.Equal(finishReason == "length", frames.Any(frame => frame.Stage == "synthesis_warning" && frame.Message!.Contains("--token-budget", StringComparison.Ordinal)));
+        Assert.Equal(finishReason == "length", frames.Any(frame => frame.Stage == "synthesis_warning" && frame.Message!.Contains("provider reached its output limit", StringComparison.Ordinal)));
         Assert.Null(result.Model);
     }
 
@@ -1847,7 +1835,7 @@ public sealed partial class WebWorkflowEndpointTests
             "browse" => await client.PostAsJsonAsync("/api/web/browse", new WebBrowseWorkflowRequest
             { Url = "https://example.test/article", AttachToSessionId = sessionId }, ArcanumJsonContext.Default.WebBrowseWorkflowRequest),
             _ => await client.PostAsJsonAsync("/api/web/research", new WebResearchWorkflowRequest
-            { Question = "current facts", SourceTarget = 1, TokenBudget = 1_200, AttachToSessionId = sessionId }, ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+            { Question = "current facts", SourceTarget = 1, AttachToSessionId = sessionId }, ArcanumJsonContext.Default.WebResearchWorkflowRequest),
         };
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         string body = await response.Content.ReadAsStringAsync();
@@ -1910,7 +1898,7 @@ public sealed partial class WebWorkflowEndpointTests
             else
             {
                 await foreach (WebResearchStreamFrame frame in service.ResearchAsync(new WebResearchWorkflowRequest
-                { Question = "facts", SourceTarget = 1, TokenBudget = 1_200, AttachToSessionId = sessionId }, caller.Token))
+                { Question = "facts", SourceTarget = 1, AttachToSessionId = sessionId }, caller.Token))
                 {
                     Assert.NotEqual(WebResearchStreamFrameType.Result, frame.Type);
                 }
@@ -2001,7 +1989,6 @@ public sealed partial class WebWorkflowEndpointTests
 
                     SourceTarget = 1,
 
-                    TokenBudget = 1_200,
 
                     CampaignId = campaignId,
                 },

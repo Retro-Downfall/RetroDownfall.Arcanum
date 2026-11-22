@@ -16,14 +16,14 @@ public sealed partial class ModelTokenEstimator
 
         return EstimateClosedChat(provider, canonicalModel, payload.SystemPrompt, payload.UserPrompt,
             [CampaignMaintenancePayload.SchemaName, CampaignMaintenancePayload.SchemaDescription, CampaignMaintenancePayload.SchemaJson],
-            CampaignMaintenancePayload.MaxOutputTokens) with
+            CampaignMaintenancePayload.ReservedAnswerTokens) with
         {
             PayloadFingerprint = CampaignMaintenancePayloadFingerprint.Compute(payload),
         };
     }
 
     private ContextTokenBreakdown EstimateClosedChat(ProviderSettings provider, string canonicalModel,
-        string systemPrompt, string userPrompt, string[] schemaParts, int maxOutputTokens)
+        string systemPrompt, string userPrompt, string[] schemaParts, int reservedAnswerTokens)
     {
         ResolvedModelTokenizationProfile profile = ResolveUsableProfile(ResolveProfile(provider, canonicalModel), out _);
         InferenceTextCounter counter = _tokenizerResolver.Resolve(profile.TokenizerId).Counter;
@@ -51,7 +51,7 @@ public sealed partial class ModelTokenEstimator
             : PercentageCeiling(SumInput(estimates), profile.SafetyMarginPercent);
 
         Add(estimates, ContextTokenSource.SafetyMargin, safetyMargin, TokenEstimateClassification.Estimated, profile.Confidence);
-        Add(estimates, ContextTokenSource.ReservedAnswer, maxOutputTokens, TokenEstimateClassification.Reserved, 1d);
+        Add(estimates, ContextTokenSource.ReservedAnswer, reservedAnswerTokens, TokenEstimateClassification.Reserved, 1d);
         Add(estimates, ContextTokenSource.ReservedReasoning, 0, TokenEstimateClassification.Reserved, 1d);
 
         List<ContextTokenComponent> components = [];
@@ -83,10 +83,10 @@ public sealed partial class ModelTokenEstimator
             Components = components,
             MessageTokenCounts = [SaturatingAdd(system.TokenCount, profile.PerMessageOverheadTokens), SaturatingAdd(user.TokenCount, profile.PerMessageOverheadTokens)],
             InputTokens = input,
-            ReservedTokens = maxOutputTokens,
-            ReservedAnswerTokens = maxOutputTokens,
+            ReservedTokens = reservedAnswerTokens,
+            ReservedAnswerTokens = reservedAnswerTokens,
             ReservedReasoningTokens = 0,
-            TotalTokens = SaturatingAdd(input, maxOutputTokens),
+            TotalTokens = SaturatingAdd(input, reservedAnswerTokens),
             OverallClassification = unknown ? TokenEstimateClassification.Unknown : estimated ? TokenEstimateClassification.Estimated : TokenEstimateClassification.Exact,
             SafetyMarginTokens = safetyMargin,
         };

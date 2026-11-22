@@ -31,14 +31,14 @@ public sealed class MemoryEvaluationRunnerTests
     [Theory]
     [InlineData("MemoryEvaluation.StaleConfiguration", MemoryEvaluationReason.StaleConfiguration)]
     [InlineData("MemoryEvaluation.ProviderFailure", MemoryEvaluationReason.ProviderFailure)]
-    public async Task Final_executor_refusal_retains_its_reason_and_conservative_reservation_without_usage(string code, MemoryEvaluationReason reason)
+    public async Task Final_executor_refusal_retains_its_reason_without_inventing_usage(string code, MemoryEvaluationReason reason)
     {
         await using var f = await Fixture.Create();
 
         ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
         f.Physical.Provider = new(f.Physical.Clients, f.Physical.Epoch, new FinalExecutorRefusal(code), estimator,
-            new TurnRunWriter(f.Physical.H.Saga.Context), f.Physical.Reservations);
+            new TurnRunWriter(f.Physical.H.Saga.Context));
 
         var result = await f.Runner.RunAsync(f.Request, f.Scope, default);
 
@@ -56,7 +56,7 @@ public sealed class MemoryEvaluationRunnerTests
 
         Assert.Equal(0L, await f.Physical.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
-        Assert.Equal(1L, await f.Physical.H.ScalarAsync($"SELECT count(*) FROM BudgetReservations WHERE Status = {(int)RetroDownfall.Arcanum.Core.Storage.BudgetReservationStatus.UncertainPaid};"));
+        Assert.Equal(0L, await f.Physical.H.ScalarAsync("SELECT count(*) FROM BudgetReservations;"));
     }
 
     [Fact]

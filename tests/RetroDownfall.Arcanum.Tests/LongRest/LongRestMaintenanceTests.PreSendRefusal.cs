@@ -13,7 +13,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
-// A refusal that only the provider layer can see (the daily budget, a credential) comes after the attempt is prepared. It must not leave
+// A refusal that only the provider layer can see (such as a credential) comes after the attempt is prepared. It must not leave
 // that attempt behind: a Prepared row cannot be certified as not sent by a same-boot abort, so it would stop a clean readmission for good.
 public sealed partial class LongRestMaintenanceTests
 {
@@ -48,51 +48,6 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(1, (await reconciler.ReconcileNowAsync(reason)).RequiresAttention);
 
         Assert.Equal(LongRestParkCodes.ReadmitRequested, (await f.Operations.GetAsync(f.Operation))!.TerminalErrorCode);
-    }
-
-    [Fact]
-    public async Task A_daily_budget_refusal_after_the_attempt_was_prepared_leaves_no_effect_row_so_a_drained_reopen_still_readmits_the_clean_sweep()
-    {
-        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false,
-            configure: settings => settings.Cost.Budget = new() { Enabled = true, DailyLimitUsd = 0.0001m });
-
-        f.Handler.InsideSend = () =>
-        {
-            f.Handler.ChatText = DecisionOrSummary(f.Handler.LastBody!);
-
-            return Task.CompletedTask;
-        };
-
-        LongRestDiscoveryGeneration original = LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!;
-
-        LongRestSweepProgress first = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, first.DeferredReason);
-
-        // The refusal came from the budget reservation, after the attempt was prepared and before any send. The attempt is withdrawn:
-        // the unit is exactly what it was before it, with no effect row of any state.
-        Assert.Equal(0, f.Handler.SendCount);
-
-        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_provider_effects;"));
-
-        Assert.Equal(0L, await UnsettledEffectsAsync(f));
-
-        await RetryAfterDrainedReopenAsync(f, "budget-retry");
-
-        LongRestSweepProgress second = LongRestSweepHarness.Require(await ResumeAdmittedWithAsync(f.Coordinator, f.RecordedAdmission, f.Operation, CancellationToken.None));
-
-        // The readmission was not blocked by an unsettled effect: the generation adopted the current admission and the sweep asked again.
-        LongRestDiscoveryGeneration readmitted = LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!;
-
-        Assert.True(f.Admission.CurrentGeneration > original.Fence.AdmissionGeneration);
-
-        Assert.Equal(f.Admission.CurrentGeneration, readmitted.Fence.AdmissionGeneration);
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, second.DeferredReason);
-
-        Assert.Equal(0, f.Handler.SendCount);
-
-        Assert.Equal(0L, await UnsettledEffectsAsync(f));
     }
 
     // The summary is paid and accepted; the embedding that follows is the second attempt of the same unit, and its credential cannot be

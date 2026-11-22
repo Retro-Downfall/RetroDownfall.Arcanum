@@ -52,6 +52,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Every_effectful_recovery_handler_has_the_required_source_effects",
             "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Owner_evidence_has_exactly_two_path_specific_issuers",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualLongRestHostedRootRetainsPhysicalDispatchCapsules",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Actual_campaign_maintenance_comparison_retains_closed_durable_value_equality",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.BackupLiveSourceHasExactCliCallerAuthority",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryApplicationHostedServiceHasExactlyOneEntry",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryDiscoveredProducerSiteIsCataloguedExactlyOnce",

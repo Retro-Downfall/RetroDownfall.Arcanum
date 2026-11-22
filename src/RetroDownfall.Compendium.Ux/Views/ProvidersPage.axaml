@@ -112,19 +112,12 @@
                                         ItemsSource="{Binding OutputTokenLimitWireDialectValues}"
                                         SelectedItem="{Binding OutputTokenLimitWireDialect, Mode=TwoWay}" />
 
-                <controls:LabeledPicker Label="Guild usage reconciliation"
-                                        Description="Optional metadata source for new Guild calls. OpenRouterGeneration requires the OpenRouter endpoint and its resolved credential; None leaves provider reconciliation disabled."
-                                        Key="providers.guildUsageReconciliation"
-                                        PickerTitle="Select metadata source"
-                                        IsVisible="{Binding IsHttpProvider}"
-                                        ItemsSource="{Binding GuildUsageReconciliationValues}"
-                                        SelectedItem="{Binding GuildUsageReconciliation, Mode=TwoWay}" />
 
                 <controls:LabeledStepper Label="Context window limit"
                                          Description="Factual provider context-window capacity."
                                          Value="{Binding ContextWindowLimit, Mode=TwoWay}"
                                          Minimum="256"
-                                         Maximum="2097152"
+                                         Maximum="2147483647"
                                          Increment="128" />
 
                 <TextBlock Text="Models"
@@ -190,16 +183,6 @@
                                                       ItemsSource="{Binding ReasoningWireDialectValues}"
                                                       SelectedItem="{Binding ReasoningDialect, Mode=TwoWay}" />
 
-                              <CheckBox Content="Set a maximum numeric reasoning budget"
-                                        IsChecked="{Binding HasReasoningMaxBudgetTokens, Mode=TwoWay}" />
-
-                              <controls:LabeledStepper Label="Maximum reasoning budget"
-                                                       Description="Maximum numeric reasoning budget accepted by this model (per single turn)."
-                                                       IsEnabled="{Binding HasReasoningMaxBudgetTokens}"
-                                                       Value="{Binding ReasoningMaxBudgetTokens, Mode=TwoWay}"
-                                                       Minimum="1"
-                                                       Maximum="2097152"
-                                                       Increment="1" />
 
                             </StackPanel>
                           </Expander>

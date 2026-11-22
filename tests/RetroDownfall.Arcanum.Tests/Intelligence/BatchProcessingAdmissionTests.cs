@@ -683,13 +683,13 @@ public sealed partial class BatchProcessingServiceTests
     }
 
     [Fact]
-    public async Task Admission_BudgetDecisionSurvivesPublicationDeferralWithoutAnotherReservation()
+    public async Task Admission_CompletedPagesSurvivePublicationDeferralWithoutAnotherRun()
     {
         BatchAdmissionGate gate = new();
 
-        BatchAdmissionAccounting accounting = new(gate) { RejectReservation = 2 };
+        BatchAdmissionAccounting accounting = new(gate);
 
-        await using AdmissionService harness = CreateAdmissionService(gate, accounting, accounting);
+        await using AdmissionService harness = CreateAdmissionService(gate, accounting);
 
         BatchRecord batch = await SeedAdmissionBatchAsync(65);
 
@@ -707,9 +707,9 @@ public sealed partial class BatchProcessingServiceTests
 
             Assert.False(processing.IsCompleted);
 
-            Assert.Equal(2, accounting.Reservations);
+            Assert.Equal(2, accounting.Runs);
 
-            Assert.Equal(64, harness.Provider.ExecutePromptCallCount);
+            Assert.Equal(65, harness.Provider.ExecutePromptCallCount);
 
             await gate.ReopenAsync(closing!);
 
@@ -719,15 +719,13 @@ public sealed partial class BatchProcessingServiceTests
 
             Assert.Equal(2, accounting.Runs);
 
-            Assert.Equal(2, accounting.Reservations);
-
             BatchRecord finished = Assert.IsType<BatchRecord>(await _batches!.GetByIdAsync(batch.Id));
 
-            Assert.Equal(BatchStatuses.Failed, finished.Status);
+            Assert.Equal(BatchStatuses.Completed, finished.Status);
 
-            Assert.Equal(64, finished.CompletedRequestCount);
+            Assert.Equal(65, finished.CompletedRequestCount);
 
-            Assert.Equal(1, finished.FailedRequestCount);
+            Assert.Equal(0, finished.FailedRequestCount);
         }
         finally
         {
@@ -746,7 +744,7 @@ public sealed partial class BatchProcessingServiceTests
 
         BatchAdmissionAccounting accounting = new(gate);
 
-        await using AdmissionService harness = CreateAdmissionService(gate, accounting, accounting);
+        await using AdmissionService harness = CreateAdmissionService(gate, accounting);
 
         BatchRecord batch = await SeedAdmissionBatchAsync(1);
 
@@ -762,7 +760,7 @@ public sealed partial class BatchProcessingServiceTests
 
         TaskCompletionSource releaseLease = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        accounting.BeforeReconcile = async () => { accountingEntered.TrySetResult(); await releaseAccounting.Task; };
+        accounting.BeforeComplete = async () => { accountingEntered.TrySetResult(); await releaseAccounting.Task; };
 
         harness.Scopes.BeforeDisposal = async () =>
         {
@@ -1184,7 +1182,7 @@ public sealed partial class BatchProcessingServiceTests
     }
 
     private AdmissionService CreateAdmissionService(BatchAdmissionGate gate,
-        ITurnRunWriter? writer = null, IBudgetReservationService? reservations = null,
+        ITurnRunWriter? writer = null,
         Action<ServiceCollection>? configure = null)
     {
         ServiceCollection services = new();
@@ -1206,8 +1204,6 @@ public sealed partial class BatchProcessingServiceTests
         services.AddSingleton<IBatchRecoveryService>(new NoOpBatchRecoveryService());
 
         if (writer is not null) { services.AddSingleton(writer); }
-
-        if (reservations is not null) { services.AddSingleton(reservations); }
 
         configure?.Invoke(services);
 

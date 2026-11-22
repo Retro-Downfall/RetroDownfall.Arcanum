@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using RetroDownfall.Arcanum.Core.Covenant;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -87,7 +86,11 @@ public sealed partial class GuildLocalHostPolicyTests
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
-        var (owner, issuer, root, cohorts, cohort, members) = await ConvergenceFixtureAsync(f, GuildConvergenceKind.All, null, "text/plain", 1);
+        GuildBudgetGrant? historicalRootBudget = boundary == "budget"
+            ? new(new(GuildBudgetMode.Finite, 0m), new(GuildBudgetMode.Finite, 0)) : null;
+
+        var (owner, issuer, root, cohorts, cohort, members) = await ConvergenceFixtureAsync(f, GuildConvergenceKind.All,
+            null, "text/plain", 1, historicalRootBudget);
 
         var author = await BindCohortRunAsync(f, owner, members[0]);
 
@@ -123,9 +126,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
 
-        ArcanumSettings settings = new() { Cost = new() { Budget = new() { Enabled = boundary == "budget", DailyLimitUsd = 0.5m } } };
-
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        BudgetReservationService daily = new(db);
 
         GuildBudgetEffectRequest effect = new(Guid.NewGuid(), root.Quest.Id, execution.Dispatch.DispatchId, root.Quest.RunId,
             GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, 1m, 100);
@@ -134,7 +135,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Task<Result<string>> Send(CancellationToken _) { sends++; return Task.FromResult(Result<string>.Success("answer")); }
 
-        if (boundary is "accepted-erased" or "replay")
+        if (boundary is "accepted-erased" or "replay" or "budget")
         {
             var accepted = await f.Store.ExecuteProviderEffectAsync(execution, daily, effect, Send, default, circleInputs: [batch]);
 
@@ -187,7 +188,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(result.IsFailure);
 
-        long committed = boundary is "accepted-erased" or "replay" ? 1 : 0;
+        long committed = boundary is "accepted-erased" or "replay" or "budget" ? 1 : 0;
 
         Assert.Equal(committed, sends);
 
@@ -196,5 +197,7 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.Equal(committed, await f.ScalarAsync("SELECT count(*) FROM guild_portal_receipts"));
 
         Assert.Equal(committed, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects"));
+
+        Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
     }
 }

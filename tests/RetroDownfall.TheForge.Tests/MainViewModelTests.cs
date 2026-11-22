@@ -40,8 +40,6 @@ public class MainViewModelTests
 
         viewModel.DockLayout.HideTool(DockToolId.Gatehouse);
 
-        viewModel.DockLayout.HideTool(DockToolId.Treasury);
-
         viewModel.DockLayout.HideTool(DockToolId.Arsenal);
 
         viewModel.DockLayout.HideTool(DockToolId.WarTable);
@@ -280,8 +278,6 @@ public class MainViewModelTests
 
         viewModel.DockLayout.HideTool(DockToolId.Gatehouse);
 
-        viewModel.DockLayout.HideTool(DockToolId.Treasury);
-
         viewModel.DockLayout.HideTool(DockToolId.Arsenal);
 
         viewModel.DockLayout.HideTool(DockToolId.WarTable);
@@ -475,13 +471,6 @@ internal static class MainViewModelFactory
                 ImmediateTheForgeLocalMutationRunner.Instance),
             new RetroDownfall.TheForge.Ux.ViewModels.WarTable.WarTableViewModel(new NullWarTableDataSource()),
             new RetroDownfall.TheForge.Ux.ViewModels.Gatehouse.GatehouseViewModel(new NullGatehouseDataSource(), new FakeWhispersService()),
-            new RetroDownfall.TheForge.Ux.ViewModels.Treasury.TreasuryViewModel(
-                connection,
-                new NullTreasuryDataSource(),
-                foundryFloor,
-                new FakeClipboardService(),
-                new FakeCompendiumLauncher(),
-                new FakeWhispersService()),
             new RetroDownfall.TheForge.Ux.ViewModels.Arsenal.ArsenalViewModel(
                 connection,
                 arsenalMcpServers,
@@ -663,9 +652,6 @@ internal sealed class NullGatehouseDataSource : RetroDownfall.TheForge.Ux.ViewMo
 
 internal sealed class NullAnvilDataSource : RetroDownfall.TheForge.Ux.ViewModels.Anvil.IAnvilDataSource
 {
-
-    public Task<RetroDownfall.TheForge.Core.Models.BudgetSummaryDto?> GetBudgetAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.TheForge.Core.Models.BudgetSummaryDto?>(null);
 
     public Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Wards.WardDto>> ListWardsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Wards.WardDto>>([]);
@@ -1009,14 +995,6 @@ internal sealed class NullModelsProvidersDataSource : RetroDownfall.TheForge.Ux.
 
     public Task<RetroDownfall.Arcanum.Core.Configuration.ProviderTestResult?> TestProviderAsync(RetroDownfall.Arcanum.Core.Configuration.ProviderTestRequest request, CancellationToken cancellationToken) =>
         Task.FromResult<RetroDownfall.Arcanum.Core.Configuration.ProviderTestResult?>(null);
-
-}
-
-internal sealed class NullTreasuryDataSource : RetroDownfall.TheForge.Ux.ViewModels.Treasury.ITreasuryDataSource
-{
-
-    public Task<RetroDownfall.TheForge.Core.Models.BudgetSummaryDto?> GetBudgetAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<RetroDownfall.TheForge.Core.Models.BudgetSummaryDto?>(null);
 
 }
 

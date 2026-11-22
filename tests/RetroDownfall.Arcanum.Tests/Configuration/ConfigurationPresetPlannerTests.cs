@@ -156,14 +156,10 @@ public sealed class ConfigurationPresetPlannerTests
 
     [Fact]
 
-    public void Automation_requires_existing_enabled_positive_budget_and_does_not_invent_one()
+    public void Automation_applies_with_a_configured_provider_and_no_budget()
     {
 
         ArcanumSettings settings = ValidSettings();
-
-        settings.Cost.Budget.Enabled = true;
-
-        settings.Cost.Budget.DailyLimitUsd = 0m;
 
         ConfigurationPresetDefinition preset = ConfigurationPresetCatalog.Find("automation")!;
 
@@ -173,13 +169,7 @@ public sealed class ConfigurationPresetPlannerTests
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.False(result.Value.Plan.IsApplicable);
-
-        Assert.Equal(0m, result.Value.CandidateSettings.Cost.Budget.DailyLimitUsd);
-
-        Assert.Contains(
-            result.Value.Plan.Prerequisites,
-            static status => status.Prerequisite.Id == "positive-budget" && !status.IsSatisfied);
+        Assert.True(result.Value.Plan.IsApplicable);
 
     }
 
@@ -329,52 +319,10 @@ public sealed class ConfigurationPresetPlannerTests
 
     [Fact]
 
-    public void Automation_uses_the_effective_environment_budget_for_prerequisite_readiness()
-    {
-
-        ArcanumSettings settings = ValidSettings();
-
-        settings.Cost.Budget.Enabled = true;
-
-        settings.Cost.Budget.DailyLimitUsd = 10m;
-
-        ConfigurationEnvironmentSnapshot environment = ConfigurationEnvironmentResolver.Resolve(
-            settings,
-            new Dictionary<string, string?>
-            {
-
-                ["ARCANUM_Arcanum__Cost__Budget__DailyLimitUsd"] = "0",
-
-            });
-
-        ConfigurationPresetDefinition preset = ConfigurationPresetCatalog.Find("automation")!;
-
-        Result<ConfigurationPresetPlanningResult> result = new ConfigurationPresetPlanner().Plan(
-            preset,
-            new ConfigurationPresetSnapshot(settings, environment, null));
-
-        Assert.True(result.IsSuccess, result.Error.Message);
-
-        Assert.False(result.Value.Plan.IsApplicable);
-
-        Assert.Contains(
-            result.Value.Plan.Prerequisites,
-            static status =>
-                status.Prerequisite.Id == "positive-budget"
-                && !status.IsSatisfied);
-
-    }
-
-    [Fact]
-
     public void Automation_blocks_when_environment_masks_an_owned_safety_value()
     {
 
         ArcanumSettings settings = ValidSettings();
-
-        settings.Cost.Budget.Enabled = true;
-
-        settings.Cost.Budget.DailyLimitUsd = 10m;
 
         ConfigurationEnvironmentSnapshot environment = ConfigurationEnvironmentResolver.Resolve(
             settings,
@@ -555,7 +503,7 @@ public sealed class ConfigurationPresetPlannerTests
 
     [Fact]
 
-    public void Plan_tolerates_a_null_cost_section_when_evaluating_the_budget_prerequisite()
+    public void Automation_applies_when_the_cost_section_is_absent()
     {
 
         ArcanumSettings settings = SettingsWithNullPolicySections();
@@ -568,13 +516,7 @@ public sealed class ConfigurationPresetPlannerTests
 
         Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.False(result.Value.Plan.IsApplicable);
-
-        Assert.Contains(
-            result.Value.Plan.Prerequisites,
-            static status =>
-                status.Prerequisite.Id == ConfigurationPresetCatalog.PositiveBudgetPrerequisite
-                && !status.IsSatisfied);
+        Assert.True(result.Value.Plan.IsApplicable);
 
     }
 

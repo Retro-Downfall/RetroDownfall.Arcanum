@@ -207,8 +207,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:attachmentMemoryProvenanceStore"] = "every use of the IAttachmentMemoryProvenanceStore is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:budgetReservationService"] = "owner is container-activated and IBudgetReservationService is registered; the container supplies it in a composed host",
-
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:healthTracker"] = "every use of the IProviderHealthTracker is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:modelCallExecutor"] = "owner is container-activated and IModelCallExecutor is registered; the container supplies it in a composed host",

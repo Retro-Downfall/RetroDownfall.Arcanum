@@ -221,7 +221,7 @@ public sealed partial class A2AClientTests
             A2AClientService client = CreateClient(handler, settings);
 
             var primary = client.SendGuildAsync(
-                new(DiscoveryUrl, "Blocked primary task", "primary-message", new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)),
+                new(DiscoveryUrl, "Blocked primary task", "primary-message",
                     Transport: frozen),
                 new GuildSendingLifecycle { PortalPeerObserver = peer => { if (peer is not null) connected.TrySetResult(peer); } }, ct);
 

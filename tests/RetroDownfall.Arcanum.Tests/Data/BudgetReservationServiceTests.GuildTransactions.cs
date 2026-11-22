@@ -1,223 +1,15 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class BudgetReservationServiceTests
 {
-    [SkippableTheory]
-    [InlineData(false, 10)]
-    [InlineData(true, 0)]
-    public async Task GuildTransaction_DisabledDailyGateReturnsNoLink(bool enabled, int limit)
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit });
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await connection.OpenAsync();
-
-        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
-
-        Result<BudgetReservation?> result = await service.ReserveWithinAsync(connection, transaction,
-            new(Guid.NewGuid(), 3m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow)));
-
-        Assert.True(result.IsSuccess, result.Error.Message);
-
-        Assert.Null(result.Value);
-
-        await transaction.CommitAsync();
-
-        Assert.Equal(0, await CountReservationsAsync());
-    }
-
-    [SkippableFact]
-    public async Task GuildTransaction_ReservationAndDispatchPreparationRollbackTogether()
-    {
-        RequireSqlCipher();
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        Guid run = await StartRunAsync("guild-atomic", now);
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result<BudgetReservation?> reserved = await service.ReserveWithinAsync(connection, transaction,
-                new(run, 3m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
-
-            Assert.True(reserved.IsSuccess, reserved.Error.Message);
-
-            Assert.NotNull(reserved.Value);
-
-            Result prepared = await service.PrepareWithinAsync(connection, transaction, reserved.Value.Id, run, 4m, 0m, now.AddHours(2));
-
-            Assert.True(prepared.IsSuccess, prepared.Error.Message);
-
-            Assert.True((await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, reserved.Value.Id, run)).IsSuccess);
-
-            await transaction.RollbackAsync();
-        }
-
-        Assert.Equal(0, await CountReservationsAsync());
-
-        Assert.Equal(0m, await service.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(0m, await service.GetTodayCommittedSpendAsync());
-    }
-
-    [SkippableFact]
-    public async Task GuildTransaction_PreparationChecksRolloverEvenWithoutARaise()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset today = DateTimeOffset.UtcNow;
-
-        DateTimeOffset yesterday = today.AddDays(-1);
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        service.UtcNowForTesting = () => today;
-
-        Guid run = await StartRunAsync("guild-rollover", yesterday);
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, today.AddHours(1), BudgetReservationService.UtcBudgetPeriod(yesterday)))).Value;
-
-        await InsertBillableOperationAsync(run, today, 5m);
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
-
-        Result result = await service.PrepareWithinAsync(connection, transaction, held.Id, run, 6m, 0m, today.AddHours(2));
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
-        await transaction.RollbackAsync();
-
-        Assert.Equal((BudgetReservationStatus.Reserved, 0m), await ReadReservationStateAsync(held.Id));
-    }
-
-    [SkippableFact]
-    public async Task GuildTransaction_UncertainExposureFromYesterdayStillRefusesToday()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset today = DateTimeOffset.UtcNow;
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        Guid run = await StartRunAsync("guild-unknown", today.AddDays(-1));
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 8m, today.AddHours(1), BudgetReservationService.UtcBudgetPeriod(today.AddDays(-1))))).Value;
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction mark = connection.BeginTransaction(deferred: false))
-        {
-            Assert.True((await service.MarkPossiblyDispatchedWithinAsync(connection, mark, held.Id, run)).IsSuccess);
-
-            await mark.CommitAsync();
-        }
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result<BudgetReservation?> result = await service.ReserveWithinAsync(connection, transaction,
-                new(run, 3m, today.AddHours(1), BudgetReservationService.UtcBudgetPeriod(today)));
-
-            Assert.True(result.IsFailure);
-
-            Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
-            await transaction.RollbackAsync();
-        }
-
-        await service.ReleaseAsync(held.Id);
-
-        await service.SweepExpiredAsync(today.AddDays(2));
-
-        Assert.Equal(8m, await service.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(0m, await service.GetTodayCommittedSpendAsync());
-    }
-
-    [SkippableFact]
-    public async Task GuildTransaction_PreparationRequiresTheExactActiveOwner()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        Guid run = await StartRunAsync("guild-owner", now);
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result result = await service.PrepareWithinAsync(connection, transaction, held.Id, Guid.NewGuid(), 4m, 0m, now.AddHours(2));
-
-            Assert.True(result.IsFailure);
-
-            Assert.True((await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, Guid.NewGuid())).IsFailure);
-
-            await transaction.RollbackAsync();
-        }
-
-        await service.ReleaseAsync(held.Id);
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result result = await service.PrepareWithinAsync(connection, transaction, held.Id, run, 4m, 0m, now.AddHours(2));
-
-            Assert.True(result.IsFailure);
-
-            await transaction.RollbackAsync();
-        }
-    }
-
-    [SkippableFact]
-    public async Task GuildTransaction_PreparationRaisesRenewsAndNeverLowersAnOwnedHold()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        Guid run = await StartRunAsync("guild-renew", now);
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Assert.True((await service.PrepareWithinAsync(connection, transaction, held.Id, run, 4m, 0m, now.AddHours(2))).IsSuccess);
-
-            Assert.True((await service.PrepareWithinAsync(connection, transaction, held.Id, run, 1m, 0m, now)).IsSuccess);
-
-            await transaction.CommitAsync();
-        }
-
-        Assert.Equal(4m, await service.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(UtcInstantText.Format(now.AddHours(2)), await ReadExpiresAtAsync(held.Id));
-    }
-
     [SkippableFact]
     public async Task GuildTransaction_UncertainDispositionRequiresCompleteUsageProofAndNeverWritesABill()
     {
@@ -225,17 +17,17 @@ public sealed partial class BudgetReservationServiceTests
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         Guid run = await StartRunAsync("guild-disposition", now);
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
         {
-            Assert.True((await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, run)).IsSuccess);
+            Assert.True((await service.ExposeHistoricalReservationWithinAsync(connection, transaction, held.Id, run)).IsSuccess);
 
             Assert.True((await service.ReleaseWithinAsync(connection, transaction, held.Id, run)).IsFailure);
 
@@ -279,11 +71,11 @@ public sealed partial class BudgetReservationServiceTests
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         Guid run = await StartRunAsync("guild-release", now);
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -323,11 +115,11 @@ public sealed partial class BudgetReservationServiceTests
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m });
+        BudgetReservationService service = CreateService();
 
         Guid run = await StartRunAsync("guild-partial", now.AddDays(-1));
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now.AddDays(-1))))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now.AddDays(-1))));
 
         await service.MarkPossiblyDispatchedAsync(held.Id, run);
 
@@ -375,11 +167,11 @@ public sealed partial class BudgetReservationServiceTests
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         Guid run = await StartRunAsync("guild-final-monotonic", now);
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         await service.MarkPossiblyDispatchedAsync(held.Id, run);
 
@@ -396,74 +188,6 @@ public sealed partial class BudgetReservationServiceTests
         Assert.Equal((BudgetReservationStatus.UncertainPaid, 2m), await ReadReservationStateAsync(held.Id));
     }
 
-    [SkippableFact]
-    public async Task GuildTransaction_DisablingDailyGateDoesNotRaiseAnExistingHold()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
-
-        BudgetReservationService service = CreateService(budget);
-
-        Guid run = await StartRunAsync("guild-disabled-later", now);
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
-
-        budget.Enabled = false;
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Assert.True((await service.PrepareWithinAsync(connection, transaction, held.Id, run, 20m, 20m, now.AddHours(2))).IsSuccess);
-
-            await transaction.CommitAsync();
-        }
-
-        Assert.Equal(2m, await service.GetTodayOutstandingReservationsAsync());
-
-        Assert.Equal(UtcInstantText.Format(now.AddHours(2)), await ReadExpiresAtAsync(held.Id));
-    }
-
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task GuildTransaction_PhysicalBoundaryRechecksRolloverBeforeUncertainMark(bool blocked)
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        service.UtcNowForTesting = () => now;
-
-        Guid run = await StartRunAsync("guild-boundary", now.AddDays(-1));
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddMinutes(-1), BudgetReservationService.UtcBudgetPeriod(now.AddDays(-1))))).Value;
-
-        if (blocked) await InsertBillableOperationAsync(run, now, 5m);
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result result = await service.RecheckBeforeDispatchWithinAsync(connection, transaction, held.Id, run);
-
-            Assert.Equal(!blocked, result.IsSuccess);
-
-            if (blocked) Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
-            await transaction.CommitAsync();
-        }
-
-        Assert.Equal((blocked ? BudgetReservationStatus.Reserved : BudgetReservationStatus.UncertainPaid, 0m), await ReadReservationStateAsync(held.Id));
-
-        Assert.Equal(UtcInstantText.Format(blocked ? now.AddMinutes(-1) : now.AddHours(1)), await ReadExpiresAtAsync(held.Id));
-    }
-
     [SkippableTheory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -474,11 +198,11 @@ public sealed partial class BudgetReservationServiceTests
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         Guid run = await StartRunAsync("guild-proven-unsent", now);
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         if (exposed) await service.MarkPossiblyDispatchedAsync(held.Id, run);
 
@@ -505,46 +229,6 @@ public sealed partial class BudgetReservationServiceTests
         Assert.Equal(0m, await service.GetTodayCommittedSpendAsync());
     }
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task GuildTransaction_OverLimitRefusesTheCorrectReservationDayWithoutChangingTheHold(bool sameDay)
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        DateTimeOffset period = sameDay ? now : now.AddDays(-1);
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        service.UtcNowForTesting = () => now;
-
-        Guid run = await StartRunAsync("guild-over-limit-day", period);
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 6m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(period)))).Value;
-
-        if (!sameDay) await InsertBillableOperationAsync(run, period, 5m);
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result result = await service.PrepareWithinAsync(connection, transaction, held.Id, run, 6m,
-                sameDay ? 5m : 0m, now.AddHours(2));
-
-            Assert.True(result.IsFailure);
-
-            Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
-            await transaction.CommitAsync();
-        }
-
-        Assert.Equal((BudgetReservationStatus.Reserved, 0m), await ReadReservationStateAsync(held.Id));
-
-        Assert.Equal(UtcInstantText.Format(now.AddHours(1)), await ReadExpiresAtAsync(held.Id));
-    }
-
     [SkippableFact]
     public async Task GuildTransaction_UnknownOwnersAndTerminalStatusesCannotAdmitOrDiscardLiability()
     {
@@ -552,13 +236,13 @@ public sealed partial class BudgetReservationServiceTests
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         service.UtcNowForTesting = () => now;
 
         Guid run = await StartRunAsync("guild-invalid-status", now);
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -567,17 +251,15 @@ public sealed partial class BudgetReservationServiceTests
         Guid wrongRun = Guid.NewGuid();
 
         Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
-            (await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, wrongRun)).Error.Code);
-
-        Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
-            (await service.RecheckBeforeDispatchWithinAsync(connection, transaction, held.Id, wrongRun)).Error.Code);
+            (await service.ExposeHistoricalReservationWithinAsync(connection, transaction, held.Id, wrongRun)).Error.Code);
 
         Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
             (await service.ReleaseProvenNoDispatchWithinAsync(connection, transaction, held.Id, wrongRun)).Error.Code);
 
-        Assert.True((await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, run)).IsSuccess);
+        Assert.True((await service.ExposeHistoricalReservationWithinAsync(connection, transaction, held.Id, run)).IsSuccess);
 
-        Assert.True((await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, run)).IsSuccess);
+        Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
+            (await service.ExposeHistoricalReservationWithinAsync(connection, transaction, held.Id, run)).Error.Code);
 
         foreach (int status in new[] { (int)BudgetReservationStatus.Released, (int)BudgetReservationStatus.Expired, 99 })
         {
@@ -594,10 +276,7 @@ public sealed partial class BudgetReservationServiceTests
             Assert.Equal(1, await command.ExecuteNonQueryAsync());
 
             Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
-                (await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, run)).Error.Code);
-
-            Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
-                (await service.RecheckBeforeDispatchWithinAsync(connection, transaction, held.Id, run)).Error.Code);
+                (await service.ExposeHistoricalReservationWithinAsync(connection, transaction, held.Id, run)).Error.Code);
 
             Assert.Equal(ErrorCodes.Guild.ReconciliationRequired,
                 (await service.ReconcileWithinAsync(connection, transaction, held.Id, run, 0m, true)).Error.Code);
@@ -613,22 +292,20 @@ public sealed partial class BudgetReservationServiceTests
         Assert.Equal((BudgetReservationStatus.Reserved, 0m), await ReadReservationStateAsync(held.Id));
     }
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task GuildTransaction_SuppressedSqlUpdateFailsClosedAndKeepsTheOwnedHold(bool disposition)
+    [SkippableFact]
+    public async Task GuildTransaction_SuppressedSqlUpdateFailsClosedAndKeepsTheOwnedHold()
     {
         RequireSqlCipher();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         service.UtcNowForTesting = () => now;
 
         Guid run = await StartRunAsync("guild-suppressed-update", now);
 
-        BudgetReservation held = (await service.ReserveAsync(new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!, new(run, 2m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -639,15 +316,11 @@ public sealed partial class BudgetReservationServiceTests
             command.Transaction = transaction;
 
             // An adversarial trigger silently suppresses a write: success requires one changed row.
-            command.CommandText = disposition
-                ? "CREATE TEMP TRIGGER reject_guild_update BEFORE UPDATE OF Status ON BudgetReservations BEGIN SELECT RAISE(IGNORE); END"
-                : "CREATE TEMP TRIGGER reject_guild_update BEFORE UPDATE OF ReservedUsd ON BudgetReservations BEGIN SELECT RAISE(IGNORE); END";
+            command.CommandText = "CREATE TEMP TRIGGER reject_guild_update BEFORE UPDATE OF Status ON BudgetReservations BEGIN SELECT RAISE(IGNORE); END";
 
             await command.ExecuteNonQueryAsync();
 
-            Result result = disposition
-                ? await service.MarkPossiblyDispatchedWithinAsync(connection, transaction, held.Id, run)
-                : await service.PrepareWithinAsync(connection, transaction, held.Id, run, 4m, 0m, now.AddHours(2));
+            Result result = await service.ExposeHistoricalReservationWithinAsync(connection, transaction, held.Id, run);
 
             Assert.Equal(ErrorCodes.Guild.ReconciliationRequired, result.Error.Code);
 
@@ -662,17 +335,20 @@ public sealed partial class BudgetReservationServiceTests
     }
 
     [SkippableFact]
-    public async Task GuildTransaction_RejectsTransactionFromADifferentConnectionBeforeAnyReservation()
+    public async Task GuildTransaction_HistoricalExposureRejectsTransactionFromDifferentConnection()
     {
         RequireSqlCipher();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+        BudgetReservationService service = CreateService();
 
         service.UtcNowForTesting = () => now;
 
         Guid run = await StartRunAsync("guild-wrong-transaction", now);
+
+        BudgetReservation held = await LegacyBudgetFixture.SeedAsync(_db!,
+            new(run, 1m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -684,65 +360,11 @@ public sealed partial class BudgetReservationServiceTests
 
         await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
         {
-            await Assert.ThrowsAsync<ArgumentException>(async () => await service.ReserveWithinAsync(other, transaction,
-                new(run, 1m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now))));
+            await Assert.ThrowsAsync<ArgumentException>(async () => await service.ExposeHistoricalReservationWithinAsync(other, transaction, held.Id, run));
 
             await transaction.RollbackAsync();
         }
 
-        Assert.Equal(0, await CountReservationsAsync());
-    }
-
-    [Fact]
-    public void GuildTransaction_ReservationRequirementReflectsTheCurrentBudgetGate()
-    {
-        BudgetPolicySettings budget = new() { Enabled = false, DailyLimitUsd = 10m };
-
-        BudgetReservationService service = CreateService(budget);
-
-        Assert.False(service.RequiresReservation);
-
-        budget.Enabled = true;
-
-        budget.DailyLimitUsd = 0m;
-
-        Assert.False(service.RequiresReservation);
-
-        budget.DailyLimitUsd = 10m;
-
-        Assert.True(service.RequiresReservation);
-    }
-
-    [SkippableFact]
-    public async Task GuildTransaction_PhysicalBoundaryRenewsUsingTheRealClockWhenNoTestClockIsInstalled()
-    {
-        RequireSqlCipher();
-
-        DateTimeOffset before = DateTimeOffset.UtcNow;
-
-        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
-
-        Guid run = await StartRunAsync("guild-real-clock", before);
-
-        BudgetReservation held = (await service.ReserveAsync(new(run, 2m, before.AddMinutes(-1), BudgetReservationService.UtcBudgetPeriod(before)))).Value;
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
-        {
-            Result result = await service.RecheckBeforeDispatchWithinAsync(connection, transaction, held.Id, run);
-
-            Assert.True(result.IsSuccess, result.Error.Message);
-
-            await transaction.CommitAsync();
-        }
-
-        DateTimeOffset after = DateTimeOffset.UtcNow;
-
-        Assert.Equal((BudgetReservationStatus.UncertainPaid, 0m), await ReadReservationStateAsync(held.Id));
-
-        DateTimeOffset renewed = UtcInstantText.Parse(await ReadExpiresAtAsync(held.Id));
-
-        Assert.InRange(renewed, before.AddHours(1), after.AddHours(1));
+        Assert.Equal((BudgetReservationStatus.Reserved, 0m), await ReadReservationStateAsync(held.Id));
     }
 }

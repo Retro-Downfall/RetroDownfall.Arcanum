@@ -290,15 +290,12 @@ internal sealed class BatchProcessingService(
 
         internal bool CancelledMidway { get; set; }
 
-        internal bool BudgetRejected { get; set; }
-
         /// <summary>An unexpected failure stopped the batch; it publishes what was checkpointed as failed.</summary>
         internal bool UnexpectedFailure { get; set; }
 
         /// <summary>
-        /// Settling a page's accounting (run row, reservation) failed. The batch then stays
-        /// <c>in_progress</c> for durable recovery, which reconciles the reservation; publishing it
-        /// as failed would strand that reservation until it expires.
+        /// Persisting a page's run completion failed. The batch stays <c>in_progress</c>
+        /// for durable recovery.
         /// </summary>
         internal bool AccountingSettlementFailed { get; set; }
     }
@@ -514,7 +511,7 @@ internal sealed class BatchProcessingService(
                         }
                     }
 
-                    if (state.CancelledMidway || state.BudgetRejected || state.UnexpectedFailure)
+                    if (state.CancelledMidway || state.UnexpectedFailure)
                     {
                         break;
                     }
@@ -561,7 +558,7 @@ internal sealed class BatchProcessingService(
                     .ConfigureAwait(false);
 
                 string finalStatus = state.CancelledMidway ? BatchStatuses.Cancelled
-                    : state.BudgetRejected || state.UnexpectedFailure ? BatchStatuses.Failed : BatchStatuses.Completed;
+                    : state.UnexpectedFailure ? BatchStatuses.Failed : BatchStatuses.Completed;
 
                 await FinalizeBatchStatusAsync(batch.Id, finalStatus, publication, batches).ConfigureAwait(false);
 
@@ -624,30 +621,10 @@ internal sealed class BatchProcessingService(
         }
         ITurnRunWriter? writer = scopedServices.GetService<ITurnRunWriter>();
 
-        IBudgetReservationService? reservations = scopedServices.GetService<IBudgetReservationService>();
-
-        Result<TurnAccountingHandle> beginning = await TurnAccountingHandle.BeginBatchAsync(
-            writer, reservations, settings.ResolvePricing(),
-            pending.Select(static line => new BatchReservationLine(
-                line.Request!.Body.Model, line.Request.Body.MaxCompletionTokens ?? line.Request.Body.MaxTokens,
-                line.Request.Body.ReasoningBudget)).ToArray(),
-            requestId: $"batch-{batchId:N}", stoppingToken).ConfigureAwait(false);
-
-        if (beginning.IsFailure)
-        {
-            logger.LogWarning(
-                "Batch {BatchId} stopped at line {Line} because explicit operator budget policy rejected the next checkpoint page ({Code}). Prior page output remains saved.",
-                batchId, pending[0].Line, beginning.Error.Code);
-
-            await PersistNonProviderErrorAsync(batchId, pending[0],
-                $"Explicit operator budget policy stopped processing ({beginning.Error.Code}). Prior page output was checkpointed; raise the budget policy and submit the remaining lines to continue.",
-                batches, CancellationToken.None).ConfigureAwait(false);
-
-            state.BudgetRejected = true;
-
-            return;
-        }
-        TurnAccountingHandle accounting = beginning.Value;
+        TurnAccountingHandle accounting = await TurnAccountingHandle.BeginAsync(
+            writer, sessionId: null,
+            surface: "batch", purpose: "batch", requestId: $"batch-{batchId:N}", stoppingToken)
+            .ConfigureAwait(false);
 
         InferenceRunStatus runStatus = InferenceRunStatus.Completed;
 
@@ -683,7 +660,7 @@ internal sealed class BatchProcessingService(
 
         try
         {
-            await accounting.CompleteAsync(writer, reservations, runStatus, CancellationToken.None)
+            await accounting.CompleteAsync(writer, runStatus, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -843,7 +820,7 @@ internal sealed class BatchProcessingService(
     /// failed. Host shutdown, a failed accounting settlement and the Grimoire closing for maintenance
     /// are not processing failures: each leaves the batch <c>in_progress</c>, and the exception
     /// propagates to <see cref="ProcessBatchWithCleanupAsync"/>, so the durable recovery that owns the
-    /// batch (and its reservation) settles it at the next startup.
+    /// batch settles it at the next startup.
     /// </summary>
     private static bool StopsAsUnexpectedFailure(
         Exception exception,
@@ -1170,7 +1147,7 @@ internal sealed class BatchProcessingService(
     }
 
     /// <summary>
-    /// Streams and parses non-empty JSONL lines into bounded internal pages. Every page is budgeted,
+    /// Streams and parses non-empty JSONL lines into bounded internal pages. Every page is processed,
     /// processed, and flushed before the next page is read; the page size is not a total-work cap.
     /// </summary>
     private static async Task<IReadOnlyList<PreparedBatchRequestLine>> ReadRequestPageAsync(

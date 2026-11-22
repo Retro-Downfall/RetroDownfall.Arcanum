@@ -538,16 +538,20 @@ public sealed partial class DataRetentionServiceTests
     }
 
     [SkippableTheory]
-    [InlineData(false, false, true)]
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    [InlineData(true, true, false)]
-    public async Task Physical_retention_page_blocks_unknown_only_on_finite_axes(bool finiteUsd, bool finiteTokens, bool expected)
+    [InlineData(false, false, false, true)]
+    [InlineData(true, false, false, true)]
+    [InlineData(false, true, false, true)]
+    [InlineData(true, true, false, true)]
+    [InlineData(true, false, true, false)]
+    [InlineData(false, true, true, false)]
+    [InlineData(true, true, true, false)]
+    public async Task Physical_retention_page_pins_unknown_usage_for_historically_bounded_effects(
+        bool finiteUsd, bool finiteTokens, bool historicalBounds, bool expected)
     {
         RequireSqlCipher();
 
         await SeedGuildPhysicalRetentionAsync(2, true, true, authentic: true, unknownTokens: true,
-            finiteUsd: finiteUsd, finiteTokens: finiteTokens);
+            finiteUsd: finiteUsd, finiteTokens: finiteTokens, historicalBounds: historicalBounds);
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
@@ -844,7 +848,7 @@ public sealed partial class DataRetentionServiceTests
     private static readonly Guid BudgetPhysicalRun = Guid.Parse("EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE");
 
     private async Task SeedGuildPhysicalRetentionAsync(int state, bool copied, bool unknown, bool seedRun = true, bool authentic = false, Guid? reservation = null, bool unknownTokens = false,
-        bool finiteUsd = false, bool finiteTokens = false)
+        bool finiteUsd = false, bool finiteTokens = false, bool historicalBounds = false)
     {
         if (seedRun)
         {
@@ -861,15 +865,16 @@ public sealed partial class DataRetentionServiceTests
             VALUES(@account,@ownerKind,@owner,@account,1,@usdLimit,@tokenLimit);
             INSERT INTO guild_dispatches(DispatchId,QuestId,InvocationDigest,IsContinuation,AccountingAssociationId,EvidenceCode,Revision,CreatedAtUtc,UpdatedAtUtc)
             VALUES('BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB','11111111-1111-1111-1111-111111111111',zeroblob(32),0,@association,1,1,@at,@at);
-            INSERT INTO guild_budget_effects(EffectId,AccountId,QuestId,DispatchId,AccountingAssociationId,KindCode,SourceId,KnownUsd,KnownTokens,UnknownUsd,UnknownTokens,StateCode,Revision,ReservationId,UsdBound)
+            INSERT INTO guild_budget_effects(EffectId,AccountId,QuestId,DispatchId,AccountingAssociationId,KindCode,SourceId,KnownUsd,KnownTokens,UnknownUsd,UnknownTokens,StateCode,Revision,ReservationId,UsdBound,TokenBound)
             VALUES('CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC',@account,'11111111-1111-1111-1111-111111111111',
-                'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',@association,0,'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF','1.5',2,@unknown,@unknownTokens,@state,1,@reservation,@bound);
+                'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',@association,0,'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF','1.5',2,@unknown,@unknownTokens,@state,1,@reservation,@bound,@tokenBound);
             """, ("@run", BudgetPhysicalRun.ToString("D")), ("@association", BudgetPhysicalRun.ToString("D").ToUpperInvariant()),
             ("@at", OldTimestamp), ("@unknown", unknown ? 1 : 0), ("@state", state),
             ("@account", authentic ? "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD" : "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"),
             ("@ownerKind", authentic ? 0 : 1),
             ("@owner", authentic ? "11111111-1111-1111-1111-111111111111" : "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"),
-            ("@reservation", (object?)reservation?.ToString("D").ToUpperInvariant() ?? DBNull.Value), ("@bound", reservation is null ? DBNull.Value : "2"),
+            ("@reservation", (object?)reservation?.ToString("D").ToUpperInvariant() ?? DBNull.Value), ("@bound", reservation is not null || (historicalBounds && finiteUsd) ? "2" : DBNull.Value),
+            ("@tokenBound", historicalBounds && finiteTokens ? 20L : DBNull.Value),
             ("@unknownTokens", unknownTokens ? 1 : 0), ("@usdLimit", finiteUsd ? "10" : DBNull.Value),
             ("@tokenLimit", finiteTokens ? 100L : DBNull.Value));
 

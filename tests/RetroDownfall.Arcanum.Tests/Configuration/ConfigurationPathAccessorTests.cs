@@ -1,9 +1,37 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationPathAccessorTests
 {
+    [Fact]
+    public void Legacy_peer_budget_is_preserved_by_neighboring_edits_and_has_no_editable_path()
+    {
+        const string json = """
+            {"integrations":{"a2A":{"inboundPeers":[{
+              "peerId":"peer","enabled":true,"credentialEnvironmentVariable":"PEER_KEY","campaignId":null,
+              "grant":{"workspaces":[],"tools":[],"memory":[],
+                "budget":{"usd":{"mode":"finite","value":1.234567890123456789},"tokens":{"mode":"unlimited"}},
+                "delegation":[],"expiresAtUtc":null}}]}}}
+            """;
+        const string peer = "integrations.a2A.inboundPeers.0";
+
+        ArcanumSettings settings = JsonSerializer.Deserialize(json, ConfigurationJsonContext.Default.ArcanumSettings)!;
+
+        Assert.False(ConfigurationPathAccessor.Exists(settings, peer + ".grant.budget"));
+        Assert.False(ConfigurationPathAccessor.Set(settings, peer + ".grant.budget.usd.value", "2").IsSuccess);
+
+        ConfigurationPathUpdate update = ConfigurationPathAccessor.Set(settings, peer + ".enabled", "false");
+
+        Assert.True(update.IsSuccess, update.Error);
+        A2AInboundPeerSettings changed = Assert.Single(update.Settings!.Integrations.A2A.InboundPeers);
+
+        Assert.False(changed.Enabled);
+        Assert.Equal(1.234567890123456789m, changed.Grant!.Budget!.Usd!.Value);
+    }
+
     [Fact]
 
     public void Set_resolves_generated_descriptor_path_and_parses_integer()
@@ -209,9 +237,7 @@ public sealed class ConfigurationPathAccessorTests
             "providers.0.models.0.reasoning.maxBudgetTokens",
             "4096");
 
-        Assert.True(budget.IsSuccess, budget.Error);
-
-        Assert.Equal(4096, budget.Settings!.Providers[0].Models[0].Reasoning!.MaxBudgetTokens);
+        Assert.False(budget.IsSuccess);
     }
 
     [Fact]

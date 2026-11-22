@@ -25,6 +25,89 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class MemoryDelegationIntegrationTests
 {
+    [Fact]
+    public async Task Idempotent_Session_turn_delegates_a_prompt_only_child_without_borrowing_its_claim()
+    {
+        await using var provider = await PublishedArcanumSessionSmokeTests.FakeOpenAiProvider.StartAsync(delegationUsesMemory: false);
+        const string credential = "ARCANUM_DELEGATION_HTTP_TEST_KEY";
+        string? previous = global::System.Environment.GetEnvironmentVariable(credential);
+        global::System.Environment.SetEnvironmentVariable(credential, PublishedArcanumSessionSmokeTests.ProviderKey);
+
+        try
+        {
+            await using var factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore(), covenant: true, configure: settings =>
+            {
+                settings.DefaultModel = PublishedArcanumSessionSmokeTests.ExpectedModel;
+                settings.Providers = [new ProviderSettings
+                {
+                    Name = "published-smoke", Type = AiProviderKind.OpenAICompatible, Endpoint = provider.Endpoint.AbsoluteUri,
+                    CredentialEnvironmentVariable = credential,
+                    Models = [new ModelEntry(PublishedArcanumSessionSmokeTests.ExpectedModel, SupportsTools: true)], ContextWindowLimit = 8192,
+                }];
+                settings.Features = new FeatureSettings
+                {
+                    Apprentices = false, Lexicon = false, ArchiveSearch = false, Metrics = false, Scrying = false,
+                    Attachments = false, Reasoning = false, WorkspaceChecks = false, Annals = false, Covenant = true,
+                };
+                PublishedArcanumSessionSmokeTests.ConfigureEvaluationPricing(settings);
+            });
+
+            var originals = factory.ServiceOverrides;
+            factory.ServiceOverrides = services =>
+            {
+                originals!(services);
+                services.RemoveAll<IArcanumIntelligenceProvider>();
+                services.AddScoped<IArcanumIntelligenceProvider>(sp => sp.GetRequiredService<WizardIntelligenceProvider>());
+            };
+
+            using var client = factory.CreateAuthenticatedClient();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            CancellationToken ct = deadline.Token;
+            using var create = await client.PostAsync("api/sessions", JsonContent.Create(new CreateSessionRequest(null, "ordinary delegation"),
+                ArcanumJsonContext.Default.CreateSessionRequest), ct);
+            Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+            var session = await JsonSerializer.DeserializeAsync(await create.Content.ReadAsStreamAsync(ct),
+                ArcanumJsonContext.Default.ApiResponseSessionDetailDto, ct);
+            Guid id = session!.Data!.Id;
+            var request = new PingRequest(PublishedArcanumSessionSmokeTests.DelegationParentPrompt,
+                Model: PublishedArcanumSessionSmokeTests.ExpectedModel, SessionId: id, DisableMcpTools: true, SkipSpellRouting: true);
+            string accepted = Guid.NewGuid().ToString("D");
+
+            async Task<string> SendAsync()
+            {
+                using var message = new HttpRequestMessage(HttpMethod.Post, "api/intelligence/ping")
+                {
+                    Content = JsonContent.Create(request, ArcanumJsonContext.Default.PingRequest),
+                };
+
+                message.Headers.Add("Idempotency-Key", accepted);
+                using var response = await client.SendAsync(message, ct);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                return await response.Content.ReadAsStringAsync(ct);
+            }
+
+            string response = await SendAsync();
+            Assert.Equal(new[]
+            {
+                PublishedArcanumSessionSmokeTests.DelegationParentPrompt,
+                PublishedArcanumSessionSmokeTests.DelegationChildPrompt,
+                PublishedArcanumSessionSmokeTests.DelegationParentPrompt,
+            }, provider.Requests.Select(call => call.Prompt));
+            Assert.DoesNotContain(PublishedArcanumSessionSmokeTests.DelegationParentPrompt,
+                provider.Requests[1].Payload.GetProperty("messages").GetRawText());
+            Assert.False(provider.Requests[1].Payload.TryGetProperty("tools", out _));
+            Assert.Contains(PublishedArcanumSessionSmokeTests.DelegationChildAnswer,
+                provider.Requests[2].Payload.GetProperty("messages").GetRawText());
+            Assert.Contains(PublishedArcanumSessionSmokeTests.DelegationFinal, response);
+            Assert.Equal(response, await SendAsync());
+            Assert.Equal(3, provider.RequestCount);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(credential, previous);
+        }
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]

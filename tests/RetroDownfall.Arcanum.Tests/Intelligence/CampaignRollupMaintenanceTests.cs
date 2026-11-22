@@ -29,9 +29,7 @@ public sealed class CampaignRollupMaintenanceTests
 
         using ProviderWorkCoordinator coordinator = new();
 
-        ReservedReservations reservations = new();
-
-        Harness harness = new(providerWork: coordinator, reservations: reservations);
+        Harness harness = new(providerWork: coordinator);
 
         harness.Settings.Providers[0].LocalRuntimeId = "desktop";
 
@@ -69,10 +67,6 @@ public sealed class CampaignRollupMaintenanceTests
         Assert.Null(harness.Checkpoints.Disclosure);
 
         Assert.Equal([InferenceRunStatus.Failed], harness.Runs.Completed);
-
-        Assert.Equal(1, reservations.Released);
-
-        Assert.Equal(0, reservations.Reconciled);
 
         Assert.Empty(harness.Logger.Entries);
 
@@ -617,7 +611,7 @@ public sealed class CampaignRollupMaintenanceTests
 
         Assert.Empty(harness.Provider.Options!.Tools!);
 
-        Assert.Equal(CampaignRollupLimits.OutputTokens, harness.Provider.Options.MaxOutputTokens);
+        Assert.Null(harness.Provider.Options.MaxOutputTokens);
 
         Assert.IsType<ChatResponseFormatJson>(harness.Provider.Options.ResponseFormat);
 
@@ -1059,8 +1053,7 @@ public sealed class CampaignRollupMaintenanceTests
 
         public ExecutorProbe Executor { get; }
 
-        public Harness(CampaignRollupDeferralWarnings? warnings = null, ProviderWorkCoordinator? providerWork = null,
-            IBudgetReservationService? reservations = null)
+        public Harness(CampaignRollupDeferralWarnings? warnings = null, ProviderWorkCoordinator? providerWork = null)
         {
             Clients = new(Provider, Settings);
 
@@ -1073,8 +1066,8 @@ public sealed class CampaignRollupMaintenanceTests
             Executor = new(providerWork is null ? new ModelCallExecutor(estimator) : new ModelCallExecutor(estimator, options, providerWork));
 
             Service = new(Store, Checkpoints, Clients, Executor, Estimator,
-                options, new BudgetMonitor(null!, null!, options, NullLogger<BudgetMonitor>.Instance), Journal,
-                Logger, Runs, reservations ?? new UnconfiguredReservations(), Audit, warnings ?? new CampaignRollupDeferralWarnings(TimeProvider.System));
+                options, Journal,
+                Logger, Runs, Audit, warnings ?? new CampaignRollupDeferralWarnings(TimeProvider.System));
         }
 
         public async Task<CovenantTurnLease> AuthorityAsync() =>
@@ -1182,67 +1175,6 @@ public sealed class CampaignRollupMaintenanceTests
         public Task<IReadOnlyList<InferenceAuditRecord>> QueryAsync(DateTimeOffset? from, DateTimeOffset? to, string? model, string? sessionId, int limit, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<Result<AuditQueryPage<InferenceAuditRecord>>> QueryPageAsync(DateTimeOffset? from, DateTimeOffset? to, string? model, string? sessionId, int limit, string? cursor, CancellationToken cancellationToken) => throw new NotSupportedException();
-    }
-
-    private sealed class UnconfiguredReservations : IBudgetReservationService
-    {
-        public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<BudgetReservation>.Success(new(
-                Guid.NewGuid(), request.RunId, request.BudgetPeriod, 0m, 0m,
-                BudgetReservationStatus.Released, request.ExpiresAt, DateTimeOffset.UtcNow)));
-
-        public Task<Result> AdjustAsync(Guid reservationId, decimal reservedUsd, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-
-        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
-    }
-
-    private sealed class ReservedReservations : IBudgetReservationService
-    {
-        public int Released { get; private set; }
-
-        public int Reconciled { get; private set; }
-
-        public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<BudgetReservation>.Success(new(Guid.NewGuid(), request.RunId, request.BudgetPeriod,
-                request.ReservedUsd, 0m, BudgetReservationStatus.Reserved, request.ExpiresAt, DateTimeOffset.UtcNow)));
-
-        public Task<Result> AdjustAsync(Guid reservationId, decimal reservedUsd, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
-
-        public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
-
-        public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-        public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default)
-        {
-            Reconciled++;
-
-            return Task.CompletedTask;
-        }
-
-        public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default)
-        {
-            Released++;
-
-            return Task.CompletedTask;
-        }
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
-
-        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => Task.FromResult(0);
     }
 
     private sealed class ProviderDouble : IChatClient

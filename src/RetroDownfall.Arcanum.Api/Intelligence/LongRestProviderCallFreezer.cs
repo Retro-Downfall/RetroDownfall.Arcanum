@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-public sealed record LongRestChatRequest(string SystemPrompt, string UserPrompt, string SchemaJson, string SchemaName, string SchemaDescription, int MaxOutputTokens);
+public sealed record LongRestChatRequest(string SystemPrompt, string UserPrompt, string SchemaJson, string SchemaName, string SchemaDescription);
 
 /// <summary>Code-owned exact chat rendering and distinct single-input embedding binding.</summary>
 public static class LongRestProviderCallFreezer
@@ -72,7 +72,7 @@ public static class LongRestProviderCallFreezer
             }
         }
 
-        LongRestChatRequest request = new(system, user.ToString(), schema, name, description, LongRestPromptLayout.ReservedAnswerTokens);
+        LongRestChatRequest request = new(system, user.ToString(), schema, name, description);
 
         try
         {
@@ -123,9 +123,9 @@ public static class LongRestProviderCallFreezer
 
             using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-            hash.AppendData("Arcanum.LongRest.ChatPayload.v2\0"u8);
+            hash.AppendData("Arcanum.LongRest.ChatPayload.v3\0"u8);
 
-            Integer(2);
+            Integer(3);
 
             Integer((int)payload.Kind);
 
@@ -142,8 +142,6 @@ public static class LongRestProviderCallFreezer
             Text(request.SchemaName);
 
             Text(request.SchemaDescription);
-
-            Integer(request.MaxOutputTokens);
 
             Integer(0); // Closed tool count.
 

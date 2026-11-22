@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildBudgetLedgerTests
 {
     [Fact]
-    public async Task Nonrepresentable_finite_remainder_is_refused_before_child_write()
+    public async Task Legacy_decimal_capacity_arithmetic_does_not_gate_child_admission()
     {
         await using SqliteConnection connection = await OpenAsync();
 
@@ -20,19 +20,22 @@ public sealed partial class GuildBudgetLedgerTests
         Guid root = (await ledger.AllocateAccountWithinAsync(connection, transaction,
             GuildBudgetOwnerKind.Quest, Guid.NewGuid(), null, Grant(decimal.MaxValue, 100), default)).Value;
 
-        Result<Guid> refused = await ledger.AllocateAccountWithinAsync(connection, transaction,
+        Result<Guid> child = await ledger.AllocateAccountWithinAsync(connection, transaction,
             GuildBudgetOwnerKind.Quest, Guid.NewGuid(), root, Grant(0.1m, 1), default);
 
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, refused.Error.Code);
+        Assert.True(child.IsSuccess, child.Error.Message);
 
-        Assert.Equal(decimal.MaxValue,
-            (await ledger.ReadWithinAsync(connection, transaction, root, default)).Value.Remaining.Usd.Value);
+        var replay = await ledger.ReadWithinAsync(connection, transaction, child.Value, default);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(0.1m, replay.Value.Remaining.Usd.Value);
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Nonrepresentable_sibling_allocations_fail_before_child_write(bool usdOverflow)
+    public async Task Legacy_sibling_capacity_aggregation_does_not_gate_child_admission(bool usdOverflow)
     {
         await using SqliteConnection connection = await OpenAsync();
 
@@ -47,11 +50,11 @@ public sealed partial class GuildBudgetLedgerTests
             GuildBudgetOwnerKind.Quest, Guid.NewGuid(), root,
             usdOverflow ? Grant(decimal.MaxValue, 0) : Grant(0m, long.MaxValue), default)).IsSuccess);
 
-        Result<Guid> refused = await ledger.AllocateAccountWithinAsync(connection, transaction,
+        Result<Guid> second = await ledger.AllocateAccountWithinAsync(connection, transaction,
             GuildBudgetOwnerKind.Quest, Guid.NewGuid(), root,
             usdOverflow ? Grant(0.1m, 0) : Grant(0m, 1), default);
 
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, refused.Error.Code);
+        Assert.True(second.IsSuccess, second.Error.Message);
 
         await using SqliteCommand count = connection.CreateCommand();
 
@@ -59,11 +62,11 @@ public sealed partial class GuildBudgetLedgerTests
 
         count.CommandText = "SELECT count(*) FROM guild_budget_accounts";
 
-        Assert.Equal(2L, await count.ExecuteScalarAsync());
+        Assert.Equal(3L, await count.ExecuteScalarAsync());
     }
 
     [Fact]
-    public async Task Sibling_grants_partition_the_parent_and_refused_allocation_leaves_no_partial_child()
+    public async Task Historical_sibling_accounts_do_not_constrain_new_child_admission()
     {
         await using SqliteConnection connection = await OpenAsync();
 
@@ -81,18 +84,14 @@ public sealed partial class GuildBudgetLedgerTests
 
         Assert.True(first.IsSuccess, first.Error.Message);
 
-        Result<Guid> refused = await ledger.AllocateAccountWithinAsync(connection, transaction,
-            GuildBudgetOwnerKind.Quest, Guid.NewGuid(), root.Value, Grant(4m, 40), default);
+        Result<Guid> second = await ledger.AllocateAccountWithinAsync(connection, transaction,
+            GuildBudgetOwnerKind.Quest, Guid.NewGuid(), root.Value, GuildBudgetGrant.Unmetered, default);
 
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, refused.Error.Code);
+        Assert.True(second.IsSuccess, second.Error.Message);
 
         Result<GuildBudgetSnapshot> state = await ledger.ReadWithinAsync(connection, transaction, root.Value, default);
 
         Assert.True(state.IsSuccess, state.Error.Message);
-
-        Assert.Equal(3m, state.Value.Remaining.Usd.Value);
-
-        Assert.Equal(30L, state.Value.Remaining.Tokens.Value);
 
         await using SqliteCommand count = connection.CreateCommand();
 
@@ -100,7 +99,7 @@ public sealed partial class GuildBudgetLedgerTests
 
         count.CommandText = "SELECT count(*) FROM guild_budget_accounts";
 
-        Assert.Equal(2L, await count.ExecuteScalarAsync());
+        Assert.Equal(3L, await count.ExecuteScalarAsync());
     }
 
     [Fact]
@@ -147,7 +146,7 @@ public sealed partial class GuildBudgetLedgerTests
         new(tokens is null ? GuildBudgetMode.Unlimited : GuildBudgetMode.Finite, tokens));
 
     [Fact]
-    public async Task Account_identity_replay_cannot_change_parent_or_grant_and_unlimited_requires_unlimited_parent()
+    public async Task Account_identity_replay_preserves_original_parent_and_historical_metadata()
     {
         await using SqliteConnection connection = await OpenAsync();
 
@@ -166,8 +165,15 @@ public sealed partial class GuildBudgetLedgerTests
         Assert.Equal(ErrorCodes.Guild.IdempotencyConflict, (await ledger.AllocateAccountWithinAsync(connection, transaction,
             GuildBudgetOwnerKind.Quest, owner, null, Grant(11m, 100), default)).Error.Code);
 
-        Assert.Equal(ErrorCodes.Guild.GrantExceeded, (await ledger.AllocateAccountWithinAsync(connection, transaction,
-            GuildBudgetOwnerKind.Quest, Guid.NewGuid(), root, Grant(null, 10), default)).Error.Code);
+        Guid childOwner = Guid.NewGuid();
+
+        var child = await ledger.AllocateAccountWithinAsync(connection, transaction,
+            GuildBudgetOwnerKind.Quest, childOwner, root, Grant(null, 10), default);
+
+        Assert.True(child.IsSuccess, child.Error.Message);
+
+        Assert.Equal(ErrorCodes.Guild.IdempotencyConflict, (await ledger.AllocateAccountWithinAsync(connection, transaction,
+            GuildBudgetOwnerKind.Quest, childOwner, null, Grant(null, 10), default)).Error.Code);
 
         Assert.Equal(ErrorCodes.Guild.InvalidRequest, (await ledger.AllocateAccountWithinAsync(connection, transaction,
             (GuildBudgetOwnerKind)99, Guid.NewGuid(), root, Grant(1m, 1), default)).Error.Code);

@@ -58,7 +58,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.A2AClient = true;
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Settings.CurrentValue.Integrations ??= new();
 
@@ -91,7 +90,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildQuestDto quest = issued.Value.Quest;
 
-        Assert.False(f.Settings.CurrentValue.Cost.Budget.Enabled);
 
         Assert.Equal(GuildBudgetMode.Unlimited, quest.ResolvedGrant.Budget.Usd.Mode);
 

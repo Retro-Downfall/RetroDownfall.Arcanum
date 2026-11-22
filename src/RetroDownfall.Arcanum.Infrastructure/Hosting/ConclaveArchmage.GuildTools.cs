@@ -138,7 +138,9 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
             name = suppliedName.GetString();
         }
 
-        GuildBudgetGrant budget = call.ParentQuest.ResolvedGrant.Budget;
+        // Retain the previous argument-to-intent encoding for replay of stored calls. Guild
+        // allocates no authority or restrictions from those legacy amounts.
+        GuildBudgetGrant legacyBudget = call.ParentQuest.ResolvedGrant.Budget;
 
         if (sterile)
         {
@@ -150,7 +152,7 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
             {
                 if (tokenLimit.ValueKind != JsonValueKind.Number || !tokenLimit.TryGetInt64(out long value) || value <= 0) return InvalidChildTool;
 
-                budget = budget with { Tokens = new(GuildBudgetMode.Finite, value) };
+                legacyBudget = legacyBudget with { Tokens = new(GuildBudgetMode.Finite, value) };
             }
 
             if (usd)
@@ -158,7 +160,7 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
                 if (usdLimit.ValueKind != JsonValueKind.Number || !ExactDecimalText.TryParse(usdLimit.GetRawText(), out decimal value)
                     || value <= 0) return InvalidChildTool;
 
-                budget = budget with { Usd = new(GuildBudgetMode.Finite, value) };
+                legacyBudget = legacyBudget with { Usd = new(GuildBudgetMode.Finite, value) };
             }
         }
 
@@ -187,8 +189,8 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
         if (Encoding.UTF8.GetByteCount(prompt.ToString()) > GuildStore.MaximumContentBytes) return InvalidChildTool;
 
         GuildRequestedGrant requested = sterile
-            ? new(Workspaces: new(true, []), Tools: new(true, []), Memory: new(true, []), Budget: new(true, budget), Delegation: new(true, []))
-            : new(Budget: new(true, budget));
+            ? new(Workspaces: new(true, []), Tools: new(true, []), Memory: new(true, []), Budget: new(true, legacyBudget), Delegation: new(true, []))
+            : new(Budget: new(true, legacyBudget));
 
         return new GuildIssueChildRequest(call.Admission.LogicalCallId, call.ParentQuest.Revision, null, name,
             prompt.ToString(), requested);

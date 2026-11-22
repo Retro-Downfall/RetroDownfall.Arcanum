@@ -74,8 +74,8 @@ public sealed class LongRestProviderPayload
     public int InputBudgetBytes { get; }
 
     /// <summary>
-    /// For a summary, the most bytes the recipe lets the answer take: the request states it. It does not lower the answer's output cap, which
-    /// stays the fixed <see cref="LongRestPromptLayout.ReservedAnswerTokens"/>: a byte bound cannot prove a token count. Zero for every other kind.
+    /// The summary's declared UTF-8 bound, used to keep its later embedding input inside the window.
+    /// Zero for every other kind.
     /// </summary>
     public int SummaryBoundBytes { get; }
 

@@ -11,11 +11,6 @@ internal sealed partial class GuildRemotePort
         return settings.Features.Guild && settings.ResolveConclave().Enabled && a2a.Enabled && a2a.ClientEnabled;
     }
 
-    internal static bool IsAvailable(ArcanumSettings settings)
-    {
-        BudgetSettings budget = settings.ResolveBudget();
-
-        return IsTransportEnabled(settings) && settings.ResolveA2A().AllowedRemoteAgents is { Length: > 0 }
-            && !(budget.Enabled && budget.DailyLimitUsd > 0);
-    }
+    internal static bool IsAvailable(ArcanumSettings settings) =>
+        IsTransportEnabled(settings) && settings.ResolveA2A().AllowedRemoteAgents is { Length: > 0 };
 }

@@ -7,8 +7,6 @@ public sealed record IntelligenceSettings
 {
     public int SemanticRouterPreflightTimeoutSeconds { get; set; } = 15;
 
-    public int SemanticRouterMaxTokens { get; set; } = 128;
-
     public float SemanticRouterTemperature { get; set; } = 0.0f;
 
     /// <summary>
@@ -42,12 +40,14 @@ public sealed record IntelligenceSettings
 
     public int ContextWindowCompressionThreshold { get; set; } = 85;
 
+    public const int DefaultToolOutputCapBytes = 1024 * 1024;
+
     /// <summary>
     /// Hard cap (bytes) on captured <c>stdout</c> and <c>stderr</c> for in-process MCP
     /// <c>execute_command</c> and the <c>run_script</c> hub tool. Output beyond this is
     /// truncated with a marker so verbose tool calls cannot exhaust host memory.
     /// </summary>
-    public long ToolOutputCapBytes { get; set; } = 1L * 1024L * 1024L;
+    public long ToolOutputCapBytes { get; set; } = DefaultToolOutputCapBytes;
 
     /// <summary>
     /// Internal mode switch. When <see langword="true"/>, an unexpected exception from a single tool

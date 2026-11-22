@@ -71,7 +71,7 @@ public sealed class SubagentProtectedOperationTests(GrimoireFixture fixture)
         var childId = Guid.NewGuid();
         var child = (await h.Coordinator.ConsumeAsync(root, h.RootId, childId, h.Digest)).Value;
         var binding = new MemoryDelegationRootBinding(new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
-        var request = new SubagentRunRequest("explicit input", "model", [], 100, null)
+        var request = new SubagentRunRequest("explicit input", "model", [])
         {
             MemoryDelegation = derivedOnly ? null : new(childId, child),
             InputProtection = derivedOnly ? binding.CaptureOutputProtection() : null,

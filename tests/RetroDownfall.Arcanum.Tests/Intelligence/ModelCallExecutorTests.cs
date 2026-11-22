@@ -964,7 +964,7 @@ public sealed partial class ModelCallExecutorTests
             }));
         }
 
-        DelegatedManaTracker tracker = new(maxTokens: 100, maxCostUsd: 0.000020m);
+        DelegatedManaTracker tracker = new();
 
         using var scope = SubagentExecutionAmbient.EnterChild(tracker, protection: protection);
 
@@ -996,7 +996,6 @@ public sealed partial class ModelCallExecutorTests
 
         Assert.Equal(1, recorded.ModelCalls);
 
-        Assert.Equal(protectedStream, recorded.Exhausted);
 
         if (hasUsageCommit)
         {
@@ -1014,7 +1013,7 @@ public sealed partial class ModelCallExecutorTests
     [Fact]
     public async Task RecordDelegatedUsage_WhenProviderReportsNoUsage_LeavesTheTrackerUncharged()
     {
-        DelegatedManaTracker tracker = new(maxTokens: 5, maxCostUsd: 0.000001m);
+        DelegatedManaTracker tracker = new();
         ScriptingChatClient chat = new("a long answer from a provider that omits usage");
         ProviderSettings provider = CacheProvider();
 
@@ -1036,7 +1035,7 @@ public sealed partial class ModelCallExecutorTests
         Assert.Equal(0, usage.Tokens);
         Assert.Equal(0m, usage.CostUsd);
         Assert.Equal(1, usage.ModelCalls);
-        Assert.False(usage.Exhausted);
+
     }
 
     /// <summary>
@@ -1046,7 +1045,7 @@ public sealed partial class ModelCallExecutorTests
     [Fact]
     public async Task RecordDelegatedUsage_WhenModelHasNoPricing_ChargesTokensButNoCost()
     {
-        DelegatedManaTracker tracker = new(maxTokens: 1_000, maxCostUsd: 0.000001m);
+        DelegatedManaTracker tracker = new();
         ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
         {
             Usage = new UsageDetails { InputTokenCount = 60, OutputTokenCount = 40, TotalTokenCount = 100 },
@@ -1071,17 +1070,13 @@ public sealed partial class ModelCallExecutorTests
 
         Assert.Equal(100, usage.Tokens);
         Assert.Equal(0m, usage.CostUsd);
-        Assert.False(usage.Exhausted);
+
     }
 
-    /// <summary>
-    /// The ceiling is post-hoc: the call that crosses it is still delivered, and the tracker only
-    /// refuses the next call.
-    /// </summary>
     [Fact]
-    public async Task RecordDelegatedUsage_WhenUsageCrossesTheCeiling_DeliversThatCallAndRefusesTheNext()
+    public async Task RecordDelegatedUsage_ContinuesAfterReportedProviderUsage()
     {
-        DelegatedManaTracker tracker = new(maxTokens: 10, maxCostUsd: null);
+        DelegatedManaTracker tracker = new();
         ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
         {
             Usage = new UsageDetails { TotalTokenCount = 50 },
@@ -1100,7 +1095,7 @@ public sealed partial class ModelCallExecutorTests
             CancellationToken.None);
 
         Assert.True(first.IsSuccess);
-        Assert.True(tracker.GetUsage().Exhausted);
+        Assert.Equal(50, tracker.GetUsage().Tokens);
 
         ModelCallOutcome second = await executor.ExecuteBufferedAsync(
             chat,
@@ -1110,8 +1105,9 @@ public sealed partial class ModelCallExecutorTests
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
-        Assert.True(second.IsFailure);
-        Assert.Equal(1, chat.CallCount);
+        Assert.True(second.IsSuccess);
+        Assert.Equal(2, chat.CallCount);
+        Assert.Equal(100, tracker.GetUsage().Tokens);
     }
 
     private sealed class ScriptingChatClient(string text) : IChatClient

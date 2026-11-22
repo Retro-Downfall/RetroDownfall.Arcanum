@@ -12,9 +12,7 @@ public sealed partial class GuildQuestStoreTests
     {
         await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
 
-        var applied = await f.ApplyAsync();
-
-        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+        await f.SeedAcceptedReceiptAsync();
 
         f.Query.CommandText = "DELETE FROM BillableOperations";
 
@@ -30,7 +28,13 @@ public sealed partial class GuildQuestStoreTests
 
         using LongRunningOperationStore operations = new(db, f.Scenario.Fixture.Connections);
 
-        LongRunningOperation running = (await operations.GetAsync(operationId))!;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        var leased = await operations.TryAcquireLeaseAsync(operationId, "recovery-owner", now, now.AddMinutes(2));
+
+        Assert.True(leased.Acquired);
+
+        LongRunningOperation running = leased.Operation;
 
         Assert.True(await operations.RequestCancellationAsync(operationId, running.Revision, DateTimeOffset.UtcNow));
 
@@ -40,21 +44,11 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(ownership.TryClaim(operationId, out Guid claim));
 
-        CountingRefreshResolver resolver = new();
-
-        using SpendMetadataHandler handler = new();
-
-        GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, f.Configuration, resolver,
-            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler), null!, null!, operations, ownership,
-            TimeProvider.System, new GuildSpendRefreshTracker());
+        GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, ownership, TimeProvider.System);
 
         var outcome = await service.RecoverClaimedAsync(f.Scenario.Fixture.Caller, cancelling, default);
 
         Assert.Equal(LongRunningOperationState.Completed, outcome.State);
-
-        Assert.Equal(0, resolver.Reads);
-
-        Assert.Null(handler.Uri);
 
         Assert.True(ownership.Release(operationId, claim));
     }

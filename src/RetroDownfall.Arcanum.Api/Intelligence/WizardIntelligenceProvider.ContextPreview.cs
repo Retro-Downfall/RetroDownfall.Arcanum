@@ -681,7 +681,7 @@ public sealed partial class WizardIntelligenceProvider
 
         int contextLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
 
-        if (breakdown.TotalTokens > contextLimit)
+        if (breakdown.TotalTokensForAdmission > contextLimit)
         {
             // Preview uses the same complete-exchange eviction as dispatch, with no provider
             // call, persisted mutation or dispatch-rejection metric from this diagnostic read.

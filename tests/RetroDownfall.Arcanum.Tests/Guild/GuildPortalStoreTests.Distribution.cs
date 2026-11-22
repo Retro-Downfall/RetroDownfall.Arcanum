@@ -127,7 +127,7 @@ public sealed partial class GuildPortalStoreTests
 
         Assert.Contains("Authority: Peer", prompt.Value, StringComparison.Ordinal);
 
-        Assert.Contains("Claimed cost", prompt.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("Claimed cost", prompt.Value, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -119,7 +119,6 @@ internal static partial class OpenAiV1Endpoints
                 model.SupportsTools,
                 AllModelsSupportStreaming,
                 model.WireDialect,
-                model.MaxBudgetTokens,
                 sharedPromptCaching.GetValueOrDefault(model.Model)));
         }
 
@@ -271,7 +270,7 @@ internal static partial class OpenAiV1Endpoints
         if (result.IsFailure)
         {
             if (OpenAiStreamErrorMapper.IsRequestValidationCode(result.Error.Code)
-                || result.Error.Code is ErrorCodes.Hub.ContextBudgetExceeded or ErrorCodes.Budget.Exceeded)
+                || result.Error.Code is ErrorCodes.Hub.ContextBudgetExceeded)
             {
                 OpenAiErrorDetail requestError = OpenAiStreamErrorMapper.Map(result.Error);
 
@@ -1192,7 +1191,7 @@ internal static partial class OpenAiV1Endpoints
         internalCode switch
         {
             ErrorCodes.Hub.ContextBudgetExceeded => ("invalid_request_error", "context_length_exceeded"),
-            ErrorCodes.Budget.Exceeded => ("insufficient_quota", "insufficient_quota"),
+
             ErrorCodes.Hub.Model => ("api_error", "model_not_found"),
             ErrorCodes.Validation.InvalidPrompt => ("api_error", "missing_required_parameter"),
             ErrorCodes.Validation.AttachedFiles => ("api_error", "invalid_value"),

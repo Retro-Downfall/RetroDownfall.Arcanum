@@ -90,8 +90,6 @@ public static class ArcanumRuntimeDefaults
 
     public static PricingSettings Pricing => new();
 
-    public static BudgetSettings Budget => new();
-
     public static GuardrailsSettings Guardrails => new();
 
     public static WardSettings Ward => new();
@@ -375,19 +373,6 @@ public static class ArcanumRuntimeSettings
         {
             MaxConcurrentBatches = execution.MaxConcurrentBatches,
             MaxConcurrentRequestsPerBatch = execution.MaxConcurrentRequestsPerBatch,
-        };
-    }
-
-    public static BudgetSettings ResolveBudget(this ArcanumSettings settings)
-    {
-        BudgetSettings defaults = ArcanumRuntimeDefaults.Budget;
-        BudgetPolicySettings policy =
-            settings.Cost?.Budget ?? new BudgetPolicySettings();
-
-        return defaults with
-        {
-            Enabled = policy.Enabled,
-            DailyLimitUsd = policy.DailyLimitUsd,
         };
     }
 

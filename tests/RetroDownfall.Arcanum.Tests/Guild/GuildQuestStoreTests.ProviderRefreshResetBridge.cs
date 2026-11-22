@@ -26,22 +26,11 @@ public sealed partial class GuildQuestStoreTests
 
         private LongRunningOperationStore? _inner;
 
-        private ProviderCredentialStore? _credentials;
-
-        private GuildWorkspaceLeaseHostLock? _hostLock;
-
-        private BlockingRefreshStream? _stream;
-
-        private BlockingRefreshOperationStore? _operations;
-
-        private Task<Result<GuildSpendRefreshResult>>? _running;
-
         private int _disposed;
 
         private LiveResetRefresh(SpendScenario scenario) => _scenario = scenario;
 
-        internal static async Task<LiveResetRefresh> StartAsync(string connectionString, Guid sessionId, IGrimoireConnectionAdmissionGate gate,
-            ICovenantConnectionDrain drain, bool startRefresh = true)
+        internal static async Task<LiveResetRefresh> StartAsync(string connectionString, Guid sessionId, ICovenantConnectionDrain drain)
         {
             Fixture fixture = Fixture.ForExistingDatabase(connectionString, sessionId);
 
@@ -97,16 +86,6 @@ public sealed partial class GuildQuestStoreTests
                 // This test-only connection is not an admission witness and must not pin replacement.
                 await scenario.Connection.CloseAsync();
 
-                scenario.Settings.Providers[0].CredentialEnvironmentVariable = "ARCANUM_TEST_REFRESH_" + Guid.NewGuid().ToString("N");
-
-                GuildSpendRefreshConfiguration configuration = new(new TestOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>(scenario.Settings));
-
-                InMemoryOsCredentialStore os = new();
-
-                os.Set(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("router"), SpendSecret);
-
-                ProviderCredentialStore credentials = result._credentials = new(os, new EphemeralDataProtectionProvider());
-
                 SqliteConnection operationConnection = result._operationConnection = new(connectionString);
 
                 ArcanumDbContext db = result._db = GrimoireFixture.CreateContext(operationConnection);
@@ -114,37 +93,6 @@ public sealed partial class GuildQuestStoreTests
                 LongRunningOperationStore inner = result._inner = new(db, fixture.Connections, drain);
 
                 Assert.NotNull(await inner.GetAsync(current.Value.Quest.OperationId));
-
-                BlockingRefreshOperationStore operations = result._operations = new(inner);
-
-                string lockPath = Path.Combine(Path.GetTempPath(), "arcanum-refresh-reset-" + Guid.NewGuid().ToString("N"));
-
-                var locked = GuildWorkspaceLeaseHostLock.TryAcquire(lockPath);
-
-                Assert.True(locked.IsSuccess);
-
-                GuildWorkspaceLeaseHostLock hostLock = result._hostLock = locked.Value;
-
-                BlockingRefreshStream stream = result._stream = new();
-
-                GuildSpendRefreshService service = new(fixture.Store, configuration, new ProviderApiKeyResolver(credentials),
-                    new GuildOpenRouterSpendReader(new PublicSpendDns(), () => new BlockingRefreshHandler(stream)),
-                    new RefreshTestReadiness(hostLock), gate, operations, new LongRunningOperationOwnership(), TimeProvider.System, new GuildSpendRefreshTracker());
-
-                Task<Result<GuildSpendRefreshResult>>? running = result._running = startRefresh
-                    ? service.RefreshAsync(fixture.Caller, scenario.QuestId, scenario.EffectId, Guid.NewGuid(), default)
-                    : null;
-
-                if (running is null) return result;
-
-                await stream.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
-
-                await operations.HeartbeatEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
-
-                LongRunningOperation operation = Assert.IsType<LongRunningOperation>(await inner.GetAsync(operations.HeartbeatOperationId));
-
-                Assert.True(await inner.TryTransitionAsync(operation.Id, operation.Revision, operation.LeaseOwner,
-                    LongRunningOperationState.Completed, DateTimeOffset.UtcNow));
 
                 return result;
             }
@@ -158,55 +106,17 @@ public sealed partial class GuildQuestStoreTests
 
         internal SqliteConnection OperationConnection => _operationConnection!;
 
-        internal void ReleaseRead() => _stream?.ReleaseRead.TrySetResult();
-
-        internal Task DisposalStarted => _stream!.Disposing.Task;
-
-        internal void ReleaseDisposal() => _stream?.ReleaseDispose.TrySetResult();
-
-        internal async Task WaitForHeartbeatStopAsync()
-        {
-            TaskCompletionSource stopping = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            using CancellationTokenRegistration registration = _operations!.HeartbeatStop.Register(() => stopping.TrySetResult());
-
-            await stopping.Task.WaitAsync(TimeSpan.FromSeconds(15));
-        }
-
-        internal bool HeartbeatFinished => _operations!.HeartbeatFinished.Task.IsCompleted;
-
-        internal void ReleaseHeartbeat() => _operations?.ReleaseHeartbeat.TrySetResult();
-
-        internal Task JoinAsync() => _running ?? Task.CompletedTask;
-
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-            ReleaseRead();
+            _inner?.Dispose();
 
-            ReleaseDisposal();
+            if (_db is not null) await _db.DisposeAsync();
 
-            ReleaseHeartbeat();
+            if (_operationConnection is not null) await _operationConnection.DisposeAsync();
 
-            try
-            {
-                if (_running is not null) await _running;
-            }
-            finally
-            {
-                _hostLock?.Dispose();
-
-                _inner?.Dispose();
-
-                if (_db is not null) await _db.DisposeAsync();
-
-                if (_operationConnection is not null) await _operationConnection.DisposeAsync();
-
-                _credentials?.Dispose();
-
-                await _scenario.DisposeAsync();
-            }
+            await _scenario.DisposeAsync();
         }
     }
 }

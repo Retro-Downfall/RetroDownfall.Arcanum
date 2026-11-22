@@ -1390,10 +1390,6 @@ public sealed class RunCommandTests
 
             SourceTarget = 7,
 
-            TokenBudget = 1_500,
-
-            CostBudget = 0.75m,
-
             Unattended = true,
         };
 
@@ -1429,10 +1425,6 @@ public sealed class RunCommandTests
         Assert.Equal("provider/research-model", request.Model);
 
         Assert.Equal(7, request.SourceTarget);
-
-        Assert.Equal(1_500, request.TokenBudget);
-
-        Assert.Equal(0.75m, request.CostBudgetUsd);
 
         Assert.Equal(0.4f, request.Temperature);
 
@@ -1498,8 +1490,6 @@ public sealed class RunCommandTests
         {
             ShowContent = true,
 
-            TokenBudget = 1_750,
-
             Temperature = "0.3",
         };
 
@@ -1545,7 +1535,7 @@ public sealed class RunCommandTests
             request.AdditionalSystemPrompt,
             StringComparison.Ordinal);
 
-        Assert.Equal(1_750, request.MaxOutputTokens);
+        Assert.Null(request.MaxOutputTokens);
 
         Assert.Equal(0.3f, request.Temperature);
 
@@ -1554,15 +1544,8 @@ public sealed class RunCommandTests
         Assert.Equal("image/png", Assert.Single(request.ScryingFoci!).MimeType);
     }
 
-    [Theory]
-
-    [InlineData(0, 2_000)]
-
-    [InlineData(5, 0)]
-
-    public async Task RunExecutionDispatcher_research_dry_run_rejects_invalid_research_bounds_before_preview(
-        int sourceTarget,
-        int tokenBudget)
+    [Fact]
+    public async Task RunExecutionDispatcher_research_dry_run_rejects_nonpositive_source_target_before_preview()
     {
         PreviewCaptureHandler handler = new();
 
@@ -1597,9 +1580,8 @@ public sealed class RunCommandTests
             research: true,
             dryRun: true) with
         {
-            SourceTarget = sourceTarget,
+            SourceTarget = 0,
 
-            TokenBudget = tokenBudget,
         };
 
         int exitCode = await dispatcher.ExecuteAsync(
@@ -1621,55 +1603,6 @@ public sealed class RunCommandTests
             static diagnostic => diagnostic.Contains(
                 "positive source target",
                 StringComparison.Ordinal));
-    }
-
-    [Fact]
-
-    public async Task RunExecutionDispatcher_research_dry_run_rejects_negative_cost_before_preview()
-    {
-        PreviewCaptureHandler handler = new();
-
-        ServiceCollection services = new();
-
-        CliApplicationFactory.ConfigureCliServices(
-            services,
-            new ConfigurationManager());
-
-        ReplaceApiTransport(services, handler);
-
-        services.RemoveAll<ICliInferenceContextResolver>();
-
-        services.AddSingleton<ICliInferenceContextResolver>(
-            new FakeContextResolver(
-                CliInferenceContextResult.Success(
-                    EffectiveContext(null, "/active/workspace", null, null),
-                    [])));
-
-        await using ServiceProvider provider = services.BuildServiceProvider();
-
-        IRunExecutionDispatcher dispatcher = provider
-            .GetRequiredService<IRunExecutionDispatcher>();
-
-        RunCommandRequest options = Request(
-            research: true,
-            dryRun: true) with
-        {
-            CostBudget = -0.01m,
-        };
-
-        int exitCode = await dispatcher.ExecuteAsync(
-            new RunExecutionRequest(
-                options,
-                RunRoute.Research,
-                "preview research",
-                EffectiveContext(null, "/active/workspace", null, null),
-                [],
-                []),
-            CancellationToken.None);
-
-        Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
-
-        Assert.Empty(handler.RequestPaths);
     }
 
     private static void ReplaceApiTransport(
@@ -1860,9 +1793,7 @@ public sealed class RunCommandTests
             ResponseFormat: null,
             PresencePenalty: null,
             FrequencyPenalty: null,
-            SourceTarget: null,
-            TokenBudget: 2_000,
-            CostBudget: null);
+            SourceTarget: null);
 
     private static RunInputReadResult SuccessInput(
         string instruction,

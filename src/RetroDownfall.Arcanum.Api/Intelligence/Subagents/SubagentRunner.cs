@@ -56,9 +56,7 @@ internal sealed class SubagentRunner(
 
         if (protectedCancellation is not null) cancellationToken = protectedCancellation.Token;
 
-        DelegatedManaTracker tracker = new(
-            request.MaxTokens,
-            request.MaxCostUsd);
+        DelegatedManaTracker tracker = new();
         LongRunningOperationLeaseResult? operationLease = null;
         long operationRevision = 0;
         string ownerId = $"subagent:{Environment.ProcessId}:{childRunId:N}";
@@ -99,8 +97,7 @@ internal sealed class SubagentRunner(
 
             using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker, request.MemoryDelegation?.Child, protection, request.MemoryDelegation?.Child.Sources);
 
-            // This runs inside the parent's delegate_task call, where the parent turn's accounting is
-            // ambient. The child is billed under its own run and reservation, never the parent's.
+            // Record the child's provider usage under its own run while the parent awaits the tool result.
             using IDisposable accountingIsolation = TurnAccountingAmbient.Suspend();
 
             PingRequest childRequest = BuildIsolatedRequest(request);
@@ -128,6 +125,10 @@ internal sealed class SubagentRunner(
             {
                 using IDisposable providerWork = ProviderWorkAmbient.AllowChild();
 
+                // The child is awaited by the accepted request, but it never owns that
+                // request's Session claim. Keep parent ownership-loss cancellation visible.
+                using IDisposable requestIdentity = TurnIdempotencyAmbient.SuppressRequestIdentity();
+
                 result = await turnCoordinator.Value
                     .ExecuteBufferedAsync(
                         childRequest,
@@ -150,25 +151,9 @@ internal sealed class SubagentRunner(
             if (operationLifetime is not null)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                string failureCode = tracker.GetUsage().Exhausted ? SubagentFailureCodes.BudgetExhausted : SubagentFailureCodes.ChildFailed;
-                string? failure = await operationLifetime.SettleAsync(operations, result.IsSuccess && !tracker.GetUsage().Exhausted, failureCode).ConfigureAwait(false);
+                string? failure = await operationLifetime.SettleAsync(operations, result.IsSuccess, SubagentFailureCodes.ChildFailed).ConfigureAwait(false);
                 return failure is not null ? Failure(childRunId, tracker, failure, sensitivity)
                     : new(true, result.Value.Text, childRunId, tracker.GetUsage(), null) { Sensitivity = sensitivity };
-            }
-
-            if (tracker.GetUsage().Exhausted)
-            {
-                await FailOperationAsync(
-                        operationLease,
-                        ownerId,
-                        operationRevision,
-                        SubagentFailureCodes.BudgetExhausted)
-                    .ConfigureAwait(false);
-
-                return Failure(
-                    childRunId,
-                    tracker,
-                    SubagentFailureCodes.BudgetExhausted, sensitivity);
             }
 
             if (result.IsFailure)
@@ -222,29 +207,6 @@ internal sealed class SubagentRunner(
         {
             string? failure = await operationLifetime.SettleAsync(operations, false, operationLifetime.FailureCode).ConfigureAwait(false);
             return Failure(childRunId, tracker, failure ?? operationLifetime.FailureCode, sensitivity);
-        }
-        catch (BudgetExhaustedException)
-        {
-            if (operationLifetime is not null)
-            {
-                string? failure = await operationLifetime.SettleAsync(operations, false, SubagentFailureCodes.BudgetExhausted).ConfigureAwait(false);
-                return Failure(childRunId, tracker, failure ?? SubagentFailureCodes.BudgetExhausted, sensitivity);
-            }
-
-            if (operationLease is { Acquired: true })
-            {
-                await FailOperationAsync(
-                        operationLease,
-                        ownerId,
-                        operationRevision,
-                        SubagentFailureCodes.BudgetExhausted)
-                    .ConfigureAwait(false);
-            }
-
-            return Failure(
-                childRunId,
-                tracker,
-                SubagentFailureCodes.BudgetExhausted, sensitivity);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -333,9 +295,6 @@ internal sealed class SubagentRunner(
                 new CoreChatMessage("user", request.Prompt),
             ],
             SkipSpellRouting: true,
-            MaxOutputTokens: request.MaxTokens is { } maxTokens
-                ? int.CreateSaturating(maxTokens)
-                : null,
             DisableAllTools: true);
 
     private static SubagentRunResult Failure(

@@ -13,6 +13,4 @@ public sealed record ModelInfoDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ReasoningWireDialect? WireDialect = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    int? MaxBudgetTokens = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     PromptCachingProfile? PromptCaching = null);

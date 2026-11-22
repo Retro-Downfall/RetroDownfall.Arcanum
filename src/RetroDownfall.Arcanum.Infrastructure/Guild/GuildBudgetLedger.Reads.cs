@@ -74,14 +74,9 @@ internal sealed partial class GuildBudgetLedger
 
                 if (!children.TryGetValue(policy.Id, out List<Guid>? descendants)) continue;
 
-                Account parent = accounts[policy.Id];
-
                 foreach (Guid childId in descendants)
                 {
                     Account child = accounts[childId];
-
-                    if (parent.Usd is { } usd && (child.Usd is null || child.Usd > usd)
-                        || parent.Tokens is { } tokens && (child.Tokens is null || child.Tokens > tokens)) return Invalid;
 
                     policyWork.Push((childId, policy.Usd || child.Usd is not null, policy.Tokens || child.Tokens is not null));
                 }

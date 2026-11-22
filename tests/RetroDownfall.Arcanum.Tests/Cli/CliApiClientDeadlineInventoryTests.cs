@@ -117,7 +117,6 @@ public sealed class CliApiClientDeadlineInventoryTests
         GetApprenticeAsync
         GetApprenticesAsync
         GetBatchAsync
-        GetBudgetAsync
         GetCampaignAsync
         GetCampaignCodexAsync
         GetCampaignPromptsAsync

@@ -122,7 +122,6 @@ public sealed partial class GuildLocalHostPolicyTests
         f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1", ContextWindowLimit = 131072, Models = ["accepted-model"] }];
 
-        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         f.Settings.CurrentValue.Integrations.A2A.OutboundCredentialEnvironmentVariable = "TASK19_MIXED_PEER_KEY";
 
@@ -181,10 +180,9 @@ public sealed partial class GuildLocalHostPolicyTests
                 Features = new() { Guild = true }, DefaultModel = "accepted-model",
                 Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
                     Endpoint = "https://example.test/v1", ContextWindowLimit = 131072,
-                    GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+                    Models = ["accepted-model"] }],
             };
 
-            settings.Cost.Budget.Enabled = false;
 
             using MixedParentTransport parentTransport = new() { FullParent = true };
 
@@ -222,10 +220,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
             try
             {
-                var parentRuntime = await parentWizard.CreateGuildRuntimeAsync(new BudgetReservationService(parentDb, new TestOptionsMonitor<ArcanumSettings>(settings)), settings,
+                var parentRuntime = await parentWizard.CreateGuildRuntimeAsync(new BudgetReservationService(parentDb), settings,
                     new ChatClientFactory(parentTransport, new TestOptionsMonitor<ArcanumSettings>(settings)), coordinator);
 
-                var localRuntime = await localWizard.CreateGuildRuntimeAsync(new BudgetReservationService(localDb, new TestOptionsMonitor<ArcanumSettings>(settings)), settings,
+                var localRuntime = await localWizard.CreateGuildRuntimeAsync(new BudgetReservationService(localDb), settings,
                     new ChatClientFactory(localTransport, new TestOptionsMonitor<ArcanumSettings>(settings)), coordinator);
 
                 using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
@@ -995,15 +993,15 @@ public sealed partial class GuildLocalHostPolicyTests
 
             JsonElement effectiveConfig = effective.RootElement.GetProperty("data");
 
-            Assert.False(effectiveConfig.GetProperty("cost").GetProperty("budget").GetProperty("enabled").GetBoolean());
+            if (effectiveConfig.TryGetProperty("cost", out JsonElement cost)) Assert.False(cost.TryGetProperty("budget", out _));
 
-            Assert.Equal("None", effectiveConfig.GetProperty("providers")[0].GetProperty("guildUsageReconciliation").GetString(), ignoreCase: true);
+            Assert.False(effectiveConfig.GetProperty("providers")[0].TryGetProperty("guildUsageReconciliation", out _));
 
             JsonElement peerGrant = effectiveConfig.GetProperty("integrations").GetProperty("a2A").GetProperty("inboundPeers")[0].GetProperty("grant");
 
-            Assert.Equal("unlimited", peerGrant.GetProperty("budget").GetProperty("usd").GetProperty("mode").GetString(), ignoreCase: true);
+            Assert.False(peerGrant.TryGetProperty("budget", out _));
 
-            Assert.Equal("unlimited", peerGrant.GetProperty("budget").GetProperty("tokens").GetProperty("mode").GetString(), ignoreCase: true);
+            Assert.Equal("local", Assert.Single(peerGrant.GetProperty("delegation").EnumerateArray()).GetString(), ignoreCase: true);
         }
 
         internal static bool IsAddressInUse(string output) => output.Split('\n').Any(line =>
@@ -1024,7 +1022,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 reservation.Stop();
 
-                string config = """{"Arcanum":{"Host":{"Port":PORT},"DefaultModel":"accepted-model","Providers":[{"Name":"accepted-provider","Type":"OpenAICompatible","Endpoint":"MODEL_URL/v1","ContextWindowLimit":131072,"Models":["accepted-model"],"GuildUsageReconciliation":"None"}],"Features":{"Guild":true,"Apprentices":true,"Conclave":true,"A2AServer":true},"Cost":{"Budget":{"Enabled":false}},"Integrations":{"A2A":{"InboundPeers":[{"PeerId":"alpha","Enabled":true,"CredentialEnvironmentVariable":"TASK19_CHILD_PEER","CampaignId":null,"Grant":{"Workspaces":[],"Tools":[],"Memory":[],"Budget":{"Usd":{"Mode":"unlimited"},"Tokens":{"Mode":"unlimited"}},"Delegation":["local"],"ExpiresAtUtc":null}}]}}}}"""
+                string config = """{"Arcanum":{"Host":{"Port":PORT},"DefaultModel":"accepted-model","Providers":[{"Name":"accepted-provider","Type":"OpenAICompatible","Endpoint":"MODEL_URL/v1","ContextWindowLimit":131072,"Models":["accepted-model"]}],"Features":{"Guild":true,"Apprentices":true,"Conclave":true,"A2AServer":true},"Integrations":{"A2A":{"InboundPeers":[{"PeerId":"alpha","Enabled":true,"CredentialEnvironmentVariable":"TASK19_CHILD_PEER","CampaignId":null,"Grant":{"Workspaces":[],"Tools":[],"Memory":[],"Delegation":["local"],"ExpiresAtUtc":null}}]}}}}"""
                     .Replace("PORT", port.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
                     .Replace("MODEL_URL", modelUrl, StringComparison.Ordinal);
 

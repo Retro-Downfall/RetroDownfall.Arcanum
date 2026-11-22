@@ -57,7 +57,7 @@ public sealed partial class WizardIntelligenceProviderTests
             Usage = new UsageDetails { InputTokenCount = 7, OutputTokenCount = 3, TotalTokenCount = 10 },
         });
 
-        var wizard = CreateWizard(chat, settings, grimoire: grimoire, factory: factory, budgetReservationService: daily, guildChildren: guildChildren);
+        var wizard = CreateWizard(chat, settings, grimoire: grimoire, factory: factory, guildChildren: guildChildren);
 
         return (Assert.IsAssignableFrom<IGuildLocalInferenceRuntime>(wizard), () => chat.BufferedCallCount,
             () => chat.LastBufferedMessages, () => chat.LastChatOptions);

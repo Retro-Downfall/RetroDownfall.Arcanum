@@ -231,14 +231,6 @@ internal sealed class LongRestQualificationApi : IDisposable
             : throw new InvalidOperationException($"The receipt request returned {(int)result.Status}: {result.ErrorCode}.");
     }
 
-    /// <summary>Today's local spend in USD from the budget snapshot.</summary>
-    public async Task<decimal> LocalSpendUsdAsync(CancellationToken cancellationToken)
-    {
-        JsonElement data = (await SendAsync(HttpMethod.Get, "api/budget", null, cancellationToken)).Data;
-
-        return data.GetProperty("localSpendUsd").GetDecimal();
-    }
-
     public async Task<IReadOnlyDictionary<string, double>> ReadMetricsAsync(CancellationToken cancellationToken)
     {
         using HttpResponseMessage response = await _client.GetAsync("metrics", cancellationToken);

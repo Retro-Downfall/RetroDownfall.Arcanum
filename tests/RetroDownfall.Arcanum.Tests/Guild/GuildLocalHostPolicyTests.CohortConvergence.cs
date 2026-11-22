@@ -681,13 +681,14 @@ public sealed partial class GuildLocalHostPolicyTests
 
     private static async Task<(GuildCallerContext Owner, GuildCallerContext Issuer, GuildQuestStored Root,
         GuildCohortStore Cohorts, CohortDto Cohort, List<GuildQuestStored> Members)> ConvergenceFixtureAsync(
-        Fixture f, GuildConvergenceKind kind, int? quorum, string mime, int count)
+        Fixture f, GuildConvergenceKind kind, int? quorum, string mime, int count, GuildBudgetGrant? historicalRootBudget = null)
     {
         GuildCallerContext owner = await f.OperatorAsync();
 
         var root = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
         {
             Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Cohort],
+            Budget = historicalRootBudget ?? f.Request.Grant.Budget,
         } });
 
         Assert.True(root.IsSuccess, root.Error.Message);

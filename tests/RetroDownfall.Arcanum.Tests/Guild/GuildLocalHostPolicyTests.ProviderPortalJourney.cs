@@ -63,7 +63,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
         recipient.Settings.CurrentValue.Integrations.A2A.ServerPath = receiverPath;
 
-        recipient.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
         ChildQueue recipientQueue = new();
 
@@ -82,13 +81,12 @@ public sealed partial class GuildLocalHostPolicyTests
 
         settings.Integrations.A2A.AllowedRemoteAgents = [discovery];
 
-        settings.Cost.Budget.Enabled = false;
 
         settings.DefaultModel = "accepted-model";
 
         settings.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1", ContextWindowLimit = 131_072,
-            GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }];
+            Models = ["accepted-model"] }];
 
         string credentialReference = "ARCANUM_TEST_PORTAL_JOURNEY_" + Guid.NewGuid().ToString("N");
 
@@ -284,7 +282,7 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 ChatClientFactory providers = new(model, sender.Settings);
 
-                var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db, sender.Settings), settings, providers, coordinator);
+                var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db), settings, providers, coordinator);
 
                 BeginPhase("executing the turn after fixture setup");
 

@@ -106,11 +106,6 @@ internal sealed partial class GuildQuestStore
 
             if (newWork && policy is GuildLocalHostPolicy { IsExecutionEnabled: false }) return Unavailable;
 
-            if (newWork && (admitted.Value.Row.Quest.ResolvedGrant.Budget.Usd.Mode != GuildBudgetMode.Unlimited
-                || admitted.Value.Row.Quest.ResolvedGrant.Budget.Tokens.Mode != GuildBudgetMode.Unlimited
-                || allocations is GuildBudgetLedger { RequiresDailyReservation: true }))
-                return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A cannot enforce the active finite spending authority.");
-
             return true;
         }, ct);
 
@@ -126,10 +121,6 @@ internal sealed partial class GuildQuestStore
                 if (admitted.IsFailure) return admitted.Error;
 
                 if (allocations is not GuildBudgetLedger budget) return Unavailable;
-
-                if (budget.RequiresDailyReservation || admitted.Value.Row.Quest.ResolvedGrant.Budget.Usd.Mode != GuildBudgetMode.Unlimited
-                    || admitted.Value.Row.Quest.ResolvedGrant.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)
-                    return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A cannot enforce the active finite spending authority.");
 
                 var dispatch = await ReadDispatchWithinAsync(connection, transaction, dispatchId, token).ConfigureAwait(false);
 

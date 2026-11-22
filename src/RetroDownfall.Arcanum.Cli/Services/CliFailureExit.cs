@@ -19,7 +19,7 @@ internal static class CliFailureExit
 {
     private const string ConnectionErrorPrefix = "Connection.";
 
-    /// <summary>The exit code a failed <see cref="Result"/> should return, mirroring BudgetCommands.Show.</summary>
+    /// <summary>The exit code a failed <see cref="Result"/> should return.</summary>
     public static int ExitCode(Error error) =>
         ExitCode(error.Code);
 

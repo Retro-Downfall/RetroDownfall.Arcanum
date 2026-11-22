@@ -5,14 +5,13 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>One host-built turn and one physical call. Retained or copied request ids confer no authority.</summary>
 internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
-    PingRequest request, BudgetReservationService daily, ModelPricingEntry pricing,
+    PingRequest request, ModelPricingEntry pricing,
     GuildProviderPayload? roundPayload = null, IReadOnlyList<GuildCircleInputBatch>? circleInputs = null,
     IReadOnlyList<GuildWorkspaceReadDisclosure>? workspaceDisclosures = null) : IGuildInvocationBinding, IDisposable
 {
@@ -40,7 +39,7 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
 
     internal GuildProviderCallBinding CreateRound(IReadOnlyList<ChatMessage> messages, IReadOnlyList<AIFunction> functions,
         IReadOnlyList<GuildCircleInputBatch>? circle = null, GuildWorkspaceReadDisclosure[]? workspace = null) =>
-        IsActive ? new(execution, input, request, daily, pricing, new(messages, functions), circle?.ToArray(), workspace)
+        IsActive ? new(execution, input, request, pricing, new(messages, functions), circle?.ToArray(), workspace)
             : throw new InvalidOperationException("The Guild turn has ended.");
 
     internal bool Matches(PingRequest candidate) => IsActive && ReferenceEquals(request, candidate);
@@ -49,22 +48,21 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
         && context.Provider.Name == input.Provider && context.Model == input.Model
         && context.Provider.Type == AiProviderKind.OpenAICompatible;
 
-    internal int? PrepareClient(IChatClient client, int? selectedOutput = null)
+    internal int? PrepareClient(IChatClient client)
     {
         if (!IsActive || Interlocked.CompareExchange(ref _client, client, null) is not null)
             throw new InvalidOperationException("The Guild turn already selected its physical transport.");
 
-        int? boundedOutput = input.MaxOutputTokens is { } accepted
-            ? Math.Min(accepted, selectedOutput ?? accepted) : selectedOutput;
+        int? maximumOutput = input.MaxOutputTokens;
 
-        if (boundedOutput is <= 0) throw new InvalidOperationException("The physical output bound must be positive.");
+        if (maximumOutput is <= 0) throw new InvalidOperationException("The physical output limit must be positive.");
 
         _prepared = roundPayload is null
-            ? GuildProviderWirePolicy.Prepare(client, input.Provider, input.Model, request.Prompt, boundedOutput, pricing)
+            ? GuildProviderWirePolicy.Prepare(client, input.Provider, input.Model, request.Prompt, maximumOutput)
             : GuildProviderWirePolicy.Prepare(client, input.Provider, input.Model, roundPayload.CreateMessages(),
-                roundPayload.CreateFunctions(), boundedOutput, pricing);
+                roundPayload.CreateFunctions(), maximumOutput);
 
-        _maxOutput = _prepared?.MaxOutputTokens ?? boundedOutput;
+        _maxOutput = _prepared?.MaxOutputTokens ?? maximumOutput;
 
         return _maxOutput;
     }
@@ -76,9 +74,6 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
             || options.MaxOutputTokens != _maxOutput
             || Interlocked.CompareExchange(ref _called, 1, 0) != 0)
             return new Error(ErrorCodes.Guild.AuthorityMismatch, "The physical payload does not bind its live accepted Guild turn.");
-
-        if (context.Provider.GuildUsageReconciliation != GuildUsageReconciliationSource.None && _prepared?.SpendSource is null)
-            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "The provider spend source is unavailable.");
 
         // Parallel units share this exact live execution, while orphaned/unknown effects still
         // fail the durable store check. Keep the physical call serialized through settlement,
@@ -105,11 +100,11 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
         GuildQuestDriver driver = execution.Driver;
 
         GuildBudgetEffectRequest effect = new(Guid.NewGuid(), driver.Execution.QuestId, execution.Dispatch.DispatchId,
-            driver.Execution.RunId, GuildBudgetEffectKind.LocalProvider, SourceId, null, prepared?.UsdBound, prepared?.TokenBound);
+            driver.Execution.RunId, GuildBudgetEffectKind.LocalProvider, SourceId, null, null, null);
 
         DateTimeOffset started = DateTimeOffset.UtcNow;
 
-        return await execution.Store.ExecuteAndSettleProviderResponseAsync<ChatResponse>(execution, daily, effect,
+        return await execution.Store.ExecuteAndSettleProviderResponseAsync<ChatResponse>(execution, null, effect,
             async token =>
             {
                 if (!IsActive) return new Error(ErrorCodes.Guild.AuthorityUnavailable, "The Guild turn ended before provider handoff.");
@@ -145,16 +140,15 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
                 // Original aggregate presence still decides whether usage is complete.
                 long inputTokens = observedInput ?? cached, outputTokens = observedOutput ?? reasoning;
 
-                ModelPricingEntry snapshot = prepared?.Pricing ?? pricing with { };
+                ModelPricingEntry snapshot = pricing with { };
 
                 return new BillableOperationRecord(driver.Execution.RunId, BillableOperationType.Chat, input.Provider, input.Model,
                     "guild", started, DateTimeOffset.UtcNow, inputTokens, outputTokens, reasoning, cached,
-                    prepared?.PricingSnapshotJson() ?? JsonSerializer.Serialize(snapshot, ConfigurationJsonContext.Default.ModelPricingEntry),
+                    JsonSerializer.Serialize(snapshot, ConfigurationJsonContext.Default.ModelPricingEntry),
                     CostCalculator.CalculateCost(inputTokens, outputTokens, cached, reasoning, snapshot),
                     observedInput is not null && observedOutput is not null
                         ? BillableOperationStatus.Completed : BillableOperationStatus.Failed, response.ResponseId);
-            }, ct, input, circleInputs, prepared?.SpendSource,
-            prepared?.SpendSource is not null ? prepared.PricingSnapshotJson() : null, workspaceDisclosures).ConfigureAwait(false);
+            }, ct, input, circleInputs, workspaceDisclosures: workspaceDisclosures).ConfigureAwait(false);
     }
 
     public void Dispose() => Interlocked.Exchange(ref _closed, 1);

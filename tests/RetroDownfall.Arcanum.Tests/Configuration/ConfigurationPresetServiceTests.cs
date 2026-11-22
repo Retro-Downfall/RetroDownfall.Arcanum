@@ -339,10 +339,6 @@ public sealed class ConfigurationPresetServiceTests : IAsyncLifetime
 
         settings.Workspaces.DefaultRoot = "/work";
 
-        settings.Cost.Budget.Enabled = true;
-
-        settings.Cost.Budget.DailyLimitUsd = 1m;
-
         FakeCredentialStore credentialStore = new(SecretStoreReadResult.Ok("unused"));
 
         ConfigurationPresetService service = CreateService(

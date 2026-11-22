@@ -18,7 +18,7 @@ public sealed partial class ModelTokenEstimator
         LongRestChatRequest request = LongRestProviderCallFreezer.RenderChat(payload).Value;
 
         return EstimateClosedChat(provider, canonicalModel, request.SystemPrompt, request.UserPrompt,
-            [request.SchemaName, request.SchemaDescription, request.SchemaJson], request.MaxOutputTokens) with
+            [request.SchemaName, request.SchemaDescription, request.SchemaJson], LongRestPromptLayout.OutputHeadroomTokens) with
         {
             PayloadFingerprint = Convert.ToHexString(LongRestProviderCallFreezer.PayloadDigest(payload, provider, canonicalModel).Value.Bytes),
         };

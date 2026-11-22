@@ -88,6 +88,8 @@ public static class ErrorCodes
 
         public const string RefreshCancelled = "Guild.RefreshCancelled";
 
+        public const string SpendRefreshRetired = "Guild.SpendRefreshRetired";
+
         public const string SourceExpired = "Guild.SourceExpired";
 
         public const string SpendSourceMissing = "Guild.SpendSourceMissing";
@@ -315,9 +317,6 @@ public static class ErrorCodes
         public const string InvalidReasoningBudget = "Validation.InvalidReasoningBudget";
 
         public const string UnsupportedReasoningControl = "Validation.UnsupportedReasoningControl";
-
-        public const string ReasoningBudgetExceedsModelLimit =
-            "Validation.ReasoningBudgetExceedsModelLimit";
 
         public const string UnsupportedReasoningOutput = "Validation.UnsupportedReasoningOutput";
 
@@ -886,12 +885,6 @@ public static class ErrorCodes
         public const string TooManyRequests = "RateLimit.TooManyRequests";
     }
 
-    /// <summary>Budget — daily cost spend enforcement.</summary>
-    public static class Budget
-    {
-        public const string Exceeded = "Budget.Exceeded";
-    }
-
     /// <summary>Data lifecycle planning and destructive execution.</summary>
     public static class Data
     {
@@ -1316,8 +1309,6 @@ public static class ErrorCodes
 
         public const string JavaScriptRenderingUnavailable =
             "WebResearch.JavaScriptRenderingUnavailable";
-
-        public const string BudgetExceeded = "WebResearch.BudgetExceeded";
 
         /// <summary>
         /// An unexpected fault inside a native web tool adapter. Reported in the structured MCP tool

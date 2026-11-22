@@ -14,8 +14,8 @@ namespace RetroDownfall.Arcanum.Core.LongRest;
 /// </summary>
 public static class LongRestPromptLayout
 {
-    /// <summary>The output tokens a Long Rest chat call reserves from the model's window.</summary>
-    public const int ReservedAnswerTokens = 2048;
+    /// <summary>Output headroom reserved only when measuring input against the provider context window.</summary>
+    public const int OutputHeadroomTokens = 2048;
 
     /// <summary>
     /// The smallest rendered request a recipe may budget: a request this small still holds the fixed prompt, a summary fold of two
@@ -53,7 +53,7 @@ public static class LongRestPromptLayout
     public const int MinimumEmbeddingWindowTokens = (MinimumSummaryUtf8Bytes * (100 + TokenSafetyMarginPercent) + 99) / 100 + FramingTokens;
 
     /// <summary>The smallest context window a chat provider may have: the one whose input budget is exactly <see cref="MinimumInputUtf8Bytes"/>.</summary>
-    public const int MinimumChatWindowTokens = ReservedAnswerTokens + FramingTokens + (MinimumInputUtf8Bytes * (100 + TokenSafetyMarginPercent) + 99) / 100;
+    public const int MinimumChatWindowTokens = OutputHeadroomTokens + FramingTokens + (MinimumInputUtf8Bytes * (100 + TokenSafetyMarginPercent) + 99) / 100;
 
     /// <summary>
     /// The version of the adjudication request that the recipe binds. It names the request's text: the system prompt, the decision schema and
@@ -209,10 +209,8 @@ public static class LongRestPromptLayout
     /// <see cref="MinimumSummaryUtf8Bytes"/> is never resolved.
     /// </summary>
     /// <remarks>
-    /// The request's output cap is not derived from the bound. A byte bound cannot prove a token count (a byte-level tokenizer needs anywhere from
-    /// a fraction of a token to a whole token per byte), so any cap computed from it would cut off some answer that is within the bound, and a cut
-    /// off answer is invalid JSON that parks the sweep for an operator. The cap stays the fixed <see cref="ReservedAnswerTokens"/>, and the
-    /// embedding window gate stays the last guard for a model that ignores the bound.
+    /// The provider controls output generation. The embedding window gate checks the returned summary
+    /// before it becomes an embedding input.
     /// </remarks>
     public static int SummaryBoundUtf8Bytes(int embeddingWindowTokens)
     {
@@ -252,7 +250,7 @@ public static class LongRestPromptLayout
     /// </summary>
     public static int InputBudgetUtf8Bytes(int contextWindowTokens)
     {
-        long available = (long)ArcanumSettingClamps.ContextWindowLimit(contextWindowTokens) - ReservedAnswerTokens - FramingTokens;
+        long available = (long)ArcanumSettingClamps.ContextWindowLimit(contextWindowTokens) - OutputHeadroomTokens - FramingTokens;
 
         return available <= 0 ? 0 : (int)Math.Min(available * 100 / (100 + TokenSafetyMarginPercent), LongRestDiscoveryLimits.ProviderInputUtf8Bytes);
     }

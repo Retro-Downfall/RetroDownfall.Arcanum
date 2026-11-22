@@ -1075,11 +1075,12 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
             victims.Add(new("inference run", "SELECT count(*) FROM InferenceRuns WHERE lower(replace(Id, '-', '')) = $id;", run.ToString("N")));
 
-            Assert.True(await services.GetRequiredService<IBudgetAlertRepository>().RecordAlertAsync(80, 8m, 10m, Token));
+            string alert = Guid.NewGuid().ToString("D");
 
-            string alert = await ScalarTextAsync("SELECT Id FROM BudgetAlerts ORDER BY AlertedAt DESC LIMIT 1;", string.Empty);
-
-            await AgeAsync("UPDATE BudgetAlerts SET AlertedAt = $at WHERE Id = $id;", alert, accountingAge);
+            await AgeAsync(
+                "INSERT INTO BudgetAlerts (Id, Threshold, AlertedAt, SpendUsd, DailyLimitUsd) VALUES ($id, 80, $at, '8', '10');",
+                alert,
+                accountingAge);
 
             victims.Add(new("budget alert", "SELECT count(*) FROM BudgetAlerts WHERE Id = $id;", alert));
 

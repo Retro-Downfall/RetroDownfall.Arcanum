@@ -72,7 +72,7 @@ public sealed class GenericSettingFieldViewModelTests
         decimal typed = decimal.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
 
         SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
-            SettingDescriptors.Find("cost.budget.dailyLimitUsd"));
+            SettingDescriptors.Find("cost.pricing.defaultPricing.inputPer1M"));
 
         GenericSettingFieldViewModel field = new(descriptor, 0m);
 
@@ -84,7 +84,7 @@ public sealed class GenericSettingFieldViewModelTests
 
         ArcanumSettings applied = GenericSettingsUpdater.ApplyFields(new ArcanumSettings(), [field]);
 
-        Assert.Equal(typed, applied.Cost.Budget.DailyLimitUsd);
+        Assert.Equal(typed, applied.Cost.Pricing.DefaultPricing.InputPer1M);
     }
 
     public static IEnumerable<object[]> UnsupportedBinaryMoney()
@@ -110,10 +110,10 @@ public sealed class GenericSettingFieldViewModelTests
 
         ArcanumSettings original = new();
 
-        original.Cost.Budget.DailyLimitUsd = originalAmount;
+        original.Cost.Pricing.DefaultPricing.InputPer1M = originalAmount;
 
         SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
-            SettingDescriptors.Find("cost.budget.dailyLimitUsd"));
+            SettingDescriptors.Find("cost.pricing.defaultPricing.inputPer1M"));
 
         GenericSettingFieldViewModel field = new(descriptor, supplied);
 
@@ -123,7 +123,7 @@ public sealed class GenericSettingFieldViewModelTests
 
         ArcanumSettings preserved = GenericSettingsUpdater.ApplyFields(original, [field]);
 
-        Assert.Equal(originalAmount, preserved.Cost.Budget.DailyLimitUsd);
+        Assert.Equal(originalAmount, preserved.Cost.Pricing.DefaultPricing.InputPer1M);
 
         field.ErrorMessage = null;
 
@@ -132,7 +132,7 @@ public sealed class GenericSettingFieldViewModelTests
 
         Assert.Contains(descriptor.Key, failure.Message, StringComparison.Ordinal);
 
-        Assert.Equal(originalAmount, original.Cost.Budget.DailyLimitUsd);
+        Assert.Equal(originalAmount, original.Cost.Pricing.DefaultPricing.InputPer1M);
     }
 
     [Fact]
@@ -171,7 +171,7 @@ public sealed class GenericSettingFieldViewModelTests
         decimal amount = decimal.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
 
         SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
-            SettingDescriptors.Find("cost.budget.dailyLimitUsd"));
+            SettingDescriptors.Find("cost.pricing.defaultPricing.inputPer1M"));
 
         GenericSettingFieldViewModel field = new(descriptor, amount);
 
@@ -179,10 +179,10 @@ public sealed class GenericSettingFieldViewModelTests
 
         ArcanumSettings original = new();
 
-        original.Cost.Budget.DailyLimitUsd = 5m;
+        original.Cost.Pricing.DefaultPricing.InputPer1M = 5m;
 
         Assert.Equal(valid ? amount : 5m,
-            GenericSettingsUpdater.ApplyFields(original, [field]).Cost.Budget.DailyLimitUsd);
+            GenericSettingsUpdater.ApplyFields(original, [field]).Cost.Pricing.DefaultPricing.InputPer1M);
     }
 
     [Theory]

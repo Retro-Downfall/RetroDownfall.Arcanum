@@ -1,6 +1,8 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Intelligence;
@@ -180,9 +182,7 @@ public sealed partial class GuildQuestStoreTests
 
         GuildSpendSourceCredential.VerifiedSource otherSource = await second.VerifiedAsync();
 
-        using SpendMetadataHandler handler = new();
-
-        var observed = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(firstSource, default);
+        var observed = ReadArchivedSpendObservation(firstSource);
 
         Assert.True(observed.IsSuccess, observed.IsFailure ? observed.Error.Message : null);
 
@@ -194,17 +194,13 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.False(observed.Value.IsFrom(otherSource));
 
-        using SpendMetadataHandler replayHandler = new();
-
-        var replay = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => replayHandler).ReadAsync(firstAgain, default);
+        var replay = ReadArchivedSpendObservation(firstAgain);
 
         Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : null);
 
         Assert.Equal(original, GuildSpendReceiptIdentity.ProviderDigest(replay.Value));
 
-        using SpendMetadataHandler otherHandler = new();
-
-        var other = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => otherHandler).ReadAsync(otherSource, default);
+        var other = ReadArchivedSpendObservation(otherSource);
 
         Assert.True(other.IsSuccess, other.IsFailure ? other.Error.Message : null);
 
@@ -228,9 +224,9 @@ public sealed partial class GuildQuestStoreTests
                 "num_media_completion":0,"num_media_prompt":0,"total_cost":{{{usd}}}}}
                 """;
 
-            using SpendMetadataHandler changedHandler = new() { Body = body };
+            string changedHandler = body;
 
-            var changed = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => changedHandler).ReadAsync(firstSource, default);
+            var changed = ReadArchivedSpendObservation(firstSource, changedHandler);
 
             Assert.True(changed.IsSuccess, changed.IsFailure ? changed.Error.Message : null);
 
@@ -318,9 +314,7 @@ public sealed partial class GuildQuestStoreTests
 
         GuildSpendSourceCredential.VerifiedSource firstSource = await first.VerifiedAsync();
 
-        using SpendMetadataHandler handler = new();
-
-        var observed = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(firstSource, default);
+        var observed = ReadArchivedSpendObservation(firstSource);
 
         Assert.True(observed.IsSuccess, observed.IsFailure ? observed.Error.Message : null);
 
@@ -328,7 +322,7 @@ public sealed partial class GuildQuestStoreTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>(first.Settings));
+        BudgetReservationService daily = new(db);
 
         first.Fixture.UseBudgetParticipant(new GuildBudgetLedger(daily));
 
@@ -356,25 +350,21 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : null);
 
-        using GuildWireCapture transport = new(SpendModel, responseId: "gen-test-123");
+        Guid secondEffect = Guid.NewGuid();
 
-        ChatClientFactory clients = new(transport, new TestOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>(first.Settings), new SpendCaptureKeys());
+        GuildBudgetEffectRequest effect = new(secondEffect, quest.Quest.Id, prepared.Value.DispatchId, quest.Quest.RunId,
+            GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, 1m, 1000);
 
-        await using WizardIntelligenceProviderTests wizard = new();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        var runtime = await wizard.CreateGuildRuntimeAsync(daily, first.Settings, clients);
+        BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "router", SpendModel, "guild",
+            now, now.AddSeconds(1), 100, 20, 5, 40, "{}", 0m, BillableOperationStatus.Completed, "gen-test-123");
 
-        var completed = await runtime.Runtime.ExecuteAsync(new(first.Fixture.Store, driver, prepared.Value), input, default);
+        var completed = await first.Fixture.Store.ExecuteAndSettleProviderResponseAsync(new(first.Fixture.Store, driver, prepared.Value),
+            daily, effect, _ => Task.FromResult(Result<string>.Success("answer")), _ => Result<BillableOperationRecord>.Success(bill),
+            default, spendSource: first.Credential(), spendPricing: "{}");
 
         Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : null);
-
-        await using SqliteCommand select = connection.CreateCommand();
-
-        select.CommandText = "SELECT EffectId FROM guild_budget_effects WHERE QuestId=$quest";
-
-        select.Parameters.AddWithValue("$quest", quest.Quest.Id.ToString("D").ToUpperInvariant());
-
-        Guid secondEffect = Guid.Parse(Assert.IsType<string>(await select.ExecuteScalarAsync()));
 
         Assert.NotEqual(first.EffectId, secondEffect);
 
@@ -384,9 +374,7 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.False(observed.Value.IsFrom(verified.Value));
 
-        using SpendMetadataHandler secondHandler = new();
-
-        var secondObservation = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => secondHandler).ReadAsync(verified.Value, default);
+        var secondObservation = ReadArchivedSpendObservation(verified.Value);
 
         Assert.True(secondObservation.IsSuccess, secondObservation.IsFailure ? secondObservation.Error.Message : null);
 
@@ -401,20 +389,18 @@ public sealed partial class GuildQuestStoreTests
 
         GuildSpendSourceCredential.VerifiedSource source = await scenario.VerifiedAsync();
 
-        using SpendMetadataHandler firstHandler = new();
-
-        var first = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => firstHandler).ReadAsync(source, default);
+        var first = ReadArchivedSpendObservation(source);
 
         Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
 
-        using SpendMetadataHandler equivalentHandler = new() { Body = """
+        string equivalentHandler = """
             {"data":{"api_type":"completions","id":"gen-test-123","is_byok":false,"model":"provider/model",
             "native_tokens_cached":40,"native_tokens_completion":20,"native_tokens_completion_images":0,
             "native_tokens_prompt":100,"native_tokens_reasoning":5,"num_input_audio_prompt":0,
             "num_media_completion":0,"num_media_prompt":0,"total_cost":0.250}}
-            """ };
+            """;
 
-        var equivalent = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => equivalentHandler).ReadAsync(source, default);
+        var equivalent = ReadArchivedSpendObservation(source, equivalentHandler);
 
         Assert.True(equivalent.IsSuccess, equivalent.IsFailure ? equivalent.Error.Message : null);
 

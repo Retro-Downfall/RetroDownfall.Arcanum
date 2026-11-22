@@ -89,9 +89,6 @@ public class AnvilSetupActionsTests
     private sealed class EmptyAnvilDataSource : IAnvilDataSource
     {
 
-        public Task<BudgetSummaryDto?> GetBudgetAsync(CancellationToken cancellationToken) =>
-            Task.FromResult<BudgetSummaryDto?>(null);
-
         public Task<IReadOnlyList<WardDto>> ListWardsAsync(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<WardDto>>([]);
 

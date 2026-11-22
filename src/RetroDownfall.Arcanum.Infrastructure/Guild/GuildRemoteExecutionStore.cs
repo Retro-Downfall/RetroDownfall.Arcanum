@@ -47,10 +47,6 @@ internal static class GuildRemoteExecutionStore
         SqliteTransaction transaction, GuildQuestStored quest, GuildRemoteExecutionInput input,
         ArtifactSensitivityLabel? sourceLabel, DateTimeOffset now, CancellationToken ct)
     {
-        if (quest.Quest.ResolvedGrant.Budget.Usd.Mode != GuildBudgetMode.Unlimited
-            || quest.Quest.ResolvedGrant.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)
-            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General remote transport has no qualified finite spend contract.");
-
         if (!Valid(input) || now == default) return Missing;
 
         byte[] body = JsonSerializer.SerializeToUtf8Bytes(input, GuildStorageJsonContext.Default.GuildRemoteExecutionInput);

@@ -86,13 +86,10 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter childWriter = new();
 
-        RecordingBudgetReservationService childReservations = new();
-
         WizardIntelligenceProvider childWizard = CreateWizard(
             childChat,
             settings,
-            turnRunWriter: childWriter,
-            budgetReservationService: childReservations);
+            turnRunWriter: childWriter);
 
         bool childSawParentAccounting = true;
 
@@ -119,7 +116,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
                     SubagentRunResult child = await runner
                         .RunAsync(
-                            new SubagentRunRequest("summarize the notes", ModelName, [], MaxTokens: 1_000, MaxCostUsd: null),
+                            new SubagentRunRequest("summarize the notes", ModelName, []),
                             CancellationToken.None)
                         .ConfigureAwait(false);
 
@@ -152,8 +149,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         RecordingTurnRunWriter parentWriter = new();
 
-        RecordingBudgetReservationService parentReservations = new();
-
         WizardIntelligenceProvider parentWizard = CreateWizard(
             parentChat,
             settings,
@@ -163,7 +158,6 @@ public sealed partial class WizardIntelligenceProviderTests
             },
             mcp: mcp,
             turnRunWriter: parentWriter,
-            budgetReservationService: parentReservations,
             sessionAttachmentStore: store);
 
         PingRequest request = BaseRequest() with
@@ -203,14 +197,10 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal("child summary", seen.Child.Summary);
 
-        // The child began its own run and reservation rather than adopting the parent's.
+        // The child began its own run rather than adopting the parent's.
         Assert.False(childSawParentAccounting);
 
-        Assert.NotNull(childReservations.LastRequest);
-
         Assert.Equal(InferenceRunStatus.Completed, Assert.Single(childWriter.CompletedRuns).Status);
-
-        Assert.Equal(1, childReservations.ReconcileCount);
 
         // A child that had adopted the parent's handle would have settled the parent's run when it
         // finished, and a settled run reads as no ambient accounting at all.
@@ -226,8 +216,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         // The parent's run is settled once, by the parent, after its own reply.
         Assert.Equal(InferenceRunStatus.Completed, Assert.Single(parentWriter.CompletedRuns).Status);
-
-        Assert.Equal(1, parentReservations.ReconcileCount);
 
         Assert.False(AttachmentMemoryGateAmbient.HasSessionStateForTests(sessionId));
     }

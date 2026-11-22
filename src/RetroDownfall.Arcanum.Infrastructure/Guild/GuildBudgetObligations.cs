@@ -16,9 +16,9 @@ internal static class GuildBudgetObligations
     {
         bool physical = state is GuildBudgetEffectState.Prepared or GuildBudgetEffectState.PossiblyDispatched;
 
-        bool usd = physical || state == GuildBudgetEffectState.Complete && unknownUsd && (finiteUsd || hasReservation);
+        bool usd = physical || state == GuildBudgetEffectState.Complete && unknownUsd && (finiteUsd && usdBound is not null || hasReservation);
 
-        bool tokens = physical || state == GuildBudgetEffectState.Complete && unknownTokens && finiteTokens;
+        bool tokens = physical || state == GuildBudgetEffectState.Complete && unknownTokens && finiteTokens && tokenBound is not null;
 
         decimal? holdUsd = usd ? usdBound is { } amount
             ? knownUsd >= amount ? 0m : ExactUsdText.CheckedAdd(amount, -knownUsd) : null : 0m;

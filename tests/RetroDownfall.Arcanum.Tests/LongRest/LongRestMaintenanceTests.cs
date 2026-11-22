@@ -469,8 +469,7 @@ public sealed partial class LongRestMaintenanceTests
             _clientFactory ??= new(new LateKeys(this), Handler, CredentialLog);
 
             LongRestProvider provider = new(_clientFactory,
-                new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke(), () => Starting?.Invoke()),
-                new BudgetReservationService(H.Saga.Context, Options));
+                new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke(), () => Starting?.Invoke()));
 
             Maintenance = ActivatorUtilities.CreateInstance<LongRestMaintenance>(Services, Epoch, new DiscoveryTap(H.Store, this), sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,
                 Services.GetRequiredService<IServiceScopeFactory>(), Clock);

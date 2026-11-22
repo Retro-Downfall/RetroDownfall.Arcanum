@@ -7,12 +7,10 @@
              xmlns:gatehouseViews="using:RetroDownfall.TheForge.Ux.Views.Gatehouse"
              xmlns:warTable="using:RetroDownfall.TheForge.Ux.ViewModels.WarTable"
              xmlns:warTableViews="using:RetroDownfall.TheForge.Ux.Views.WarTable"
-             xmlns:treasury="using:RetroDownfall.TheForge.Ux.ViewModels.Treasury"
              xmlns:arsenal="using:RetroDownfall.TheForge.Ux.ViewModels.Arsenal"
              xmlns:hearth="using:RetroDownfall.TheForge.Ux.ViewModels.Hearth"
              xmlns:hearthViews="using:RetroDownfall.TheForge.Ux.Views.Hearth"
              xmlns:arsenalViews="using:RetroDownfall.TheForge.Ux.Views.Arsenal"
-             xmlns:treasuryViews="using:RetroDownfall.TheForge.Ux.Views.Treasury"
              xmlns:lore="using:RetroDownfall.TheForge.Ux.ViewModels.Lore"
              xmlns:loreViews="using:RetroDownfall.TheForge.Ux.Views.Lore"
              xmlns:archive="using:RetroDownfall.TheForge.Ux.ViewModels.Archive"
@@ -85,9 +83,6 @@
               </DataTemplate>
               <DataTemplate DataType="warTable:WarTableViewModel">
                 <warTableViews:WarTableView />
-              </DataTemplate>
-              <DataTemplate DataType="treasury:TreasuryViewModel">
-                <treasuryViews:TreasuryView />
               </DataTemplate>
               <DataTemplate DataType="arsenal:ArsenalViewModel">
                 <arsenalViews:ArsenalView />

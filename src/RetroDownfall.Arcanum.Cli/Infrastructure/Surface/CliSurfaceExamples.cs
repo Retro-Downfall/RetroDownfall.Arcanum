@@ -222,7 +222,6 @@ internal static class CliSurfaceExamples
         // Conclave
         ["conclave dispatch"] = ["arcanum conclave dispatch --goal \"Review this diff\""],
         ["conclave status"] = ["arcanum conclave status"],
-        ["budget"] = ["arcanum budget"],
         ["conclave continue"] = [$"arcanum conclave continue {SampleGuid} --message \"keep going\""],
 
         // Models and providers
@@ -358,13 +357,6 @@ internal static class CliSurfaceExamples
         ["guild task tree"] = ["arcanum guild task tree task --cursor next --page-size 2"],
         ["guild task message"] = ["arcanum guild task message task --text hello --expected-revision 1 --continue"],
         ["guild task cancel"] = ["arcanum guild task cancel task --expected-revision 1"],
-        ["guild task spend"] = ["arcanum guild task spend task"],
-        ["guild spend list"] = ["arcanum guild spend list task --page-size 2"],
-        ["guild spend show"] = ["arcanum guild spend show task --effect 33333333-3333-3333-3333-333333333333"],
-        ["guild spend correct"] = ["arcanum guild spend correct task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333 --expected-revision 1 --input-tokens 0 --output-tokens 0 --cached-tokens 0 --reasoning-tokens 0 --usd 0 --evidence-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
-        ["guild spend refresh"] = ["arcanum guild spend refresh task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333"],
-        ["guild spend receipts"] = ["arcanum guild spend receipts task --effect 33333333-3333-3333-3333-333333333333"],
-        ["guild spend receipt"] = ["arcanum guild spend receipt task --effect 33333333-3333-3333-3333-333333333333 --receipt 33333333-3333-3333-3333-333333333333"],
         ["guild signet revoke"] = ["arcanum guild signet revoke signet --expected-revision 1"],
         ["guild content show"] = ["arcanum guild content show content --revision 1"],
         ["guild watch tree"] = ["arcanum guild watch tree task --ndjson --after next"],

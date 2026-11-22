@@ -43,7 +43,7 @@ public sealed class ProviderWorkHotReloadTests
 
         CampaignMaintenancePayload payload = new("Summarize the source.", "A bounded source paragraph.");
 
-        ModelCallContext context = new(lease.Provider, lease.ResolvedModel, CampaignMaintenancePayload.MaxOutputTokens, 0,
+        ModelCallContext context = new(lease.Provider, lease.ResolvedModel, CampaignMaintenancePayload.ReservedAnswerTokens, 0,
             estimator.EstimateCampaignMaintenance(lease.Provider, lease.ResolvedModel, payload));
 
         AsyncLocal<bool> observing = new();
@@ -174,7 +174,7 @@ public sealed class ProviderWorkHotReloadTests
 
         CampaignMaintenancePayload payload = new("Summarize the source.", "A bounded source paragraph.");
 
-        ModelCallContext context = new(lease.Provider, lease.ResolvedModel, CampaignMaintenancePayload.MaxOutputTokens, 0,
+        ModelCallContext context = new(lease.Provider, lease.ResolvedModel, CampaignMaintenancePayload.ReservedAnswerTokens, 0,
             estimator.EstimateCampaignMaintenance(lease.Provider, lease.ResolvedModel, payload));
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);

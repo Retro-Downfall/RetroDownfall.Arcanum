@@ -11,14 +11,7 @@ public sealed partial class GuildQuestStoreTests
     {
         await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
 
-        Guid refresh = Guid.NewGuid();
-
-        var admitted = await f.Scenario.Fixture.Store.AdmitProviderSpendRefreshAsync(f.Scenario.Fixture.Caller, f.QuestId,
-            f.Scenario.EffectId, refresh, f.Currentness, default);
-
-        Assert.True(admitted.IsSuccess, admitted.IsFailure ? admitted.Error.Message : null);
-
-        Guid operationId = Assert.IsType<Guid>(admitted.Value.OperationId);
+        Guid operationId = f.OperationId;
 
         await using var connection = await f.Scenario.Fixture.OpenAsync();
 

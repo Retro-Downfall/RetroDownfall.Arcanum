@@ -63,9 +63,6 @@ internal sealed partial class GuildCommands(
 
     private async Task<int> ExecuteFiniteAsync(string path, GuildCommandInput input, CancellationToken ct)
     {
-        if (path.StartsWith("spend ", StringComparison.Ordinal))
-            return await SpendAsync(path, input, ct).ConfigureAwait(false);
-
         Guid key = input.Text("idempotency-key") is { } requestedKey ? ExactGuid(requestedKey, "--idempotency-key") : Guid.NewGuid();
 
         long revision = input.Number("expected-revision") ?? 0;
@@ -195,13 +192,6 @@ internal sealed partial class GuildCommands(
 
                 return await Post<GuildCancelQuestRequest, GuildCancellationDto>($"api/guild/quests/{quest:D}/cancel",
                     new(key, revision, GuildCancellationReason.OperatorRequested), ct).ConfigureAwait(false);
-            }
-
-            case "task spend":
-            {
-                Guid quest = await Select("task", input.Argument(), ct).ConfigureAwait(false);
-
-                return await Get<GuildSpendDto>($"api/guild/quests/{quest:D}/spend", ct).ConfigureAwait(false);
             }
 
             case "signet revoke":
