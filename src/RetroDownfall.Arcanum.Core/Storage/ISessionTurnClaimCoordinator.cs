@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -260,10 +261,35 @@ public sealed record SessionTurnClaimLease(
 
     public Guid? RecoveryCheckpointId { get; init; }
 
-    private ActiveExecution? Execution { get; init; }
+    // Execution authority follows reference identity while the lease keeps durable value equality.
+    private static readonly ConditionalWeakTable<SessionTurnClaimLease, object> ExecutionProofs = new();
+
+    private static readonly object CopiedExecution = new();
+
+    private SessionTurnClaimLease(SessionTurnClaimLease original)
+    {
+        Claim = original.Claim;
+
+        Disposition = original.Disposition;
+
+        FutureAssistantEntryId = original.FutureAssistantEntryId;
+
+        ExecutorId = original.ExecutorId;
+
+        OwnerBootId = original.OwnerBootId;
+
+        LeaseDeadlineUtc = original.LeaseDeadlineUtc;
+
+        RecoveryCheckpointId = original.RecoveryCheckpointId;
+
+        if (ExecutionProofs.TryGetValue(original, out _))
+            ExecutionProofs.Add(this, CopiedExecution);
+    }
 
     /// <summary>The exact begun writer can prove liveness until it releases its per-Session gate.</summary>
-    internal bool? HoldsActiveExecution => Execution?.Holds(this);
+    internal bool? HoldsActiveExecution => ExecutionProofs.TryGetValue(this, out object? proof)
+        ? proof is ActiveExecution execution && execution.Holds(this)
+        : null;
 
     internal sealed class ActiveExecution : IDisposable
     {
@@ -273,7 +299,9 @@ public sealed record SessionTurnClaimLease(
         {
             _sessionGate = sessionGate;
 
-            Lease = owner with { Execution = this };
+            Lease = owner with { };
+
+            ExecutionProofs.AddOrUpdate(Lease, this);
         }
 
         internal SessionTurnClaimLease Lease { get; }

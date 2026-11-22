@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Mcp;
@@ -13,6 +14,57 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed partial class ToolInvocationRecoveryTests
 {
+    [SkippableFact]
+    public Task Campaign_maintenance_identity_retains_value_equality_after_activating_a_claim_owner() =>
+        WithActiveTurnAsync(turn =>
+        {
+            SessionTurnClaimLease begun = turn.Owner;
+
+            SessionTurnClaimLease durable = new(begun.Claim, begun.Disposition, begun.FutureAssistantEntryId,
+                begun.ExecutorId, begun.OwnerBootId, begun.LeaseDeadlineUtc) { RecoveryCheckpointId = begun.RecoveryCheckpointId };
+
+            Assert.Null(durable.HoldsActiveExecution);
+
+            Assert.True(begun.HoldsActiveExecution is true);
+
+            Assert.Equal(durable, begun);
+
+            Assert.Equal(durable.GetHashCode(), begun.GetHashCode());
+
+            CovenantDigest digest = new(new byte[32]);
+
+            var campaign = CanonicalCampaignContext.Create(SessionCampaignBinding.ForCampaign(Guid.NewGuid()), 1, 1, 1, digest);
+
+            CampaignMaintenanceIdentity historical = new(durable, campaign, CovenantMaintenanceStep.CampaignContribution,
+                begun.Claim.SessionId, digest, 0, 0);
+
+            var current = historical with { ClaimLease = begun };
+
+            Assert.Equal(historical, current);
+
+            Assert.Equal(historical.GetHashCode(), current.GetHashCode());
+
+            var copy = begun with { };
+
+            Assert.True(copy.HoldsActiveExecution is false);
+
+            Assert.Equal(current, historical with { ClaimLease = copy });
+
+            Assert.NotEqual(durable, begun with { ExecutorId = Guid.NewGuid() });
+
+            turn.Writer.Dispose();
+
+            Assert.True(begun.HoldsActiveExecution is false);
+
+            Assert.Equal(durable, begun);
+
+            Assert.Equal(durable.GetHashCode(), begun.GetHashCode());
+
+            Assert.Equal(historical, current);
+
+            return Task.CompletedTask;
+        });
+
     [SkippableFact]
     public Task Begun_owner_commits_protected_tool_result_and_receipt_after_durable_expiry() =>
         WithActiveTurnAsync(async turn =>
