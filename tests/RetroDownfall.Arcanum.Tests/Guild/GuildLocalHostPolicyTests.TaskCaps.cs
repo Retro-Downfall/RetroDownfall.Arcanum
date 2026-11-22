@@ -42,7 +42,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         using IDisposable ambient = GuildToolInvocationAmbient.Begin(context);
 
@@ -62,7 +62,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry nativeRegistry = new(execution, input.Value, coordinator, outputAllocationBytes: 65_536);
 
-        var nativeContext = f.Store.CreateToolContext(execution, nativeRegistry, _ => true);
+        var nativeContext = f.Store.CreateToolContext(execution, nativeRegistry, GuildTestToolEligibility.Enabled);
 
         var nativeFunction = await nativeContext.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
 
@@ -136,7 +136,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, new ChildQueue()));
 
-        using IDisposable ambient = GuildToolInvocationAmbient.Begin(f.Store.CreateToolContext(execution, registry, _ => true));
+        using IDisposable ambient = GuildToolInvocationAmbient.Begin(f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled));
 
         await using GuildMcpRoute route = await GuildMcpRoute.CreateAsync(false, outputCapBytes: 65_536);
 
@@ -151,7 +151,7 @@ public sealed partial class GuildLocalHostPolicyTests
         using GuildLocalToolRegistry nativeRegistry = new(execution, input.Value,
             new ConclaveArchmage(null!, f.Settings, f.Store, new ChildQueue()), outputAllocationBytes: 65_536);
 
-        var nativeContext = f.Store.CreateToolContext(execution, nativeRegistry, _ => true);
+        var nativeContext = f.Store.CreateToolContext(execution, nativeRegistry, GuildTestToolEligibility.Enabled);
 
         var nativeFunction = await nativeContext.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
 

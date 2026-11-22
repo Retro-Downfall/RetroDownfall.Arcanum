@@ -225,7 +225,7 @@ public sealed partial class GuildLocalHostPolicyTests
             using GuildLocalToolRegistry registry = new(execution, input, coordinator, 4096 + allocation,
                 new WizardIntelligenceProvider.WorkspaceMutationRuntime(runtime, binding));
 
-            var context = fixture.Store.CreateToolContext(execution, registry, _ => true);
+            var context = fixture.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
             var tool = await context.AdvertiseAsync(new InertChildTool(patch.Name), patch, default);
 
@@ -265,7 +265,7 @@ public sealed partial class GuildLocalHostPolicyTests
         using GuildLocalToolRegistry recoveryRegistry = new(execution, input, coordinator,
             workspaceMutations: new WizardIntelligenceProvider.WorkspaceMutationRuntime(runtime, binding));
 
-        var recoveryContext = fixture.Store.CreateToolContext(execution, recoveryRegistry, _ => true);
+        var recoveryContext = fixture.Store.CreateToolContext(execution, recoveryRegistry, GuildTestToolEligibility.Enabled);
 
         var recoveryTool = await recoveryContext.AdvertiseAsync(new InertChildTool(patch.Name), patch, default);
 

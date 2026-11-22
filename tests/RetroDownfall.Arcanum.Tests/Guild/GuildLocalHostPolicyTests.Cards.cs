@@ -83,7 +83,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool(creation.Name), creation, default);
 
@@ -262,7 +262,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-            var context = f.Store.CreateToolContext(execution, registry, _ => true);
+            var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
             var function = await context.AdvertiseAsync(new InertChildTool(creation.Name), creation, default);
 
@@ -317,7 +317,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, new ChildQueue()));
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool(creation.Name), creation, default);
 

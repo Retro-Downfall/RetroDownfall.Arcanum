@@ -9,7 +9,7 @@ internal sealed record GuildWorkspaceReadAdmission(Guid WorkspaceId, GuildGrant 
 
 /// <summary>Evidence for replaying an already-materialized read, with no authority to run another tool.</summary>
 internal sealed record GuildWorkspaceReadDisclosure(GuildLocalToolRegistry Registry, GuildToolGrant Tool,
-    Func<GuildToolGrant, bool> Eligibility, Guid WorkspaceId, ImmutableArray<GuildWorkspaceGrant> Scopes,
+    GuildToolEligibility Eligibility, Guid WorkspaceId, ImmutableArray<GuildWorkspaceGrant> Scopes,
     Guid LogicalCallId, ImmutableArray<string> SourcePaths,
     Func<CancellationToken, Task<Result>> VerifyPhysicalAsync);
 
@@ -64,7 +64,7 @@ internal sealed partial class GuildQuestStore
         foreach (GuildWorkspaceReadDisclosure disclosure in disclosures)
         {
             if (!ReferenceEquals(disclosure.Registry.Parent, execution) || !GuildLocalToolRegistry.IsWorkspaceReadTool(disclosure.Tool.Name)
-                || !disclosure.Registry.Supports(disclosure.Tool) || !disclosure.Eligibility(disclosure.Tool)) return WorkspaceReadNotGranted;
+                || !disclosure.Registry.Supports(disclosure.Tool) || !disclosure.Eligibility.IsEnabled()) return WorkspaceReadNotGranted;
 
             if (!liveScopes.TryGetValue(disclosure.Tool, out ImmutableArray<GuildWorkspaceGrant> scopes))
             {

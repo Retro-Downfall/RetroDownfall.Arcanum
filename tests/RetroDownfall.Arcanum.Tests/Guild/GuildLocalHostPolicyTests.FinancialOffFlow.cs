@@ -592,7 +592,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, rootInput.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         async Task<GuildLocalChildToolResult> Invoke(string name, AIFunctionArguments arguments)
         {

@@ -49,7 +49,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, queue));
 
-        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, _ => true);
+        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         await using GuildMcpRoute route = await GuildMcpRoute.CreateAsync(transport != 0, generation: transport == 3);
 
@@ -118,8 +118,8 @@ public sealed partial class GuildLocalHostPolicyTests
         using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, queue));
 
         GuildToolInvocationContext context = boundary == "forged-context"
-            ? new(execution.Driver.Execution, f.Authority, _ => true)
-            : f.Store.CreateToolContext(execution, registry, _ => true);
+            ? new(execution.Driver.Execution, f.Authority, GuildTestToolEligibility.Enabled)
+            : f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         await using GuildMcpRoute route = await GuildMcpRoute.CreateAsync(false, deferServer: true);
 

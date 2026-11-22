@@ -100,11 +100,11 @@ internal sealed partial class GuildQuestStore
     internal bool OwnsToolAuthority(IGuildToolAuthority candidate) => ReferenceEquals(authority, candidate);
 
     internal GuildToolInvocationContext CreateToolContext(GuildLocalInferenceExecution execution, GuildLocalToolRegistry registry,
-        Func<GuildToolGrant, bool> currentEligibility) =>
+        GuildToolEligibility currentEligibility) =>
         new(execution.Driver.Execution, authority, currentEligibility, registry);
 
     internal Task<Result<GuildQuestStored>> AuthorizeLocalToolAsync(GuildLocalToolRegistry registry, GuildToolGrant tool,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+        GuildToolEligibility eligibility, CancellationToken ct)
     {
         if (registry is null || !ReferenceEquals(registry.Parent.Store, this) || !DriverShape(registry.Parent.Driver))
             return Task.FromResult(Result<GuildQuestStored>.Failure(InvalidReceipt));
@@ -116,7 +116,7 @@ internal sealed partial class GuildQuestStore
 
     private async Task<Result<GuildQuestStored>> RequireLocalToolWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         SignetAuthority.QuestTransaction signets, GuildLocalToolRegistry registry, GuildToolGrant tool,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+        GuildToolEligibility eligibility, CancellationToken ct)
     {
         var admitted = await RequireLocalToolGrantWithinAsync(connection, transaction, signets, registry, tool, eligibility, ct).ConfigureAwait(false);
 
@@ -125,11 +125,11 @@ internal sealed partial class GuildQuestStore
 
     private async Task<Result<(GuildQuestStored Quest, GuildGrant Grant)>> RequireLocalToolGrantWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, SignetAuthority.QuestTransaction signets, GuildLocalToolRegistry registry, GuildToolGrant tool,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+        GuildToolEligibility eligibility, CancellationToken ct)
     {
         if (policy is not GuildLocalHostPolicy { IsExecutionEnabled: true } || allocations is not GuildBudgetLedger
             || RequireLocalExecutionReady().IsFailure || !ReferenceEquals(registry.Parent.Store, this)
-            || !registry.Supports(tool) || !eligibility(tool)) return GuildLocalToolRegistry.Unavailable;
+            || !registry.Supports(tool) || !eligibility.IsEnabled()) return GuildLocalToolRegistry.Unavailable;
 
         GuildLocalInferenceExecution execution = registry.Parent;
 
@@ -196,7 +196,7 @@ internal sealed partial class GuildQuestStore
         if (dispatch.LocalChildId != input.Value.Binding.ApprenticeId) return Conflict;
 
         if (registry.AcceptedInput.Mode != GuildLocalExecutionMode.Apprentice || !registry.IsActive
-            || !eligibility(tool) || policy is not GuildLocalHostPolicy { IsExecutionEnabled: true }
+            || !eligibility.IsEnabled() || policy is not GuildLocalHostPolicy { IsExecutionEnabled: true }
             || RequireLocalExecutionReady().IsFailure) return GuildLocalToolRegistry.Unavailable;
 
         return (admitted.Value.Row, live.Value);

@@ -72,7 +72,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool("search_memory"), tool, default);
 
@@ -154,7 +154,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool("search_memory"), tool, default);
 

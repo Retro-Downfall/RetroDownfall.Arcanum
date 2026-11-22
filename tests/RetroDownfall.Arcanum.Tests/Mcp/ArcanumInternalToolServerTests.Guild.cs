@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -43,7 +44,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        bool eligible = true;
+        ArcanumSettings eligibility = new() { Features = new() { Guild = true } };
 
         session.Server.LineHandlerFaultForTesting = _ =>
         {
@@ -56,7 +57,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         using JsonDocument arguments = JsonDocument.Parse("{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}");
 
-        using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext(_ => Volatile.Read(ref eligible)));
+        using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext(GuildTestToolEligibility.For(eligibility)));
 
         Task<McpToolsCallResultWire> pending = session.CallToolAsync("read_file", arguments.RootElement);
 
@@ -64,7 +65,7 @@ public sealed partial class ArcanumInternalToolServerTests
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            Volatile.Write(ref eligible, false);
+            eligibility.Features.Guild = false;
         }
         finally
         {

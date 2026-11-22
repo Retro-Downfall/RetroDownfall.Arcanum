@@ -257,7 +257,7 @@ public sealed partial class GuildSignetAuthorityTests
 
         int effects = 0;
 
-        AIFunction retained = new GuildToolInvocationContext(execution, f.Authority, _ => true)
+        AIFunction retained = new GuildToolInvocationContext(execution, f.Authority, GuildTestToolEligibility.Enabled)
             .Bind(new TestFunction(() => effects++), Fixture.Tool);
 
         f.Policy.HostGrant = f.Grant with { Tools = [] };

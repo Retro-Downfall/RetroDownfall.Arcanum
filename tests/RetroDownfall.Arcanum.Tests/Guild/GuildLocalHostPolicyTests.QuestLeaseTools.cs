@@ -115,7 +115,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             using GuildLocalToolRegistry registry = new(caller, input.Value, coordinator, 4096 + responseAllocation);
 
-            var context = fixture.Store.CreateToolContext(caller, registry, _ => true);
+            var context = fixture.Store.CreateToolContext(caller, registry, GuildTestToolEligibility.Enabled);
 
             GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", name);
 

@@ -99,7 +99,7 @@ public sealed partial class GuildLocalHostPolicyTests
             var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
             ConclaveArchmage coordinator = new(null!, f.Settings, f.Store, new ChildQueue(), cohorts: cohorts);
             using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
-            var context = f.Store.CreateToolContext(execution, registry, _ => true);
+            var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
             var function = await context.AdvertiseAsync(new InertChildTool(postTool.Name), postTool, default);
 
             Assert.NotNull(function);

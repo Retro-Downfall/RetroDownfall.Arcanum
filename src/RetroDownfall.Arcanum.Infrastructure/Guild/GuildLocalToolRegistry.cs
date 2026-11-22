@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -41,9 +43,16 @@ internal interface IGuildLocalChildToolDispatcher
 internal sealed record GuildLocalChildToolCall(GuildLocalChildToolKind Kind, JsonElement Arguments,
     GuildQuestDto ParentQuest, GuildChildToolAdmission Admission);
 
+/// <summary>Closed, host-owned eligibility shared by advertisement and retained tool admission.</summary>
+internal sealed class GuildToolEligibility(bool disableAllTools, IOptions<ArcanumSettings> snapshot,
+    IOptionsMonitor<ArcanumSettings>? monitor)
+{
+    internal bool IsEnabled() => !disableAllTools && (monitor?.CurrentValue ?? snapshot.Value).Features.Guild;
+}
+
 /// <summary>Only its issuing registry recognizes this nonwire call reference.</summary>
 internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, GuildLocalToolRegistry.Invocation frame,
-    JsonElement arguments, string argumentsDigest, Func<GuildToolGrant, bool> eligibility)
+    JsonElement arguments, string argumentsDigest, GuildToolEligibility eligibility)
 {
     private readonly object _sync = new();
 
@@ -61,7 +70,7 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
 
     internal string ArgumentsDigest { get; } = argumentsDigest;
 
-    internal Func<GuildToolGrant, bool> Eligibility { get; } = eligibility;
+    internal GuildToolEligibility Eligibility { get; } = eligibility;
 
     internal Guid IssuingStepId => Frame.IssuingStepId;
 
@@ -275,7 +284,7 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
     internal bool Owns(GuildChildToolAdmission admission) => ReferenceEquals(admission.Registry, this)
         && IsActive && admission.Frame.IsActive && ReferenceEquals(admission.Frame.Registry, this)
-        && _issued.TryGetValue(admission, out _) && Supports(admission.Tool) && admission.Eligibility(admission.Tool);
+        && _issued.TryGetValue(admission, out _) && Supports(admission.Tool) && admission.Eligibility.IsEnabled();
 
     internal IDisposable BeginInvocation(Guid issuingStepId, Guid logicalCallId, GuildToolGrant tool)
     {
@@ -292,9 +301,9 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         return new Scope(frame, previous);
     }
 
-    internal async Task<Result> AuthorizeAsync(GuildToolGrant tool, Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+    internal async Task<Result> AuthorizeAsync(GuildToolGrant tool, GuildToolEligibility eligibility, CancellationToken ct)
     {
-        if (!Supports(tool) || !eligibility(tool)) return Unavailable;
+        if (!Supports(tool) || !eligibility.IsEnabled()) return Unavailable;
 
         Result<GuildQuestStored> authorized = await Parent.Store.AuthorizeLocalToolAsync(this, tool, eligibility, ct).ConfigureAwait(false);
 
@@ -310,12 +319,12 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     }
 
     internal ValueTask<object?> DispatchAsync(GuildToolGrant tool, AIFunctionArguments arguments,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct) =>
+        GuildToolEligibility eligibility, CancellationToken ct) =>
         DispatchFrameAsync(Current.Value, tool, arguments, eligibility, ct);
 
     // The transport borrows the exact live frame; it neither creates nor closes a host invocation.
     internal async ValueTask<object?> DispatchTransferredAsync(Invocation frame, GuildToolGrant tool, AIFunctionArguments arguments,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+        GuildToolEligibility eligibility, CancellationToken ct)
     {
         Invocation? previous = Current.Value;
 
@@ -326,9 +335,9 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     }
 
     private async ValueTask<object?> DispatchFrameAsync(Invocation? frame, GuildToolGrant tool, AIFunctionArguments arguments,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+        GuildToolEligibility eligibility, CancellationToken ct)
     {
-        if (!Supports(tool) || !eligibility(tool) || frame is null || !frame.IsActive
+        if (!Supports(tool) || !eligibility.IsEnabled() || frame is null || !frame.IsActive
             || !ReferenceEquals(frame.Registry, this) || frame.Tool != tool) return Format(Unavailable);
 
         Result<(JsonElement Arguments, string Digest)> frozen = Freeze(arguments);

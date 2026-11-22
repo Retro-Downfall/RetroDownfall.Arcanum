@@ -19,14 +19,14 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
     private static readonly AsyncLocal<Invocation?> Current = new();
 
     internal IDisposable EnterInvocation(GuildVerifiedAuthority authority, Guid workspaceId,
-        Func<CancellationToken, Task<Result>>? reauthorize = null, WorkspaceLeaseIdentitySet? initialTargets = null,
+        GuildChildToolAdmission? toolAdmission = null, WorkspaceLeaseIdentitySet? initialTargets = null,
         string? callDigest = null)
     {
         ArgumentNullException.ThrowIfNull(authority);
 
         Invocation? previous = Current.Value;
 
-        Invocation invocation = new(this, authority, workspaceId, reauthorize, initialTargets, callDigest);
+        Invocation invocation = new(this, authority, workspaceId, toolAdmission, initialTargets, callDigest);
 
         Current.Value = invocation;
 
@@ -40,9 +40,9 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
 
         if (invocation is null || !invocation.Active || !ReferenceEquals(invocation.Owner, this)) return Forbidden;
 
-        if (invocation.Reauthorize is { } check)
+        if (invocation.ToolAdmission is { } call)
         {
-            Result live = await check(cancellationToken).ConfigureAwait(false);
+            Result live = await call.Registry.Parent.Store.RevalidateWorkspaceMutationToolAsync(call, cancellationToken).ConfigureAwait(false);
 
             if (live.IsFailure) return live.Error;
 
@@ -61,7 +61,7 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
     }
 
     private sealed class Invocation(GuildWorkspaceMutationFence owner, GuildVerifiedAuthority authority, Guid workspaceId,
-        Func<CancellationToken, Task<Result>>? reauthorize, WorkspaceLeaseIdentitySet? initialTargets, string? callDigest)
+        GuildChildToolAdmission? toolAdmission, WorkspaceLeaseIdentitySet? initialTargets, string? callDigest)
     {
         internal GuildWorkspaceMutationFence Owner { get; } = owner;
 
@@ -69,7 +69,7 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
 
         internal Guid WorkspaceId { get; } = workspaceId;
 
-        internal Func<CancellationToken, Task<Result>>? Reauthorize { get; } = reauthorize;
+        internal GuildChildToolAdmission? ToolAdmission { get; } = toolAdmission;
 
         internal WorkspaceLeaseIdentitySet? InitialTargets { get; } = initialTargets;
 
@@ -96,9 +96,9 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
         {
             if (!CanUse(rollback)) return Forbidden;
 
-            if (!rollback && invocation.Reauthorize is { } check)
+            if (!rollback && invocation.ToolAdmission is { } call)
             {
-                Result live = await check(cancellationToken).ConfigureAwait(false);
+                Result live = await call.Registry.Parent.Store.RevalidateWorkspaceMutationToolAsync(call, cancellationToken).ConfigureAwait(false);
 
                 if (live.IsFailure) return live;
 

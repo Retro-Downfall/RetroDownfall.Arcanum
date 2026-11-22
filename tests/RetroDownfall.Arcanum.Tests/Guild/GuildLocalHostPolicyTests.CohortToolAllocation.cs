@@ -95,7 +95,7 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator, outputAllocationBytes: bytes);
 
-            var context = f.Store.CreateToolContext(execution, registry, _ => true);
+            var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
             var function = await context.AdvertiseAsync(new InertChildTool(name), tool, default);
 

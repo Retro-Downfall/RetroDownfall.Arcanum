@@ -31,7 +31,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         GuildToolGrant get = new(GuildToolSourceKind.InternalMcp, "arcanum", "get_agent_task");
 
@@ -184,7 +184,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         GuildToolGrant get = new(GuildToolSourceKind.InternalMcp, "arcanum", "get_agent_task");
 

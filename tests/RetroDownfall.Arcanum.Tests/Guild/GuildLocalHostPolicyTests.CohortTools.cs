@@ -125,7 +125,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         async Task<GuildLocalChildToolResult> Invoke(string name, AIFunctionArguments arguments, bool replay = false)
         {
@@ -183,7 +183,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry memberRegistry = new(memberExecution, memberInput.Value, coordinator);
 
-        var memberContext = f.Store.CreateToolContext(memberExecution, memberRegistry, _ => true);
+        var memberContext = f.Store.CreateToolContext(memberExecution, memberRegistry, GuildTestToolEligibility.Enabled);
 
         var messageFunction = await memberContext.AdvertiseAsync(new InertChildTool(message.Name), message, default);
 
@@ -256,7 +256,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         async Task<GuildLocalChildToolResult> Invoke(string name, AIFunctionArguments arguments)
         {
@@ -319,7 +319,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var bound = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
 
@@ -364,7 +364,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         string id = Guid.NewGuid().ToString();
 
@@ -419,7 +419,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         foreach (GuildToolGrant tool in CohortTools())
         {
@@ -466,7 +466,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, dispatcher);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var bound = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
 
@@ -562,7 +562,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var createFunction = await context.AdvertiseAsync(new InertChildTool(create.Name), create, default);
 

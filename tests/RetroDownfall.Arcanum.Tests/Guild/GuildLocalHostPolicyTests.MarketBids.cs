@@ -165,7 +165,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using (GuildLocalToolRegistry smallRegistry = new(execution, input.Value, coordinator, 4096))
         {
-            var smallContext = f.Store.CreateToolContext(execution, smallRegistry, _ => true);
+            var smallContext = f.Store.CreateToolContext(execution, smallRegistry, GuildTestToolEligibility.Enabled);
 
             var smallFunction = await smallContext.AdvertiseAsync(new InertChildTool("submit_bid"), tools[0], default);
 
@@ -185,7 +185,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         async Task<GuildLocalChildToolResult> Invoke(string name, AIFunctionArguments arguments)
         {

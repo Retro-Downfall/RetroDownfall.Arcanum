@@ -3,9 +3,12 @@ using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using ModelContextProtocol.Protocol;
 using Result = RetroDownfall.Arcanum.Core.Primitives.Result;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
 
@@ -60,18 +63,24 @@ public sealed class GuildToolBoundaryTests
         Assert.Equal(0, native.Calls);
     }
 
-    [Fact]
-    public async Task Retained_wrapper_rechecks_current_host_eligibility_before_dispatch()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Retained_wrapper_rechecks_current_host_eligibility_before_dispatch(bool hasLiveOptions)
     {
-        bool eligible = true;
+        ArcanumSettings eligibility = new() { Features = new() { Guild = true } };
 
         CountingFunction native = new();
 
-        GuildToolInvocationContext context = CreateContext(_ => eligible);
+        GuildToolEligibility policy = hasLiveOptions
+            ? GuildTestToolEligibility.For(new ArcanumSettings { Features = new() { Guild = true } }, new TestOptionsMonitor<ArcanumSettings>(eligibility))
+            : GuildTestToolEligibility.For(eligibility);
+
+        GuildToolInvocationContext context = CreateContext(policy);
 
         AIFunction retained = context.Bind(native, new(GuildToolSourceKind.BuiltIn, "arcanum", native.Name));
 
-        eligible = false;
+        eligibility.Features.Guild = false;
 
         object? result = await retained.InvokeAsync(new AIFunctionArguments());
 
@@ -112,13 +121,13 @@ public sealed class GuildToolBoundaryTests
         Assert.Equal(0, fallback.Calls);
     }
 
-    internal static GuildToolInvocationContext CreateContext(Func<GuildToolGrant, bool>? eligibility = null)
+    internal static GuildToolInvocationContext CreateContext(GuildToolEligibility? eligibility = null)
     {
         Guid root = Guid.NewGuid();
 
         GuildExecutionHandle execution = new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), root, root, 1, 0);
 
-        return new(execution, new UnavailableToolAuthority(), eligibility ?? (_ => true));
+        return new(execution, new UnavailableToolAuthority(), eligibility ?? GuildTestToolEligibility.Enabled);
     }
 
     private static JsonElement EmptySchema()

@@ -100,14 +100,10 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
             ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.ResolveIntelligence().ToolOutputCapBytes),
             new WorkspaceMutationRuntime(this, binding));
 
-        bool Eligible(GuildToolGrant tool)
-        {
-            ArcanumSettings current = serviceProvider?.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue ?? settings.Value;
+        GuildToolEligibility eligibility = new(request.DisableAllTools, settings,
+            serviceProvider?.GetService<IOptionsMonitor<ArcanumSettings>>());
 
-            return !request.DisableAllTools && current.Features.Guild;
-        }
-
-        GuildToolInvocationContext tools = binding.Execution.Store.CreateToolContext(binding.Execution, registry, Eligible);
+        GuildToolInvocationContext tools = binding.Execution.Store.CreateToolContext(binding.Execution, registry, eligibility);
 
         using IDisposable toolScope = GuildToolInvocationAmbient.Begin(tools);
 

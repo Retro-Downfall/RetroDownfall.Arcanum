@@ -19,8 +19,7 @@ internal sealed partial class ConclaveArchmage
 
         if (admitted.IsFailure) return admitted.Error;
 
-        var result = await GuildWorkspaceMutationTools.ExecuteAsync(admission, admitted.Value, runtime, settings.CurrentValue,
-            token => quests.RevalidateWorkspaceMutationToolAsync(admission, token), ct).ConfigureAwait(false);
+        var result = await GuildWorkspaceMutationTools.ExecuteAsync(admission, admitted.Value, runtime, settings.CurrentValue, ct).ConfigureAwait(false);
 
         if (result.IsFailure) return result.Error;
 

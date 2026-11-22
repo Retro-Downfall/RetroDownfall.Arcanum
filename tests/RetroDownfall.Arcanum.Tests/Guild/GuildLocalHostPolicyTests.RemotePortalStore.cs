@@ -300,7 +300,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(senderExecution, input.Value, coordinator);
 
-        var context = fixture.Store.CreateToolContext(senderExecution, registry, _ => true);
+        var context = fixture.Store.CreateToolContext(senderExecution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool(message.Name), message, default);
 

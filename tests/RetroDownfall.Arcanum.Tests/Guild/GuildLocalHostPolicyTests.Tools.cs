@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -38,7 +39,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, dispatcher);
 
-        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, _ => true);
+        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         InertChildTool template = new(tool.Name);
 
@@ -96,7 +97,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, dispatcher);
 
-        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, _ => true);
+        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         InertChildTool template = new(tool.Name);
 
@@ -179,11 +180,11 @@ public sealed partial class GuildLocalHostPolicyTests
                 : boundary == "readiness-at-commit" ? () => f.Readiness.Available = false : null,
         };
 
-        bool eligible = true;
+        ArcanumSettings eligibility = new() { Features = new() { Guild = true } };
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, dispatcher);
 
-        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, _ => eligible);
+        GuildToolInvocationContext context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.For(eligibility));
 
         InertChildTool template = new(tool.Name);
 
@@ -199,7 +200,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         if (boundary == "feature-off") f.Settings.CurrentValue.Features.Guild = false;
 
-        if (boundary == "eligibility") eligible = false;
+        if (boundary == "eligibility") eligibility.Features.Guild = false;
 
         if (boundary == "closed-registry") registry.Dispose();
 

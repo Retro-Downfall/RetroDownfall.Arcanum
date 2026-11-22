@@ -27,7 +27,7 @@ internal static class GuildWorkspaceMutationTools
 {
     internal static async Task<Result<GuildWorkspaceMutationOutput>> ExecuteAsync(GuildChildToolAdmission call,
         GuildWorkspaceMutationAdmission bound, IGuildWorkspaceMutationRuntime runtime, ArcanumSettings settings,
-        Func<CancellationToken, Task<Result>> reauthorize, CancellationToken ct)
+        CancellationToken ct)
     {
         string root = bound.Physical.Registration.RootPath;
 
@@ -44,7 +44,7 @@ internal static class GuildWorkspaceMutationTools
         if (request.Paths.IsDefaultOrEmpty || request.Paths.Any(path => !GuildWorkspaceAuthority.IsDirectFilePath(path)
             || !bound.Grant.Workspaces.Any(scope => Covers(scope.RelativeRoot, path)))) return Forbidden;
 
-        Result live = await reauthorize(ct).ConfigureAwait(false);
+        Result live = await call.Registry.Parent.Store.RevalidateWorkspaceMutationToolAsync(call, ct).ConfigureAwait(false);
 
         if (live.IsFailure) return live.Error;
 
@@ -60,7 +60,7 @@ internal static class GuildWorkspaceMutationTools
 
         bool allowProtectedWrites = codingTools.AllowProtectedPathWrites;
 
-        using IDisposable invocation = bound.Fence.EnterInvocation(bound.Authority, bound.WorkspaceId, reauthorize,
+        using IDisposable invocation = bound.Fence.EnterInvocation(bound.Authority, bound.WorkspaceId, call,
             preflight.Value, $"{call.LogicalCallId:N}:{call.ArgumentsDigest}");
 
         try
@@ -78,7 +78,7 @@ internal static class GuildWorkspaceMutationTools
                 var result = await runtime.ExecutePatchAsync(call, bound.SessionId, bound.Campaign,
                     async (context, token) =>
                     {
-                        Result current = await reauthorize(token).ConfigureAwait(false);
+                        Result current = await call.Registry.Parent.Store.RevalidateWorkspaceMutationToolAsync(call, token).ConfigureAwait(false);
 
                         if (current.IsFailure) throw new WorkspaceMutationFenceException(current.Error);
 

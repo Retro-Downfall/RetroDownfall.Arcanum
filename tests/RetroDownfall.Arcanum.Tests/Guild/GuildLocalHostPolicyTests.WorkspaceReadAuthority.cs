@@ -48,7 +48,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = fixture.Store.CreateToolContext(execution, registry, _ => true);
+        var context = fixture.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         AIFunction? bound = await context.AdvertiseAsync(new InertChildTool(read.Name), read, default);
 

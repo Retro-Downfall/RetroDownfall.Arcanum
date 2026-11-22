@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed class GuildToolInvocationContext(
     GuildExecutionHandle execution,
     IGuildToolAuthority authority,
-    Func<GuildToolGrant, bool> currentEligibility, GuildLocalToolRegistry? registry = null)
+    GuildToolEligibility currentEligibility, GuildLocalToolRegistry? registry = null)
 {
     internal GuildLocalToolRegistry? Registry => registry;
 
@@ -24,7 +24,7 @@ internal sealed class GuildToolInvocationContext(
 
     private ValueTask<object?> InvokeAsync(GuildToolGrant tool, AIFunctionArguments arguments, CancellationToken ct)
     {
-        if (!currentEligibility(tool)) return ValueTask.FromResult<object?>(Format(new(ErrorCodes.Guild.ToolNotGranted, "The tool is unavailable under the current host policy.")));
+        if (!currentEligibility.IsEnabled()) return ValueTask.FromResult<object?>(Format(new(ErrorCodes.Guild.ToolNotGranted, "The tool is unavailable under the current host policy.")));
 
         return registry is not null && registry.Matches(execution, authority) && registry.Supports(tool)
             ? registry.DispatchAsync(tool, arguments, currentEligibility, ct) : RefuseBoundAsync(tool, ct);
@@ -36,7 +36,7 @@ internal sealed class GuildToolInvocationContext(
     {
         GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", name);
 
-        return registry is not null && registry.Matches(execution, authority) && currentEligibility(tool)
+        return registry is not null && registry.Matches(execution, authority) && currentEligibility.IsEnabled()
             ? registry.CaptureInvocation(tool) : null;
     }
 
@@ -46,7 +46,7 @@ internal sealed class GuildToolInvocationContext(
         GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", name);
 
         if (registry is null || !registry.Matches(execution, authority) || !ReferenceEquals(frame.Registry, registry)
-            || frame.Tool != tool || !frame.IsActive || !currentEligibility(tool))
+            || frame.Tool != tool || !frame.IsActive || !currentEligibility.IsEnabled())
             return ValueTask.FromResult<object?>(Format(Unavailable));
 
         frame.NarrowOutputAllocation(outputAllocationBytes);
@@ -85,7 +85,7 @@ internal sealed class GuildToolInvocationContext(
     {
         _ = Bind(function, tool);
 
-        if (!currentEligibility(tool))
+        if (!currentEligibility.IsEnabled())
         {
             return null;
         }
@@ -123,7 +123,7 @@ internal sealed class GuildToolInvocationContext(
 
     internal async Task<Error> RefuseDispatchAsync(GuildToolGrant tool, CancellationToken cancellationToken)
     {
-        if (!currentEligibility(tool))
+        if (!currentEligibility.IsEnabled())
         {
             return new(ErrorCodes.Guild.ToolNotGranted, "The tool is unavailable under the current host policy.");
         }

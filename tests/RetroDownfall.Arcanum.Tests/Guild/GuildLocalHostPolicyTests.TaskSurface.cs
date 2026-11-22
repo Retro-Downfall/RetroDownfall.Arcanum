@@ -66,7 +66,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
 
@@ -116,7 +116,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         Assert.NotNull(await context.AdvertiseAsync(new InertChildTool(name), tool, default));
     }
@@ -151,7 +151,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         async Task<object?> Invoke(string name, AIFunctionArguments args, Guid? logical = null)
         {
@@ -269,11 +269,11 @@ public sealed partial class GuildLocalHostPolicyTests
 
         CapturingTaskDispatcher dispatcher = new(coordinator);
 
-        bool eligible = true;
+        ArcanumSettings eligibility = new() { Features = new() { Guild = true } };
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, dispatcher);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => eligible);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.For(eligibility));
 
         var createFunction = await context.AdvertiseAsync(new InertChildTool(create.Name), create, default);
 
@@ -316,7 +316,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(native.IsSuccess, native.Error.Message);
         }
-        else if (boundary == "eligibility") eligible = false;
+        else if (boundary == "eligibility") eligibility.Features.Guild = false;
         else if (boundary == "closed-frame") invocation.Dispose();
         else if (boundary == "revoked")
         {
@@ -386,7 +386,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.Enabled);
 
         var function = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
 
@@ -447,7 +447,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
 
-        var context = f.Store.CreateToolContext(execution, registry, _ => f.Settings.CurrentValue.Features.Guild);
+        var context = f.Store.CreateToolContext(execution, registry, GuildTestToolEligibility.For(f.Settings.CurrentValue, f.Settings));
 
         var template = new InertChildTool(tool.Name);
 
