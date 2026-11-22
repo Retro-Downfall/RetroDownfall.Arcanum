@@ -507,6 +507,58 @@ public sealed partial class GuildLocalHostPolicyTests
         }
     }
 
+    [Fact]
+    public async Task Observer_error_probe_does_not_block_native_trace_publication()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        using ManualResetEventSlim releaseProbe = new();
+
+        TaskCompletionSource probeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using TracedIdleConnections traced = new(f.Connections, _ =>
+        {
+            probeEntered.TrySetResult();
+
+            Assert.True(releaseProbe.Wait(TimeSpan.FromSeconds(15)));
+
+            return SQLitePCL.raw.SQLITE_OK;
+        });
+
+        await using IdleScopeHarness scope = new(f, traced);
+
+        _ = scope.Run();
+
+        using CancellationTokenSource watchdog = new(TimeSpan.FromSeconds(5));
+
+        await traced.WaitForInitialProofAsync(watchdog.Token);
+
+        long previous = traced.CompletedStamps;
+
+        Task<int?> probe = Task.Run(traced.ObserverErrorCode);
+
+        Task? tick = null;
+
+        try
+        {
+            await probeEntered.Task.WaitAsync(watchdog.Token);
+
+            tick = Task.Run(scope.Advance);
+
+            await traced.WaitForStampCountAsync(previous + 1, watchdog.Token);
+
+            Assert.False(probe.IsCompleted);
+        }
+        finally
+        {
+            releaseProbe.Set();
+
+            Assert.Equal(SQLitePCL.raw.SQLITE_OK, await probe.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            if (tick is not null) await tick.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -626,7 +678,8 @@ public sealed partial class GuildLocalHostPolicyTests
         }
     }
 
-    private sealed class TracedIdleConnections(FixtureOrdinaryConnectionFactory inner) : IGrimoireOrdinaryConnectionFactory, IDisposable
+    private sealed class TracedIdleConnections(FixtureOrdinaryConnectionFactory inner, Func<SQLitePCL.sqlite3, int>? readErrorCode = null)
+        : IGrimoireOrdinaryConnectionFactory, IDisposable
     {
         private Action? _nextDispose;
 
@@ -668,8 +721,31 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal int? ObserverErrorCode()
         {
-            lock (_observerLock)
-                return _observerHandle is { } handle ? SQLitePCL.raw.sqlite3_errcode(handle) : null;
+            SQLitePCL.sqlite3? handle = null;
+
+            bool retained = false;
+
+            try
+            {
+                lock (_observerLock)
+                {
+                    handle = _observerHandle;
+
+                    if (handle is null) return null;
+
+                    handle.DangerousAddRef(ref retained);
+                }
+
+                // The native call takes SQLite's mutex. Trace callbacks already under that
+                // mutex use _observerLock to publish a stamp, so hold only the handle here.
+                int error = readErrorCode?.Invoke(handle) ?? SQLitePCL.raw.sqlite3_errcode(handle);
+
+                lock (_observerLock) return ReferenceEquals(handle, _observerHandle) ? error : null;
+            }
+            finally
+            {
+                if (retained) handle!.DangerousRelease();
+            }
         }
 
         private void RememberObserver(SQLitePCL.sqlite3 handle)
@@ -709,9 +785,8 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             while (true)
             {
-                // sqlite3_errcode may itself wait on the connection mutex while a native
-                // statement is busy. Keep the watchdog independent of that native call;
-                // the lock in ObserverErrorCode still joins it before handle disposal.
+                // Keep the watchdog independent of the native call. The probe retains its
+                // handle until sqlite3_errcode returns, even if this wait is cancelled.
                 int? code = await Task.Run(ObserverErrorCode).WaitAsync(ct);
 
                 if (code is 5 or 6) return;
