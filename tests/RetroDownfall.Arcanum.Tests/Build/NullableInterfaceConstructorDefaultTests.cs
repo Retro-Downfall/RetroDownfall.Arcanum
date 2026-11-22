@@ -364,6 +364,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Platform/ProcessResourceLimiter.cs:ProcessResourceLimiter:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
+        ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRecoveryCheckpointStore.cs:SessionRecoveryCheckpointStore:authority"] = "the composed host supplies the installation authority snapshot; standalone checkpoint storage can omit it, in which case status cannot infer a dispatched begun claim survived a prior boot",
+
         ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs:SessionRepository:attachmentIndexQueue"] = "every use of the ISessionAttachmentIndexQueue is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs:OsKeychainSecretStore:logger"] = "diagnostic sink; absence degrades logging, not a guard",

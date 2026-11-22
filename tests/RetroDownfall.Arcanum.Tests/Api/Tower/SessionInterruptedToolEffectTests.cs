@@ -6,6 +6,10 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -64,6 +68,18 @@ public sealed class SessionInterruptedToolEffectTests
             using IServiceScope scope = second.Services.CreateScope();
 
             Assert.Equal(expected.Order(), (await ReadInterruptedEffectsAsync(client, session, expectEmptyFirstPage: true)).Order());
+
+            SessionRecoveryCheckpointStore withoutInstallationAuthority = new(
+                scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+                scope.ServiceProvider.GetRequiredService<TimeProvider>(),
+                scope.ServiceProvider.GetRequiredService<CovenantProcessBootIdentity>(),
+                scope.ServiceProvider.GetRequiredService<GrimoireDatabaseHostedService>());
+
+            var unproven = await withoutInstallationAuthority.ReadStatusAsync(session, null, default);
+
+            Assert.True(unproven.IsSuccess, unproven.Error.Message);
+
+            Assert.Empty(unproven.Value.InterruptedEffects.Outstanding);
 
             var unchanged = await scope.ServiceProvider.GetRequiredService<ISessionTurnClaimLookup>()
                 .FindAsync(installation, priorOwner.Claim.ClientTurnId, default);
