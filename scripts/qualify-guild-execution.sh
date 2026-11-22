@@ -264,7 +264,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Reviewed_combined_manifest_refuses_update_when_primary_discovery_fails \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Reviewed_combined_manifest_refuses_update_when_additional_discovery_fails \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_bounded_settlement_matches_exact_budget_ledger_and_keeps_live_members_visible \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_settlement_recomputes_completed_work_after_its_accounting_evidence_settles \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_settlement_recomputes_after_unrestricted_completed_evidence_changes \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_failed_execution_input_rolls_back_member_signet_session_budget_and_dispatch_atomically \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_physical_and_memory_ceilings_compose_into_member_and_descendant \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Cohort_withdrawn_local_subtree_drains_after_restart_without_rebinding_work_authority \
