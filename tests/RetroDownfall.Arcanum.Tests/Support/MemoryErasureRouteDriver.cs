@@ -175,6 +175,17 @@ internal sealed class MemoryErasureRouteDriver
         return (long)(await command.ExecuteScalarAsync(ct))!;
     }
 
+    // These checkpoint tests control their own held reader. Drain background Guild recovery so it
+    // cannot supply an unrelated lock during the Busy phase or the later quiet checkpoint.
+    internal static async Task QuiesceGuildWorkersAsync(ArcanumWebApplicationFactory factory)
+    {
+        await factory.Services.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler>()
+            .StopAsync(CancellationToken.None);
+
+        await factory.Services.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService>()
+            .StopAsync(CancellationToken.None);
+    }
+
     /// <summary>
     /// Holds a read snapshot on a connection of its own until disposed, so a write-ahead-log checkpoint
     /// taken meanwhile cannot truncate.

@@ -793,6 +793,8 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
+        await MemoryErasureRouteDriver.QuiesceGuildWorkersAsync(factory);
+
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
 
         SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
