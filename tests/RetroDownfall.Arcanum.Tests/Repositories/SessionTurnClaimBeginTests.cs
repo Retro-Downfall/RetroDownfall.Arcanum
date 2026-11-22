@@ -262,7 +262,7 @@ public sealed class SessionTurnClaimBeginTests(GrimoireFixture fixture) : IAsync
         if (held is not null) ownership.AttachHostLock(held, directory);
 
         return new(new FixedCovenantConnectionSource(Connection), new CovenantQuotaGuard(), boot,
-            path => path == Connection.DataSource && ownership.BorrowHeldLock(directory).IsSuccess);
+            candidate => ReferenceEquals(candidate, Connection) && ownership.BorrowHeldLock(directory).IsSuccess);
     }
 
     private async Task<string> ReadHistoryAsync(long through = long.MaxValue)

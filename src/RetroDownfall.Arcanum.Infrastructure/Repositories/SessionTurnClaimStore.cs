@@ -32,7 +32,7 @@ internal sealed class SessionTurnClaimStore(
     ICovenantConnectionSource connections,
     CovenantQuotaGuard quotas,
     Guid bootId,
-    Func<string, bool>? ownsStartedDatabase = null) : ISessionTurnClaimCoordinator, ISessionTurnClaimLookup
+    Func<SqliteConnection, bool>? ownsStartedDatabase = null) : ISessionTurnClaimCoordinator, ISessionTurnClaimLookup
 {
     /// <summary>
     /// How long an acquisition owns its claim before another boot may take it over. Code-owned: a
@@ -878,7 +878,7 @@ internal sealed class SessionTurnClaimStore(
         && previous.Claim.OriginRestoreEpoch == request.OriginRestoreEpoch
         && previous.Claim.OwnerBootId is { } previousBoot && previousBoot != Guid.Empty && previousBoot != bootId
         && previous.ExecutorId is { } executor && executor != Guid.Empty && previous.LeaseDeadlineUtc is not null
-        && ownsStartedDatabase?.Invoke(transaction.Connection.DataSource) == true;
+        && ownsStartedDatabase?.Invoke(transaction.Connection) == true;
 
     private async Task<Result<ClaimRow>> SettleAbandonedClaimAsync(
         CovenantMutationTransaction transaction, ClaimRow previous, CancellationToken cancellationToken)

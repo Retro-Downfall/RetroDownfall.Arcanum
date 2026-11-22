@@ -1,4 +1,6 @@
+using System.Data;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -516,8 +518,14 @@ public sealed class GrimoireDatabaseHostedService(
         }
     }
 
-    internal bool OwnsStartedDatabase(string databasePath)
+    internal bool OwnsStartedDatabase(SqliteConnection admittedConnection)
     {
+        if (admittedConnection.State != ConnectionState.Open) return false;
+
+        // SQLite can canonicalize a system path alias when reporting the opened file. The
+        // admitted connection's declared target is immutable while it is open.
+        string databasePath = new SqliteConnectionStringBuilder(admittedConnection.ConnectionString).DataSource;
+
         lock (_maintenanceLockSync)
         {
             if (!_startedSuccessfully || !_maintenanceLockAttached || _maintenanceLock is not { } held

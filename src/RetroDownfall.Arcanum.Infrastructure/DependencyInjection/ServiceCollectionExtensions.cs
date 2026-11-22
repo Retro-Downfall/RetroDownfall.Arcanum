@@ -2399,7 +2399,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<CovenantQuotaGuard>(),
                 sp.GetRequiredService<CovenantProcessBootIdentity>().BootId,
-                path => sp.GetService<GrimoireDatabaseHostedService>()?.OwnsStartedDatabase(path) is true));
+                connection => sp.GetService<GrimoireDatabaseHostedService>()?.OwnsStartedDatabase(connection) is true));
 
         services.AddScoped<ISessionTurnClaimCoordinator>(static sp => sp.GetRequiredService<SessionTurnClaimStore>());
 
