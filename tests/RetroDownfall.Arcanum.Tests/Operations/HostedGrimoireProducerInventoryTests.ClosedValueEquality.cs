@@ -12,6 +12,17 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
+    [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void Actual_campaign_maintenance_comparison_retains_closed_durable_value_equality()
+    {
+        var (closed, targets) = HostedGrimoireProducerInventory.ProbeCampaignMaintenanceEquality();
+
+        Assert.True(closed, "The exact Campaign maintenance comparison must prove its durable record equality.");
+
+        Assert.Contains("RetroDownfall.Arcanum.Core.Covenant.CovenantDigest.Equals", targets);
+    }
+
     // A CovenantDigest-shaped value: a byte[] field behind an authored typed Equals. The operands
     // come from static getters, so no operand is an exact construction and the compiler-generated
     // operator can only be certified by the closed-value field walk.

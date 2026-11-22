@@ -261,11 +261,6 @@ public sealed record SessionTurnClaimLease(
 
     public Guid? RecoveryCheckpointId { get; init; }
 
-    // Execution authority follows reference identity while the lease keeps durable value equality.
-    private static readonly ConditionalWeakTable<SessionTurnClaimLease, object> ExecutionProofs = new();
-
-    private static readonly object CopiedExecution = new();
-
     private SessionTurnClaimLease(SessionTurnClaimLease original)
     {
         Claim = original.Claim;
@@ -282,17 +277,19 @@ public sealed record SessionTurnClaimLease(
 
         RecoveryCheckpointId = original.RecoveryCheckpointId;
 
-        if (ExecutionProofs.TryGetValue(original, out _))
-            ExecutionProofs.Add(this, CopiedExecution);
+        ActiveExecution.RegisterCopy(original, this);
     }
 
     /// <summary>The exact begun writer can prove liveness until it releases its per-Session gate.</summary>
-    internal bool? HoldsActiveExecution => ExecutionProofs.TryGetValue(this, out object? proof)
-        ? proof is ActiveExecution execution && execution.Holds(this)
-        : null;
+    internal bool? HoldsActiveExecution => ActiveExecution.HoldsFor(this);
 
     internal sealed class ActiveExecution : IDisposable
     {
+        // The runtime registry belongs to the writer proof. Generated lease equality reads durable values.
+        private static readonly ConditionalWeakTable<SessionTurnClaimLease, object> ExecutionProofs = new();
+
+        private static readonly object CopiedExecution = new();
+
         private IDisposable? _sessionGate;
 
         internal ActiveExecution(SessionTurnClaimLease owner, IDisposable sessionGate)
@@ -306,7 +303,17 @@ public sealed record SessionTurnClaimLease(
 
         internal SessionTurnClaimLease Lease { get; }
 
-        internal bool Holds(SessionTurnClaimLease owner) =>
+        internal static void RegisterCopy(SessionTurnClaimLease original, SessionTurnClaimLease copy)
+        {
+            if (ExecutionProofs.TryGetValue(original, out _))
+                ExecutionProofs.Add(copy, CopiedExecution);
+        }
+
+        internal static bool? HoldsFor(SessionTurnClaimLease owner) => ExecutionProofs.TryGetValue(owner, out object? proof)
+            ? proof is ActiveExecution execution && execution.Holds(owner)
+            : null;
+
+        private bool Holds(SessionTurnClaimLease owner) =>
             ReferenceEquals(Lease, owner) && Volatile.Read(ref _sessionGate) is not null;
 
         public void Dispose() => Interlocked.Exchange(ref _sessionGate, null)?.Dispose();

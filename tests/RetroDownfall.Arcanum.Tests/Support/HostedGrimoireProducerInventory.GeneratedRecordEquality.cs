@@ -12,8 +12,36 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static partial class HostedGrimoireProducerInventory
 {
+    internal static (bool Closed, string[] AuthoredTargets) ProbeCampaignMaintenanceEquality() =>
+        HostedProducerRootWorkers.OnAnalysisStack(() => new ProducerGraph(ProductionCompilations,
+            DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth,
+            DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false).ProbeCampaignMaintenanceEquality());
+
     private sealed partial class ProducerGraph
     {
+        internal (bool Closed, string[] AuthoredTargets) ProbeCampaignMaintenanceEquality()
+        {
+            const string checkpointStore = "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CampaignMaintenanceCheckpointStore";
+
+            const string identity = "RetroDownfall.Arcanum.Core.Storage.CampaignMaintenanceIdentity";
+
+            AuthoredMember caller = AuthoredMembers.Single(member => TypeKey(member.Symbol.ContainingType) == checkpointStore
+                && member.Symbol.Name == "ValidatePublicationAsync");
+
+            BinaryExpressionSyntax comparison = caller.Syntax.DescendantNodes().OfType<BinaryExpressionSyntax>().Single(binary =>
+                caller.Model.GetOperation(binary) is IBinaryOperation { OperatorMethod: { Name: "op_Inequality" } method }
+                && TypeKey(method.ContainingType) == identity);
+
+            var selection = UserDefinedOperatorAt(caller, comparison);
+
+            if (selection is not { Unsupported: false } exact) return (false, []);
+
+            bool certified = TryGeneratedRecordEqualityTargets(caller, exact.Method, exact.Operands,
+                out List<AuthoredMember> targets, out bool canonical);
+
+            return (certified && canonical, [.. targets.Select(target => Normalize(target.Symbol))]);
+        }
+
         private bool TryGeneratedRecordEqualityTargets(AuthoredMember caller, IMethodSymbol selected,
             IOperation[] operands, out List<AuthoredMember> targets, out bool canonical, bool lifted = false)
         {
