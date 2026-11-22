@@ -2,9 +2,11 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -20,7 +22,7 @@ public sealed partial class SessionDivinationEndpointTests
 
         FixtureOrdinaryConnectionFactory connections = new();
 
-        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService(), connections);
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
 
         _ = await SeedEmbeddedEntryAsync(factory, "cancel native scan", [1f, 0f, 0f], null, "active");
 
@@ -60,7 +62,10 @@ public sealed partial class SessionDivinationEndpointTests
 
         using CancellationTokenSource cancellation = new();
 
-        ISessionDivinationService service = scope.ServiceProvider.GetRequiredService<ISessionDivinationService>();
+        // This census owns only the search's borrowed lease. Hosted services can have their own
+        // ordinary leases open while this scan is being interrupted and joined.
+        SessionDivinationService service = new(db, connections,
+            scope.ServiceProvider.GetRequiredService<ILogger<SessionDivinationService>>());
 
         Task<Result<SemanticSearchResult>> searching = Task.Run(() => service.SearchAsync(
             new Embedding<float>(new float[] { 1, 0, 0 }), null, null, 1, 0, cancellation.Token));
@@ -68,6 +73,8 @@ public sealed partial class SessionDivinationEndpointTests
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, connections.LiveLeaseCount);
 
             cancellation.Cancel();
 
