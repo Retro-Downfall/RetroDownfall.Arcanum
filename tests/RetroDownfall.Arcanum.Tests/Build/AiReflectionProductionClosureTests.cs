@@ -13,6 +13,8 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 
 public sealed class AiReflectionProductionClosureTests
 {
+    private const int WindowsSharingViolation = unchecked((int)0x80070020);
+
     private static readonly string[] ManagedProjects =
     [
         "RetroDownfall.Arcanum.Api",
@@ -280,6 +282,90 @@ public sealed class AiReflectionProductionClosureTests
         Assert.Empty(AiReflectionProductionClosure.Scan(fixture.Root, fixture.Assemblies));
     }
 
+    [Fact]
+    public void Closure_fixture_removes_generated_projects_after_transient_windows_sharing()
+    {
+        int attempts = 0;
+
+        int pauses = 0;
+
+        ClosureFixture fixture = new(
+            isWindows: true,
+            delete: path =>
+            {
+                if (++attempts <= 2)
+                {
+                    throw new IOException("Scratch directory is temporarily shared.", WindowsSharingViolation);
+                }
+
+                Directory.Delete(path, recursive: true);
+            },
+            pauseBeforeRetry: () => pauses++);
+
+        try
+        {
+            fixture.AddProject("RetroDownfall.Arcanum.Core/obj/generated", "Generated");
+
+            fixture.AddProject("RetroDownfall.Arcanum.Core/bin/generated", "Generated");
+
+            Assert.Empty(AiReflectionProductionClosure.Scan(fixture.Root, fixture.Assemblies));
+
+            fixture.Dispose();
+
+            Assert.False(Directory.Exists(fixture.Root));
+
+            Assert.Equal(3, attempts);
+
+            Assert.Equal(2, pauses);
+        }
+        finally
+        {
+            if (Directory.Exists(fixture.Root))
+            {
+                Directory.Delete(fixture.Root, recursive: true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(true, WindowsSharingViolation, 5)]
+    [InlineData(false, WindowsSharingViolation, 1)]
+    [InlineData(true, unchecked((int)0x80070021), 1)]
+    [InlineData(true, unchecked((int)0x80070005), 1)]
+    public void Closure_fixture_rethrows_persistent_or_unrelated_delete_errors(bool isWindows, int hresult, int expectedAttempts)
+    {
+        int attempts = 0;
+
+        int pauses = 0;
+
+        IOException expected = new("The scratch directory cannot be removed.", hresult);
+
+        ClosureFixture fixture = new(
+            isWindows,
+            delete: _ =>
+            {
+                attempts++;
+
+                throw expected;
+            },
+            pauseBeforeRetry: () => pauses++);
+
+        try
+        {
+            Assert.Same(expected, Assert.Throws<IOException>(fixture.Dispose));
+
+            Assert.True(Directory.Exists(fixture.Root));
+
+            Assert.Equal(expectedAttempts, attempts);
+
+            Assert.Equal(expectedAttempts - 1, pauses);
+        }
+        finally
+        {
+            Directory.Delete(fixture.Root, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("<EnableDefaultItems>true</EnableDefaultItems>")]
     [InlineData("<EnableDefaultItems>false</EnableDefaultItems><EnableDefaultCompileItems>true</EnableDefaultCompileItems>")]
@@ -374,8 +460,20 @@ public sealed class AiReflectionProductionClosureTests
 
     private sealed class ClosureFixture : IDisposable
     {
-        public ClosureFixture()
+        private readonly bool _isWindows;
+
+        private readonly Action<string> _delete;
+
+        private readonly Action _pauseBeforeRetry;
+
+        public ClosureFixture(bool? isWindows = null, Action<string>? delete = null, Action? pauseBeforeRetry = null)
         {
+            _isWindows = isWindows ?? OperatingSystem.IsWindows();
+
+            _delete = delete ?? (static path => Directory.Delete(path, recursive: true));
+
+            _pauseBeforeRetry = pauseBeforeRetry ?? (static () => Thread.Sleep(250));
+
             Root = Path.Combine(Path.GetTempPath(), "arcanum-ai-reflection-closure-" + Guid.NewGuid().ToString("N"));
 
             Directory.CreateDirectory(Root);
@@ -417,6 +515,21 @@ public sealed class AiReflectionProductionClosureTests
             return project;
         }
 
-        public void Dispose() => Directory.Delete(Root, recursive: true);
+        public void Dispose()
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    _delete(Root);
+
+                    return;
+                }
+                catch (IOException error) when (_isWindows && error.HResult == WindowsSharingViolation && attempt < 4)
+                {
+                    _pauseBeforeRetry();
+                }
+            }
+        }
     }
 }
