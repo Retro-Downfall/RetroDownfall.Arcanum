@@ -64,6 +64,8 @@ internal enum HostedProducerSiteKind : byte
     DatabaseAccess = 7,
 
     LeaseHandoff = 8,
+
+    JoinedSelfAdmission = 9,
 }
 
 internal sealed record HostedProducerSite(
@@ -241,7 +243,8 @@ internal sealed record HostedProducerRootTraversalMetric(
     string RootOperation,
     int TraversalCalls,
     int AnalyzedStates,
-    TimeSpan Elapsed);
+    TimeSpan Elapsed,
+    GrimoireWorkKind? SelfAdmittedWorkKind = null);
 
 internal sealed record HostedProducerPublicationRegionMetric(
     string Member,
@@ -598,7 +601,12 @@ internal static partial class HostedGrimoireProducerInventory
     {
         HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
 
-        HostedProducerInventoryValidation validation = Validate(Catalog, NonHostedCatalog, registrations, ProductionSiteDiscovery);
+        IReadOnlyList<HostedProducerSite> reviewedSites = ReviewedCapsules.Value.Sites;
+
+        HostedProducerSite[] joined = [.. reviewedSites.Where(IsGuildRevalidationChildSite)];
+
+        HostedProducerInventoryValidation validation = Validate(Catalog, NonHostedCatalog, registrations, ProductionSiteDiscovery,
+            joined.Length == 0 ? null : GuildRevalidationRoot(GuildAuthorizationSource, joined));
 
         return new([.. ReviewedCapsules.Value.Diagnostics, .. ValidateManifestRoots(ReviewedCapsules.Value.Sites), .. validation.Diagnostics]);
     }
@@ -2036,6 +2044,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         ValidateManifestHandoffBindings(sites, diagnostics);
 
+        ValidateManifestJoinedSelfAdmissions(sites, diagnostics);
+
         return new(sites, diagnostics.Distinct().ToArray());
     }
 
@@ -2071,6 +2081,11 @@ internal static partial class HostedGrimoireProducerInventory
         HashSet<(string RootType, string OperationId)> roots = hostedRoots.SelectMany(service => service.Operations.Select(operation => (service.ServiceType, operation.OperationId)))
             .Concat(nonHostedRoots.Select(static chain => (chain.EnclosingType, chain.ChainId)))
             .ToHashSet();
+
+        if (sites.Any(IsGuildRevalidationJoinedEdge))
+        {
+            roots.Add((GuildRevalidationOwner, GuildAuthorizationOperation));
+        }
 
         const string recoveryType = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestRecoveryHandler";
 
@@ -3160,6 +3175,8 @@ internal static partial class HostedGrimoireProducerInventory
             internal string RootOperation { get; } = rootOperation;
 
             internal string RootType { get; } = rootType;
+
+            internal GrimoireWorkKind? SelfAdmittedWorkKind { get; set; }
 
             internal int TraversalCalls { get; set; }
         }
@@ -6791,7 +6808,8 @@ internal static partial class HostedGrimoireProducerInventory
                 .ThenBy(static diagnostic => diagnostic.Identity, StringComparer.Ordinal)
                 .ThenBy(static diagnostic => diagnostic.Detail, StringComparer.Ordinal).ToArray();
 
-            HostedProducerDiscovery<HostedProducerSite> result = new(mergedSites, mergedDiagnostics, HostedProducerRootWorkers.MergeMetrics(results.Select(static result => result.AnalysisMetrics!).ToArray()) with { RootWorkers = workers.Length });
+            HostedProducerDiscovery<HostedProducerSite> result = new(mergedSites, mergedDiagnostics,
+                HostedProducerRootWorkers.MergeMetrics(results, coordinator.maximumAnalyzedStatesPerRoot) with { RootWorkers = workers.Length });
 
             merge.Complete();
 
@@ -7113,7 +7131,8 @@ internal static partial class HostedGrimoireProducerInventory
                             pair.Value.RootType
                                 + "|"
                                 + pair.Value.RootOperation),
-                        pair.Value.Elapsed))
+                        pair.Value.Elapsed,
+                        pair.Value.SelfAdmittedWorkKind))
                     .ToArray(),
                 publicationRegionAnalysis
                     .OrderBy(static pair => pair.Value.Member, StringComparer.Ordinal)
@@ -7224,16 +7243,8 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
-        private TraversalEvidence TraverseRoot(
-            AuthoredMember member,
-            string rootType,
-            string operationId,
-            bool lifecycle,
-            SyntaxNode? selection = null,
-            PlannedRoot? plannedRoot = null)
+        private RootTraversalAnalysisCounter RootTraversalCounter(string rootType, string rootOperation)
         {
-            string rootOperation = RootOperation(operationId);
-
             var key = (RootType: rootType, RootOperation: rootOperation);
 
             if (!rootTraversalAnalysis.TryGetValue(
@@ -7244,6 +7255,21 @@ internal static partial class HostedGrimoireProducerInventory
 
                 rootTraversalAnalysis.Add(key, analysis);
             }
+
+            return analysis;
+        }
+
+        private TraversalEvidence TraverseRoot(
+            AuthoredMember member,
+            string rootType,
+            string operationId,
+            bool lifecycle,
+            SyntaxNode? selection = null,
+            PlannedRoot? plannedRoot = null)
+        {
+            string rootOperation = RootOperation(operationId);
+
+            RootTraversalAnalysisCounter analysis = RootTraversalCounter(rootType, rootOperation);
 
             long started = Stopwatch.GetTimestamp();
 
@@ -20289,8 +20315,9 @@ internal static partial class HostedGrimoireProducerInventory
             // inherit it. Nothing lifts this refusal and no member is exempt from it, a recovery handler included; generic WorkAt keeps
             // its existing contract for every other member.
             if (inheritedWork is not null
-                && declaredOperations.Any(operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork
-                    && RootOperation(operation.OperationId) == RootOperation(operationId))
+                && (provenSelfAdmittedRoots.ContainsKey(RootOperation(operationId))
+                    || declaredOperations.Any(operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork
+                        && RootOperation(operation.OperationId) == RootOperation(operationId)))
                 && RequiresOrdinaryScopedHolderWitness(member)) inheritedWork = null;
 
             member = ProjectTraversalRecoveryEnvironment(member);
@@ -20319,6 +20346,12 @@ internal static partial class HostedGrimoireProducerInventory
                 RefuseTraversalCompletion();
 
                 return TraversalEvidence.Inconclusive;
+            }
+
+            if (active.Count > 0 && selection is null && fieldPublications is not { Count: > 0 }
+                && activeBoundedDataProbe is null && IsFieldReadOrDisposedGetter(member))
+            {
+                return TraversalEvidence.NoEvidence;
             }
 
             TraversalStateIdentity state = TraversalState(
@@ -22028,6 +22061,20 @@ internal static partial class HostedGrimoireProducerInventory
 
                                     foreach (AuthoredMember receiverTarget in receiverTargets)
                                     {
+                                        if (node is InvocationExpressionSyntax joinedCall && joined
+                                            && targets.Length == 1 && receiverTargets.Length == 1
+                                            && ordinary is null && workAdmitted is null && effectGroup is null && nextRecoveryEffect is null
+                                            && carrier is not { Count: > 0 }
+                                            && TryTraverseJoinedGuildWorkspaceRevalidation(member, joinedCall, receiverTarget, rootType,
+                                                operationId, active, out TraversalEvidence selfAdmittedEvidence))
+                                        {
+                                            targetEvidence = MergeEvidence(targetEvidence, selfAdmittedEvidence);
+
+                                            emittedEvidence = MergeEvidence(emittedEvidence, selfAdmittedEvidence);
+
+                                            continue;
+                                        }
+
                                         exactCallEdge = target is not null
                                             && strategyTargets.Length == 0
                                             && classDispatch is null
@@ -33804,7 +33851,8 @@ internal static partial class HostedGrimoireProducerInventory
                     }
 
                     if (argument.RefKind is not RefKind.Out
-                        && (RequiresExactValueProvenance(target, targetParameter)
+                        && (RequiresGuildWorkspaceRevalidationCaller(target, targetParameter)
+                            || RequiresExactValueProvenance(target, targetParameter)
                             || RequiresEnumArgumentSource(caller, argument.Expression, argument.RefKind,
                                 target, targetParameter, closedEnumBindings)
                             || argument.RefKind == RefKind.None
@@ -55653,13 +55701,19 @@ internal static partial class HostedGrimoireProducerInventory
         return candidates.Count switch { 0 => TypeKey(symbol.ContainingType!) + "." + symbol.Name, 1 => candidates.Single(), _ => "<ambiguous:" + string.Join(",", candidates.Order(StringComparer.Ordinal)) + ">" };
     }
 
-    internal static HostedProducerInventoryValidation Validate(IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, HostedProducerDiscovery<string> registrations, HostedProducerDiscovery<HostedProducerSite> discoveredSites)
+    internal static HostedProducerInventoryValidation Validate(IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog,
+        HostedProducerDiscovery<string> registrations, HostedProducerDiscovery<HostedProducerSite> discoveredSites, HostedProducerOperationEntry? joinedOperation = null)
     {
         List<HostedProducerInventoryDiagnostic> diagnostics = [.. registrations.Diagnostics, .. discoveredSites.Diagnostics];
 
         Compare(catalog.Select(static entry => entry.ServiceType), registrations.Items, "HOSTED_SERVICE", diagnostics);
 
         HostedProducerOperationEntry[] operations = [.. catalog.SelectMany(static service => service.Operations), .. nonHostedCatalog.Select(static chain => new HostedProducerOperationEntry(chain.ChainId, chain.SourcePath, chain.EnclosingType, chain.Member, chain.Authority, null, chain.Proof, chain.Sites))];
+
+        if (joinedOperation is not null)
+        {
+            operations = [.. operations, joinedOperation];
+        }
 
         HostedProducerSite[] sites = [.. operations.SelectMany(static entry => entry.Sites)];
 
@@ -55718,7 +55772,10 @@ internal static partial class HostedGrimoireProducerInventory
                 if (site.AuthorityOperationId.Length != 0)
                     ValidateManifestSiteFrontiers(site, sites, diagnostics);
 
-                if (!site.OperationId.StartsWith(operation.OperationId + "/", StringComparison.Ordinal) && site.OperationId != operation.OperationId || site.RootType != catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.ServiceType && !nonHostedCatalog.Any(chain => chain.ChainId == operation.OperationId && chain.EnclosingType == site.RootType))
+                if (!site.OperationId.StartsWith(operation.OperationId + "/", StringComparison.Ordinal) && site.OperationId != operation.OperationId
+                    || site.RootType != catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.ServiceType
+                        && !nonHostedCatalog.Any(chain => chain.ChainId == operation.OperationId && chain.EnclosingType == site.RootType)
+                        && (operation != joinedOperation || !IsGuildRevalidationChildSite(site)))
                 {
                     diagnostics.Add(new("HOSTED_SITE_ROOT_MISMATCH", SiteIdentity(site), "The site must belong to this exact operation and owner root."));
                 }

@@ -162,6 +162,27 @@ def reach_for(row, caller="src/Edited.cs", marker="Topology.Reconcile(", side="+
     )
 
 
+def joined_guild_authorizer_fixture():
+    guild = "RetroDownfall.Arcanum.Infrastructure.Guild."
+    authorizer = guild + "GuildQuestStore"
+    authorization = authorizer + ".AuthorizeLocalToolAsync"
+    caller = site("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.WorkspaceMutationTools.cs",
+                  root="GrimoireDatabaseHostedService",
+                  operation="RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync",
+                  member="RevalidateWorkspaceMutationToolAsync", callee=authorization,
+                  kind="JoinedSelfAdmission")._replace(enclosing_type=authorizer,
+                      member_identity="M:" + authorizer + ".RevalidateWorkspaceMutationToolAsync("
+                      + guild + "GuildChildToolAdmission,System.Threading.CancellationToken)",
+                      syntax_sha256="E219862A30D013CCD1844F1085A719C8B2AF0DC565849ECA438BA9B1B65E36C5")
+    work = site("src/SignetAuthority.cs", member="WithInstallationAsync", root=authorizer, operation=authorization,
+                kind="EffectFrontier", callee=ACQUISITION)
+    work = work._replace(work=work.capsule_id, registered_root_work=work.capsule_id, admitted_work_kind="GuildStorage")
+    child = site("src/GuildQuestStore.cs", member="ReadWithinAsync", root=authorizer, operation=authorization,
+                 callee="System.Data.Common.DbCommand.ExecuteScalarAsync", kind="DatabaseAccess",
+                 work=work.capsule_id)._replace(registered_root_work=work.capsule_id)
+    return caller, work, child
+
+
 class ClassifyManifestDiffTests(unittest.TestCase):
     def test_a_capsule_id_is_the_sha256_of_the_site_columns_the_checker_hashes(self) -> None:
         # Every Work and Effect column of the committed manifest names the capsule of another row of the same manifest. That
@@ -185,6 +206,52 @@ class ClassifyManifestDiffTests(unittest.TestCase):
         rows = [site("src/A.cs"), site("src/B.cs", member="Other")]
 
         self.assertEqual({}, classify(manifest(*rows), manifest(*rows)))
+
+    def test_joined_guild_authorizer_is_a_named_new_root_with_exact_link_and_own_work(self) -> None:
+        caller, work, child = joined_guild_authorizer_fixture()
+        committed = manifest_v2(caller._replace(kind="FileSystemRead", callee="System.IO.File.Exists"))
+        candidate = manifest_v2(*committed.rows, caller, work, child)
+
+        changes = classify(committed, candidate, parity=committed)
+
+        self.assertEqual("n", changes[("+", work)].label)
+        self.assertEqual("n", changes[("+", child)].label)
+
+        invariant = next(check for check in CLASSIFIER.check_invariants(committed, candidate)
+                         if check.name == "joined-guild-authorization")
+        self.assertEqual([], invariant.violations)
+
+    def test_joined_guild_authorizer_refuses_orphan_links_foreign_sites_and_unowned_children(self) -> None:
+        caller, work, child = joined_guild_authorizer_fixture()
+        caller_read = caller._replace(kind="FileSystemRead", callee="System.IO.File.Exists")
+        committed = manifest_v2(caller_read)
+        caller_work = work._replace(root_type=caller.root_type, authority_operation_id=caller.authority_operation_id)
+
+        cases = (
+            (work, child),
+            (caller,),
+            (caller, caller, work, child),
+            (caller._replace(root_type="Other", authority_operation_id="Other.Start"), work, child),
+            (caller._replace(work=caller_work.capsule_id, registered_root_work=caller_work.capsule_id), caller_work, work, child),
+            (caller._replace(callee="Other.Auth"), work, child),
+            (caller._replace(source_path="src/Other.cs"), work, child),
+            (caller._replace(syntax_sha256="F" * 64), work, child),
+            (caller, work._replace(admitted_work_kind="LongRestSweep"), child),
+            (caller, work, child._replace(work="-")),
+            (caller, work, child._replace(registered_root_work="unresolved")),
+            (caller, work, child._replace(effect="outside")),
+            (caller, work, child._replace(kind="ProviderCall")),
+            (caller, work, child._replace(kind="FileSystemEffect")),
+            (caller, work, child._replace(callee="System.Data.Common.DbCommand.ExecuteNonQueryAsync")),
+        )
+
+        for rows in cases:
+            with self.subTest(rows=rows):
+                candidate = manifest_v2(*committed.rows, *rows)
+                invariant = next(check for check in CLASSIFIER.check_invariants(committed, candidate)
+                                 if check.name == "joined-guild-authorization")
+                self.assertTrue(invariant.violations)
+                self.assertNotIn(work.root, CLASSIFIER.reviewed_new_root_keys(candidate))
 
     def test_a_row_whose_own_site_is_in_an_edited_source_is_a(self) -> None:
         added = site("src/Edited.cs")

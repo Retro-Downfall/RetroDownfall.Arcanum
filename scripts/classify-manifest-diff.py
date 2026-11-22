@@ -1932,7 +1932,7 @@ def classify(
 
     committed_roots = {row.root for row in committed.rows}
 
-    reviewed_new_roots = {(entry.root_type, entry.operation) for entry in NEW_ROOTS}
+    reviewed_new_roots = reviewed_new_root_keys(regenerated)
 
     for side, row in delta:
         manifest = regenerated if side == "+" else committed
@@ -2066,6 +2066,29 @@ class NewRoot:
     root_type: str
     operation: str  # the authority operation id without the digest a selection root carries
     reason: str
+
+
+JOINED_GUILD_AUTHORIZER = (
+    "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestStore",
+    "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestStore.AuthorizeLocalToolAsync",
+)
+
+JOINED_GUILD_AUTHORIZER_LINK = "B9F4FB9A560B202E3A0075E2BB1289E711989A649051111FEFA7656124FFEDC2"
+
+JOINED_GUILD_WORK_ACQUISITION = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease"
+
+JOINED_GUILD_CONNECTION_ROUTE = "RetroDownfall.Arcanum.Infrastructure.Data.GrimoireOrdinaryConnectionFactory.OpenFreshAsync"
+
+JOINED_GUILD_DATABASE_CALLEES = frozenset({
+    "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync",
+    "Microsoft.Data.Sqlite.SqliteConnection.BeginTransaction",
+    "Microsoft.Data.Sqlite.SqliteConnection.ClearPool",
+    "System.Data.Common.DbCommand.ExecuteReaderAsync",
+    "System.Data.Common.DbCommand.ExecuteScalarAsync",
+    "System.Data.Common.DbConnection.CloseAsync",
+    "System.Data.Common.DbDataReader.ReadAsync",
+    "System.Data.Common.DbTransaction.CommitAsync",
+})
 
 
 # The roots a regeneration may add besides the Long Rest roots. Each is an exact reviewed catalog entry, declared
@@ -2254,6 +2277,52 @@ def selection_root(row: Row) -> tuple[str, str]:
     return (row.root_type, row.authority_operation_id.split("~")[0])
 
 
+def describe(row: Row) -> str:
+    return f"{row.root_type}|{row.authority_operation_id}|{row.callee}|{row.member}"
+
+
+def joined_guild_authorization_violations(manifest: Manifest) -> list[str]:
+    """Require the reviewed joined call and the canonical child's independently acquired Work."""
+    links = [row for row in manifest.rows if row.kind == "JoinedSelfAdmission"]
+    child = [row for row in manifest.rows if row.root == JOINED_GUILD_AUTHORIZER]
+    violations: list[str] = []
+
+    if bool(links) != bool(child):
+        violations.append("the joined Guild authorization root and its caller links must both be present")
+
+    caller_roots = {row.root for row in manifest.rows if row.kind != "JoinedSelfAdmission"}
+    link_counts = collections.Counter(row.root for row in links)
+    for row in links:
+        if (row.root == JOINED_GUILD_AUTHORIZER or row.root not in caller_roots or link_counts[row.root] != 1
+                or row.callee != JOINED_GUILD_AUTHORIZER[1] or row.capsule_id != JOINED_GUILD_AUTHORIZER_LINK
+                or row.references or row.admitted_work_kind != "-"):
+            violations.append(describe(row) + ": not an exact joined Guild revalidation call in its caller root without a borrowed frontier")
+
+    own_work = collections.Counter(row.capsule_id for row in child
+        if row.kind == "EffectFrontier" and row.callee == JOINED_GUILD_WORK_ACQUISITION
+        and row.work == row.registered_root_work == row.capsule_id
+        and row.admitted_work_kind == "GuildStorage" and row.effect == "-")
+
+    for row in child:
+        allowed = (row.kind == "FileSystemRead"
+            or row.kind == "DatabaseAccess" and row.callee in JOINED_GUILD_DATABASE_CALLEES
+            or row.kind == "OrdinaryConnectionRoute" and row.callee == JOINED_GUILD_CONNECTION_ROUTE
+            or row.kind == "EffectFrontier" and own_work[row.capsule_id] == 1)
+
+        if (not allowed or row.effect != "-" or row.work != row.registered_root_work
+                or own_work[row.work] != 1 or unresolved_references(manifest, row)):
+            violations.append(describe(row) + ": canonical Guild authorization requires its own exact GuildStorage Work and reviewed site kinds")
+
+    return violations
+
+
+def reviewed_new_root_keys(manifest: Manifest) -> set[tuple[str, str]]:
+    roots = {(entry.root_type, entry.operation) for entry in NEW_ROOTS}
+    if any(row.root == JOINED_GUILD_AUTHORIZER for row in manifest.rows) and not joined_guild_authorization_violations(manifest):
+        roots.add(JOINED_GUILD_AUTHORIZER)
+    return roots
+
+
 def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[Labelled] | None = None,
                      parity: Manifest | None = None) -> list[Invariant]:
     """The facts about a regeneration that hold whatever its rows are labelled."""
@@ -2268,7 +2337,7 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
     # unframed ProviderCall rows are held to the reviewed list below instead of to the committed manifest. The exemption ends with the
     # regeneration that commits the root: once the committed manifest holds it, an unframed row it gains is held to the committed
     # manifest like the row of any other root.
-    new_root_keys = {(entry.root_type, entry.operation) for entry in NEW_ROOTS}
+    new_root_keys = reviewed_new_root_keys(regenerated)
 
     old_roots = {row.root for row in committed.rows}
 
@@ -2392,9 +2461,6 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
         if is_long_rest_root(row.root) and row.kind == "ProviderCall" and row.root not in handoff_roots
     ]
 
-    def describe(row: Row) -> str:
-        return f"{row.root_type}|{row.authority_operation_id}|{row.callee}|{row.member}"
-
     return [
         Invariant(
             "provider-call-frames",
@@ -2423,6 +2489,11 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
             "long-rest-structure",
             "the Long Rest roots admit the Long Rest kind and only the handoff root reaches a provider",
             long_rest_structure,
+        ),
+        Invariant(
+            "joined-guild-authorization",
+            "the exact joined caller binds the Guild authorizer with its own GuildStorage Work and no external effects",
+            joined_guild_authorization_violations(regenerated),
         ),
         Invariant(
             "handoff-binding",

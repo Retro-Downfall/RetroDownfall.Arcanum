@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static class HostedProducerRootWorkers
@@ -65,13 +67,81 @@ internal static class HostedProducerRootWorkers
         _ => throw new ArgumentException("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS must be exactly 1, 2 or 3."),
     };
 
-    internal static HostedProducerAnalysisMetrics MergeMetrics(IReadOnlyList<HostedProducerAnalysisMetrics> metrics)
+    private static HostedProducerAnalysisMetrics CompleteWorkerMetrics(HostedProducerDiscovery<HostedProducerSite> work)
     {
-        if (metrics.SelectMany(static metric => metric.RootTraversals)
-            .GroupBy(static root => (root.RootType, root.RootOperation)).Any(static family => family.Count() != 1))
+        HostedProducerAnalysisMetrics metrics = work.AnalysisMetrics
+            ?? throw new InvalidOperationException("A traversal worker did not produce its metrics.");
+
+        if (metrics.RootTraversals.GroupBy(static root => (root.RootType, root.RootOperation))
+            .Any(static family => family.Count() != 1))
         {
-            throw new InvalidOperationException("A traversal budget family was split across workers.");
+            throw new InvalidOperationException("A traversal worker reported a family more than once.");
         }
+
+        HostedProducerRootTraversalMetric[] joined = [.. metrics.RootTraversals.Where(static root => root.SelfAdmittedWorkKind.HasValue
+            || HostedGrimoireProducerInventory.IsGuildRevalidationChildRoot(root.RootType, root.RootOperation))];
+
+        HostedProducerSite[] links = [.. work.Items.Where(static site => site.Kind == HostedProducerSiteKind.JoinedSelfAdmission)];
+
+        bool hasChild = work.Items.Any(HostedGrimoireProducerInventory.IsGuildRevalidationChildSite);
+
+        if (links.Length == 0 && !hasChild && joined.Length == 0)
+        {
+            return metrics;
+        }
+
+        if (links.Length == 0 || !hasChild
+            || !links.All(HostedGrimoireProducerInventory.IsGuildRevalidationJoinedEdge)
+            || joined is not [HostedProducerRootTraversalMetric
+                {
+                    SelfAdmittedWorkKind: GrimoireWorkKind.GuildStorage, TraversalCalls: > 0, AnalyzedStates: > 0,
+                } admitted]
+            || !HostedGrimoireProducerInventory.IsGuildRevalidationChildRoot(admitted.RootType, admitted.RootOperation))
+        {
+            throw new InvalidOperationException("A traversal worker reported incomplete or mismatched joined GuildStorage evidence.");
+        }
+
+        return metrics;
+    }
+
+    private static HostedProducerRootTraversalMetric MergeRootTraversal(
+        IGrouping<(string RootType, string RootOperation), HostedProducerRootTraversalMetric> family, int limit)
+    {
+        HostedProducerRootTraversalMetric first = family.First();
+
+        if (!first.SelfAdmittedWorkKind.HasValue)
+        {
+            return family.Count() == 1
+                ? first
+                : throw new InvalidOperationException("A traversal budget family was split across workers.");
+        }
+
+        // Count repeated work on different workers against the same whole-operation hard cap.
+        long total = family.Sum(static metric => (long)metric.AnalyzedStates);
+
+        if (total > limit)
+        {
+            throw new InvalidOperationException($"HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED: {first.RootOperation} exceeded {limit} aggregate states.");
+        }
+
+        return first with
+        {
+            TraversalCalls = family.Sum(static metric => metric.TraversalCalls),
+            AnalyzedStates = (int)total,
+            Elapsed = TimeSpan.FromTicks(family.Sum(static metric => metric.Elapsed.Ticks)),
+        };
+    }
+
+    internal static HostedProducerAnalysisMetrics MergeMetrics(
+        IReadOnlyList<HostedProducerDiscovery<HostedProducerSite>> workers, int maximumAnalyzedStatesPerRoot)
+    {
+        HostedProducerAnalysisMetrics[] metrics = [.. workers.Select(CompleteWorkerMetrics)];
+
+        HostedProducerRootTraversalMetric[] rootTraversals = [.. metrics.SelectMany(static metric => metric.RootTraversals)
+            .GroupBy(static metric => (metric.RootType, metric.RootOperation))
+            .OrderBy(static family => family.Key.RootType, StringComparer.Ordinal)
+            .ThenBy(static family => family.Key.RootOperation, StringComparer.Ordinal)
+            .Select(family => MergeRootTraversal(family, maximumAnalyzedStatesPerRoot))];
 
         return new(
             metrics.SelectMany(static metric => metric.RecoveryConditions)
@@ -152,16 +222,7 @@ internal static class HostedProducerRootWorkers
                     group.Key,
                     group.Sum(static item => item.ResolutionRequests),
                     group.Sum(static item => item.ResolutionBuilds))).ToArray(),
-            metrics.SelectMany(static metric => metric.RootTraversals)
-                .GroupBy(static item => (item.RootType, item.RootOperation))
-                .OrderBy(static group => group.Key.RootType, StringComparer.Ordinal)
-                .ThenBy(static group => group.Key.RootOperation, StringComparer.Ordinal)
-                .Select(static group => new HostedProducerRootTraversalMetric(
-                    group.Key.RootType,
-                    group.Key.RootOperation,
-                    group.Sum(static item => item.TraversalCalls),
-                    group.Sum(static item => item.AnalyzedStates),
-                    TimeSpan.FromTicks(group.Sum(static item => item.Elapsed.Ticks)))).ToArray(),
+            rootTraversals,
             metrics.SelectMany(static metric => metric.PublicationRegions)
                 .GroupBy(static item => item.Member)
                 .OrderBy(static group => group.Key, StringComparer.Ordinal)
