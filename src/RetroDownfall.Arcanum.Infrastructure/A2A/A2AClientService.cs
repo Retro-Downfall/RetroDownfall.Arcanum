@@ -1735,10 +1735,6 @@ public sealed partial class A2AClientService : IA2AClientService
             ? [path]
             : [WellKnownAgentCardPath, ArcanumRuntimeDefaults.Conclave.A2A.ServerPath + "/agent-card"];
 
-        // Discovery URLs can come from multiple dispatch callers. Attach a credential only when the
-        // allowlist vouches for the target. CreateOutboundClient owns that decision for every caller.
-        using HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist, MaxAgentCardBytes, out bool credentialAttached);
-
         Exception? lastFailure = null;
 
         foreach (string candidate in candidatePaths)
@@ -1747,10 +1743,8 @@ public sealed partial class A2AClientService : IA2AClientService
             {
                 // origin + candidate rather than a relative-URI resolve: a path that begins with "//" would
                 // otherwise be read as a network-path reference and name a different host.
-                AgentCard card = await FetchAgentCardAsync(httpClient, new Uri(origin + candidate), cancellationToken, guildDiscovery, discoveryAdmission)
-                    .ConfigureAwait(false);
-
-                ObservedCard observation = new(card, credentialAttached && HasPortalCapability(card, discoveryUrl));
+                ObservedCard observation = await FetchAgentCardAsync(discoveryUrl, allowlist, new Uri(origin + candidate),
+                    cancellationToken, guildDiscovery, discoveryAdmission).ConfigureAwait(false);
 
                 CacheCard(discoveryUrl, observation, now);
 
@@ -1796,22 +1790,26 @@ public sealed partial class A2AClientService : IA2AClientService
     /// The SDK's card resolver reads the response as a stream with no limit, which is why the cap lives
     /// here rather than on <see cref="HttpClient.MaxResponseContentBufferSize"/> alone.
     /// </remarks>
-    private static async Task<AgentCard> FetchAgentCardAsync(HttpClient httpClient, Uri cardUri, CancellationToken cancellationToken,
-        bool guildDiscovery, IA2AGuildDiscoveryAdmission? admission)
+    private async Task<ObservedCard> FetchAgentCardAsync(string discoveryUrl, string[] allowlist, Uri cardUri,
+        CancellationToken cancellationToken, bool guildDiscovery, IA2AGuildDiscoveryAdmission? admission)
     {
         if (guildDiscovery)
         {
             if (admission is null) throw new InvalidOperationException("Guild discovery requires physical admission.");
 
-            return await admission.AdmitAsync(token => ReadAgentCardAsync(httpClient, cardUri, token), cancellationToken)
+            return await admission.AdmitAsync(token => ReadAgentCardAsync(discoveryUrl, allowlist, cardUri, token), cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        return await ReadAgentCardAsync(httpClient, cardUri, cancellationToken).ConfigureAwait(false);
+        return await ReadAgentCardAsync(discoveryUrl, allowlist, cardUri, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<AgentCard> ReadAgentCardAsync(HttpClient httpClient, Uri cardUri, CancellationToken cancellationToken)
+    private async Task<ObservedCard> ReadAgentCardAsync(string discoveryUrl, string[] allowlist, Uri cardUri,
+        CancellationToken cancellationToken)
     {
+        // The attempt owns both construction and disposal. Only the configured target may receive credentials.
+        using HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist, MaxAgentCardBytes, out bool credentialAttached);
+
         using HttpResponseMessage response = await httpClient.GetAsync(cardUri, HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
 
@@ -1840,11 +1838,13 @@ public sealed partial class A2AClientService : IA2AClientService
             buffer.Write(chunk, 0, read);
         }
 
-        return JsonSerializer.Deserialize(
+        AgentCard card = JsonSerializer.Deserialize(
                 buffer.GetBuffer().AsSpan(0, (int)buffer.Length),
                 (System.Text.Json.Serialization.Metadata.JsonTypeInfo<AgentCard>)
                     A2AJsonUtilities.DefaultOptions.GetTypeInfo(typeof(AgentCard)))
             ?? throw new A2AException("The remote agent served an empty Agent Card.");
+
+        return new(card, credentialAttached && HasPortalCapability(card, discoveryUrl));
     }
 
     /// <summary>

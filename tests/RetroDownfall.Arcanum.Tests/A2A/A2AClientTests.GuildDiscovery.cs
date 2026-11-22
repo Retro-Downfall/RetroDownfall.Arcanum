@@ -1,7 +1,9 @@
 using System.Net;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
@@ -20,7 +22,7 @@ public sealed partial class A2AClientTests
 
         DiscoveryAdmissionContent content = new(bytes, () => admitted);
 
-        RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content }));
+        using RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content }));
 
         ArcanumSettings settings = EnabledSettings([DiscoveryUrl]);
 
@@ -28,7 +30,10 @@ public sealed partial class A2AClientTests
 
         DiscoveryAdmissionDns dns = new(DeterministicDns(), () => admitted);
 
-        A2AClientService client = CreateClient(handler, settings, dns: dns);
+        DiscoveryAdmissionClientFactory factory = new(handler, () => admitted);
+
+        A2AClientService client = new(factory, new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<A2AClientService>.Instance, dns);
 
         var result = await client.DiscoverGuildCardAsync(DiscoveryUrl, default, new DiscoveryAdmission(() =>
         {
@@ -42,6 +47,8 @@ public sealed partial class A2AClientTests
         Assert.True(content.ReadUnderAdmission);
 
         Assert.True(content.DisposedUnderAdmission);
+
+        Assert.Equal((true, true), Assert.Single(factory.CardLifetimes));
 
         Assert.True(admissions >= 3, "Discovery DNS, the card response, and advertised interface DNS require separate admissions.");
 
@@ -66,6 +73,59 @@ public sealed partial class A2AClientTests
         Assert.Equal(ErrorCodes.Guild.InvalidRequest, result.Error.Code);
 
         Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Guild_card_client_is_disposed_inside_the_attempt_on_http_failure_or_cancellation(bool cancelled)
+    {
+        using CancellationTokenSource stop = new();
+
+        using RecordingHttpHandler handler = new(_ =>
+        {
+            if (!cancelled) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway));
+
+            stop.Cancel();
+
+            return Task.FromCanceled<HttpResponseMessage>(stop.Token);
+        });
+
+        ArcanumSettings settings = EnabledSettings([DiscoveryUrl]);
+
+        settings.Features.Guild = true;
+
+        bool admitted = false;
+
+        DiscoveryAdmissionClientFactory factory = new(handler, () => admitted);
+
+        A2AClientService client = new(factory, new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<A2AClientService>.Instance, DeterministicDns());
+
+        DiscoveryAdmission gate = new(() => admitted = true, () => admitted = false);
+
+        if (cancelled)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.DiscoverGuildCardAsync(DiscoveryUrl, stop.Token, gate));
+
+            Assert.Single(handler.Requests);
+
+            Assert.Single(factory.CardLifetimes);
+        }
+        else
+        {
+            var result = await client.DiscoverGuildCardAsync(DiscoveryUrl, stop.Token, gate);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
+
+            Assert.Equal(2, handler.Requests.Count);
+
+            Assert.Equal(2, factory.CardLifetimes.Count);
+        }
+
+        Assert.All(factory.CardLifetimes, static lifetime => Assert.Equal((true, true), lifetime));
     }
 
     [Fact]
@@ -139,6 +199,32 @@ public sealed partial class A2AClientTests
             AllRequestsAdmitted &= admitted();
 
             return inner.GetHostAddressesAsync(host, cancellationToken);
+        }
+    }
+
+    private sealed class DiscoveryAdmissionClientFactory(HttpMessageHandler handler, Func<bool> admitted) : IHttpClientFactory
+    {
+        internal List<(bool CreatedUnderAdmission, bool DisposedUnderAdmission)> CardLifetimes { get; } = [];
+
+        public HttpClient CreateClient(string name)
+        {
+            bool createdUnderAdmission = admitted();
+
+            return new DiscoveryAdmissionClient(handler, bufferSize =>
+            {
+                if (bufferSize == A2AClientService.MaxAgentCardBytes) CardLifetimes.Add((createdUnderAdmission, admitted()));
+            });
+        }
+
+        private sealed class DiscoveryAdmissionClient(HttpMessageHandler handler, Action<long> recordDispose)
+            : HttpClient(handler, disposeHandler: false)
+        {
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) recordDispose(MaxResponseContentBufferSize);
+
+                base.Dispose(disposing);
+            }
         }
     }
 
