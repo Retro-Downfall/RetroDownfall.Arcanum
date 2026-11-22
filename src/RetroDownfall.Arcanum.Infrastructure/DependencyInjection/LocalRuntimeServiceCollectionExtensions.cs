@@ -12,7 +12,7 @@ public static class LocalRuntimeServiceCollectionExtensions
     {
         services.TryAddEnumerable(ServiceDescriptor.Singleton<ILocalRuntimeAdapter, OllamaRuntimeAdapter>());
 
-        services.AddHttpClient(OllamaRuntimeAdapter.HttpClientName, static client => client.Timeout = TimeSpan.FromMinutes(5))
+        services.AddHttpClient(OllamaRuntimeAdapter.HttpClientName, static client => client.Timeout = Timeout.InfiniteTimeSpan)
             .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler());
 

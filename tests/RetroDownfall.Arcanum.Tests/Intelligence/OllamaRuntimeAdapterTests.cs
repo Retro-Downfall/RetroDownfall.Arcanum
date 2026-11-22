@@ -1,8 +1,10 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.LocalRuntimes;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -13,17 +15,35 @@ public sealed class OllamaRuntimeAdapterTests
     private static LocalRuntimeSettings Runtime => new() { Id = "desktop", Adapter = "ollama", ManagementEndpoint = "http://localhost:11434/proxy" };
 
     [Fact]
+    public void Named_management_transport_uses_the_public_operations_deadline()
+    {
+        ServiceCollection services = new();
+
+        services.AddArcanumLocalRuntimeAdapters();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        using HttpClient client = provider.GetRequiredService<IHttpClientFactory>().CreateClient(OllamaRuntimeAdapter.HttpClientName);
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
+    }
+
+    [Fact]
     public async Task Inspection_reads_version_and_loaded_models_without_claiming_KV_support()
     {
         List<string> paths = [];
+
+        List<CancellationToken> bodyTokens = [];
 
         using Handler handler = new(request =>
         {
             paths.Add(request.RequestUri!.AbsolutePath);
 
-            return Json(request.RequestUri.AbsolutePath.EndsWith("/version", StringComparison.Ordinal)
+            string body = request.RequestUri.AbsolutePath.EndsWith("/version", StringComparison.Ordinal)
                 ? """{"version":"0.40.16"}"""
-                : """{"models":[{"name":"primary:latest","digest":"abc","expires_at":"2026-11-15T12:00:00Z","size":123}]}""");
+                : """{"models":[{"name":"primary:latest","digest":"abc","expires_at":"2026-11-15T12:00:00Z","size":123}]}""";
+
+            return new(HttpStatusCode.OK) { Content = new TokenTrackingBody(body, bodyTokens.Add) };
         });
 
         OllamaRuntimeAdapter adapter = new(new FakeHttpClientFactory(handler));
@@ -33,6 +53,12 @@ public sealed class OllamaRuntimeAdapterTests
         Assert.True(result.IsSuccess);
 
         Assert.Equal(["/proxy/api/version", "/proxy/api/ps"], paths);
+
+        Assert.Equal(2, bodyTokens.Count);
+
+        Assert.True(bodyTokens[0].CanBeCanceled);
+
+        Assert.Equal(bodyTokens[0], bodyTokens[1]);
 
         Assert.Equal("0.40.16", result.Value.RuntimeVersion);
 
@@ -149,17 +175,69 @@ public sealed class OllamaRuntimeAdapterTests
     [Fact]
     public async Task Inspection_shares_one_deadline_across_both_metadata_requests()
     {
-        using DelayedHandler handler = new();
+        using CompletedBodyUntilCancellation version = new("""{"version":"test-version"}""");
 
-        OllamaRuntimeAdapter adapter = new(new FakeHttpClientFactory(handler), requestTimeout: TimeSpan.FromMilliseconds(600));
+        using Handler handler = new(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/proxy/api/version" => new(HttpStatusCode.OK) { Content = version },
+            "/proxy/api/ps" => Json("""{"models":[]}"""),
+            _ => throw new InvalidOperationException("Unexpected metadata request."),
+        });
 
-        var result = await adapter.InspectAsync(Runtime, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        OllamaRuntimeAdapter adapter = new(new FakeHttpClientFactory(handler), requestTimeout: TimeSpan.FromSeconds(1));
+
+        var result = await adapter.InspectAsync(Runtime, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.True(version.ReadToEnd);
+
+        Assert.True(version.DisposalObservedCancellation);
 
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.LocalRuntime.Timeout, result.Error.Code);
+    }
 
-        Assert.Equal(2, handler.Requests);
+    [Theory]
+    [InlineData("deadline")]
+    [InlineData("caller")]
+    [InlineData("both")]
+    public async Task Retention_honors_management_timeout_and_caller_cancellation_after_reading_the_body(string cancellation)
+    {
+        using CancellationTokenSource caller = new();
+
+        using CompletedBodyUntilCancellation body = new("""{"model":"primary","done":true,"done_reason":"load"}""",
+            beforeDispose: cancellation == "caller" ? caller.Cancel : null,
+            afterCancellation: cancellation == "both" ? caller.Cancel : null);
+
+        using Handler handler = new(request =>
+        {
+            Assert.Equal("/proxy/api/generate", request.RequestUri!.AbsolutePath);
+
+            return new(HttpStatusCode.OK) { Content = body };
+        });
+
+        OllamaRuntimeAdapter adapter = new(new FakeHttpClientFactory(handler),
+            requestTimeout: cancellation == "caller" ? TimeSpan.FromMinutes(1) : TimeSpan.FromSeconds(1));
+
+        Task<Result> retention = adapter.RetainModelAsync(Runtime, "primary", TimeSpan.FromMinutes(5), caller.Token)
+            .WaitAsync(TimeSpan.FromSeconds(15));
+
+        if (cancellation != "deadline")
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => retention);
+        }
+        else
+        {
+            Result result = await retention;
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.LocalRuntime.Timeout, result.Error.Code);
+        }
+
+        Assert.True(body.ReadToEnd);
+
+        Assert.True(body.DisposalObservedCancellation);
     }
 
     [Fact]
@@ -181,19 +259,63 @@ public sealed class OllamaRuntimeAdapterTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(respond(request));
     }
 
-    private sealed class DelayedHandler : HttpMessageHandler
+    private sealed class TokenTrackingBody(string json, Action<CancellationToken> observeToken) : StringContent(json, Encoding.UTF8, "application/json")
     {
-        public int Requests { get; private set; }
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken)
         {
-            Requests++;
+            observeToken(cancellationToken);
 
-            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+            return base.CreateContentReadStreamAsync(cancellationToken);
+        }
+    }
 
-            return Json(request.RequestUri!.AbsolutePath.EndsWith("/version", StringComparison.Ordinal)
-                ? """{"version":"test-version"}"""
-                : """{"models":[]}""");
+    private sealed class CompletedBodyUntilCancellation(string json, Action? beforeDispose = null,
+        Action? afterCancellation = null) : HttpContent
+    {
+        internal bool ReadToEnd { get; private set; }
+
+        internal bool DisposalObservedCancellation { get; private set; }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+
+            return false;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
+
+        protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<Stream>(new DeadlineStream(this, Encoding.UTF8.GetBytes(json), cancellationToken, beforeDispose, afterCancellation));
+
+        private sealed class DeadlineStream(CompletedBodyUntilCancellation owner, byte[] bytes, CancellationToken operationToken,
+            Action? beforeDispose, Action? afterCancellation) : MemoryStream(bytes, writable: false)
+        {
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                int read = await base.ReadAsync(buffer, cancellationToken);
+
+                owner.ReadToEnd |= read == 0;
+
+                return read;
+            }
+
+            public override async ValueTask DisposeAsync()
+            {
+                beforeDispose?.Invoke();
+
+                TaskCompletionSource cancellation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                using CancellationTokenRegistration registration = operationToken.Register(() => cancellation.TrySetResult());
+
+                await cancellation.Task.WaitAsync(TimeSpan.FromSeconds(12));
+
+                owner.DisposalObservedCancellation = operationToken.IsCancellationRequested;
+
+                afterCancellation?.Invoke();
+
+                await base.DisposeAsync();
+            }
         }
     }
 

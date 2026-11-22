@@ -31,17 +31,28 @@ public sealed class OllamaRuntimeAdapter(IHttpClientFactory httpClientFactory, F
 
         if (!Valid(runtime)) return Result<LocalRuntimeInspection>.Failure(InvalidConfiguration());
 
+        return await RunWithManagementDeadlineAsync(
+            token => InspectCoreAsync(runtime, token), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Result<T>> RunWithManagementDeadlineAsync<T>(
+        Func<CancellationToken, Task<Result<T>>> operation, CancellationToken cancellationToken)
+    {
         using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         deadline.CancelAfter(_requestTimeout);
 
         try
         {
-            return await InspectCoreAsync(runtime, deadline.Token).ConfigureAwait(false);
+            Result<T> result = await operation(deadline.Token).ConfigureAwait(false);
+
+            deadline.Token.ThrowIfCancellationRequested();
+
+            return result;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return Result<LocalRuntimeInspection>.Failure(new(ErrorCodes.LocalRuntime.Timeout, "The runtime management request timed out."));
+            return Result<T>.Failure(new(ErrorCodes.LocalRuntime.Timeout, "The runtime management request timed out."));
         }
     }
 
@@ -84,8 +95,9 @@ public sealed class OllamaRuntimeAdapter(IHttpClientFactory httpClientFactory, F
 
         using HttpContent content = JsonContent.Create(body, OllamaRuntimeJsonContext.Default.OllamaRetentionRequest);
 
-        Result<OllamaRetentionResponse> result = await SendAsync(runtime, HttpMethod.Post, "api/generate", content,
-            OllamaRuntimeJsonContext.Default.OllamaRetentionResponse, cancellationToken).ConfigureAwait(false);
+        Result<OllamaRetentionResponse> result = await RunWithManagementDeadlineAsync(
+            token => SendAsync(runtime, HttpMethod.Post, "api/generate", content,
+                OllamaRuntimeJsonContext.Default.OllamaRetentionResponse, token), cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure) return Result.Failure(result.Error);
 
@@ -101,11 +113,7 @@ public sealed class OllamaRuntimeAdapter(IHttpClientFactory httpClientFactory, F
     private async Task<Result<T>> SendAsync<T>(LocalRuntimeSettings runtime, HttpMethod method, string path, HttpContent? content,
         JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
     {
-        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        deadline.CancelAfter(_requestTimeout);
-
-        CancellationToken operationToken = deadline.Token;
+        cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
@@ -125,14 +133,14 @@ public sealed class OllamaRuntimeAdapter(IHttpClientFactory httpClientFactory, F
 
             using HttpClient client = httpClientFactory.CreateClient(HttpClientName);
 
-            using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, operationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
                 return Result<T>.Failure(new(ErrorCodes.LocalRuntime.HttpFailure, "The runtime management request did not return a successful HTTP status."));
 
             if (response.Content.Headers.ContentLength > ResponseLimitBytes) return Result<T>.Failure(InvalidResponse());
 
-            await using Stream stream = await response.Content.ReadAsStreamAsync(operationToken).ConfigureAwait(false);
+            await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
             using MemoryStream bytes = new();
 
@@ -140,7 +148,7 @@ public sealed class OllamaRuntimeAdapter(IHttpClientFactory httpClientFactory, F
 
             while (true)
             {
-                int read = await stream.ReadAsync(buffer.AsMemory(), operationToken).ConfigureAwait(false);
+                int read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
 
                 if (read == 0) break;
 
@@ -152,10 +160,6 @@ public sealed class OllamaRuntimeAdapter(IHttpClientFactory httpClientFactory, F
             T? value = JsonSerializer.Deserialize(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length)), typeInfo);
 
             return value is null ? Result<T>.Failure(InvalidResponse()) : Result<T>.Success(value);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return Result<T>.Failure(new(ErrorCodes.LocalRuntime.Timeout, "The runtime management request timed out."));
         }
         catch (Exception error) when (error is HttpRequestException or IOException or JsonException or FormatException)
         {
