@@ -738,59 +738,86 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         }
     }
 
-    [Fact]
-    public async Task Search_workspace_wire_and_model_budgets_preserve_valid_cumulative_truncation()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Search_workspace_wire_and_model_byte_limits_preserve_valid_cumulative_truncation(bool exceedsModelAllocation)
     {
+        const int modelAllocation = IntelligenceSettings.DefaultToolOutputCapBytes;
+
+        int lineLimit = exceedsModelAllocation ? McpSecurityLimits.MaxJsonRpcLineBytes : 65_536;
+
+        string preview = new('é', exceedsModelAllocation ? 1_000 : 96);
+
         _workspace.WriteFile(
             "many-search-results.txt",
             string.Join(
                 '\n',
                 Enumerable.Range(1, 500)
-                    .Select(static index =>
-                        $"needle {index:D3} {new string('x', 96)}")));
+                    .Select(index => $"needle {index:D3} {preview}")));
+
         IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
-
-            // Above the model budget rather than below it, because the second truncation is the whole
-            // point: a wire cap tighter than the budget the pipeline applies would leave the model
-            // step with nothing to do and the cumulative claim untested.
-            ToolOutputCapBytes = 16_384,
+            ToolOutputCapBytes = 2L * modelAllocation,
         };
+
         CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
         {
             Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
-                MaxPreviewChars = 128,
+                MaxPreviewChars = exceedsModelAllocation ? 1_024 : 128,
             },
         };
 
         await using TestMcpSession session = await CreateSessionAsync(
             intelligenceSettings: intelligenceSettings,
-            maxJsonRpcLineBytes: 65_536,
+            maxJsonRpcLineBytes: lineLimit,
             codingToolsSettings: codingTools);
 
-        McpToolsCallResultWire result = await session.CallToolAsync(
-            ToolRiskClassifier.SearchWorkspaceToolName,
-            JsonSerializer.SerializeToElement(
-                new SearchWorkspaceParams
-                {
-                    Pattern = "needle",
-                    Mode = "literal",
-                    CaseSensitive = true,
-                },
-                McpJsonSerializerContext.Default.SearchWorkspaceParams));
-        string wireText = Assert.Single(result.Content).Text;
+        long wireAllocation = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+            intelligenceSettings.ToolOutputCapBytes, lineLimit);
 
-        using JsonDocument wireJson = JsonDocument.Parse(wireText);
-        int wireRetained = wireJson.RootElement.GetProperty("matches").GetArrayLength();
-        int total = wireJson.RootElement.GetProperty("totalMatchCount").GetInt32();
+        async Task<string> SearchAsync(string? cursor = null)
+        {
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                ToolRiskClassifier.SearchWorkspaceToolName,
+                JsonSerializer.SerializeToElement(
+                    new SearchWorkspaceParams
+                    {
+                        Pattern = "needle",
+                        Mode = "literal",
+                        CaseSensitive = true,
+                        Cursor = cursor,
+                    },
+                    McpJsonSerializerContext.Default.SearchWorkspaceParams));
 
-        Assert.True(wireJson.RootElement.GetProperty("truncated").GetBoolean());
-        Assert.Equal(
-            total - wireRetained,
-            wireJson.RootElement.GetProperty("omittedMatchCount").GetInt32());
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text;
+
+            Assert.InRange((long)Encoding.UTF8.GetByteCount(text), 1L, wireAllocation);
+
+            return text;
+        }
+
+        static WorkspaceSearchToolResultEnvelope ReadPage(string text) => Assert.IsType<WorkspaceSearchToolResultEnvelope>(
+            JsonSerializer.Deserialize(text, McpJsonSerializerContext.Default.WorkspaceSearchToolResultEnvelope));
+
+        string wireText = await SearchAsync();
+
+        WorkspaceSearchToolResultEnvelope wirePage = ReadPage(wireText);
+
+        Assert.Equal("ok", wirePage.Status);
+
+        Assert.True(wirePage.Truncated);
+
+        Assert.NotEmpty(wirePage.Matches);
+
+        Assert.Equal(wirePage.TotalMatchCount - wirePage.Matches.Length, wirePage.OmittedMatchCount);
+
+        Assert.Equal(exceedsModelAllocation, Encoding.UTF8.GetByteCount(wireText) > modelAllocation);
 
         string modelText = ToolExecutionPipeline.MaterializeToolResultForModel(
             ToolRiskClassifier.SearchWorkspaceToolName,
@@ -799,15 +826,46 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
                 wireText),
             new ToolResultMaterializer());
 
-        using JsonDocument modelJson = JsonDocument.Parse(modelText);
-        int modelRetained = modelJson.RootElement.GetProperty("matches").GetArrayLength();
+        WorkspaceSearchToolResultEnvelope modelPage = ReadPage(modelText);
 
-        Assert.InRange(modelRetained, 1, wireRetained - 1);
-        Assert.Equal(total, modelJson.RootElement.GetProperty("totalMatchCount").GetInt32());
-        Assert.Equal(
-            total - modelRetained,
-            modelJson.RootElement.GetProperty("omittedMatchCount").GetInt32());
-        Assert.True(modelJson.RootElement.GetProperty("truncated").GetBoolean());
+        Assert.InRange(Encoding.UTF8.GetByteCount(modelText), 1, modelAllocation);
+
+        if (exceedsModelAllocation)
+        {
+            Assert.InRange(modelPage.Matches.Length, 1, wirePage.Matches.Length - 1);
+
+            Assert.Equal(wirePage.Matches[..modelPage.Matches.Length], modelPage.Matches);
+        }
+        else
+        {
+            Assert.Equal(wireText, modelText);
+        }
+
+        Assert.True(modelPage.Truncated);
+
+        Assert.Equal(wirePage.TotalMatchCount, modelPage.TotalMatchCount);
+
+        Assert.Equal(modelPage.TotalMatchCount - modelPage.Matches.Length, modelPage.OmittedMatchCount);
+
+        Assert.NotNull(modelPage.NextCursor);
+
+        Assert.Equal(modelPage.MatchCursors![^1], modelPage.NextCursor);
+
+        WorkspaceSearchToolResultEnvelope resumed = ReadPage(await SearchAsync(modelPage.NextCursor));
+
+        Assert.Equal("ok", resumed.Status);
+
+        Assert.NotEmpty(resumed.Matches);
+
+        WorkspaceSearchToolResultItem previous = modelPage.Matches[^1];
+
+        WorkspaceSearchToolResultItem next = resumed.Matches[0];
+
+        Assert.Equal(previous.Path, next.Path);
+
+        Assert.Equal(previous.Line + 1, next.Line);
+
+        Assert.Equal(previous.Column, next.Column);
     }
 
     [Fact]

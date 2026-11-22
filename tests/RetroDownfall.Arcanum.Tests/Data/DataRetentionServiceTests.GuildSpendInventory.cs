@@ -4,6 +4,7 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Guild;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Guild;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
@@ -110,7 +111,11 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_spend_refreshes"));
 
-        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=0"));
+        Assert.Equal(1, await CampaignScalarCountAsync("""
+            SELECT count(*) FROM guild_budget_effects
+            WHERE StateCode=2 AND UnknownUsd=0 AND UnknownTokens=0 AND KnownUsd='0'
+                AND UsdBound IS NOT NULL AND TokenBound IS NOT NULL AND ReservationId IS NULL
+            """));
 
         Assert.Equal(0, await CampaignScalarCountAsync("SELECT count(*) FROM guild_result_outbox WHERE DeliveryStateCode=1"));
 
@@ -380,33 +385,77 @@ public sealed partial class DataRetentionServiceTests
     {
         RequireSqlCipher();
 
-        // This negative case uses the existing schema-seeded physical-effect fixture.
+        // A previously bounded effect retains its own finite dimension even after retirement.
         await SeedGuildPhysicalRetentionAsync(2, copied: true, unknown: false, authentic: true,
-            unknownTokens: false, finiteUsd: !finiteTokens, finiteTokens: finiteTokens);
+            finiteUsd: !finiteTokens, finiteTokens: finiteTokens, historicalBounds: true);
 
-        await ExecuteAsync("""
+        await ClosePhysicalRetentionAccountForResetAsync();
+
+        DataRetentionPlan baseline = await CreateService().PlanAsync(new(DataRetentionOperation.FactoryReset));
+
+        Assert.Empty(baseline.Conflicts);
+
+        await RecordUnknownPhysicalUsageForResetAsync(finiteTokens);
+
+        DataRetentionPlan plan = await CreateService().PlanAsync(new(DataRetentionOperation.FactoryReset));
+
+        Assert.Contains(plan.Conflicts, conflict => conflict.Code == "Guild.ReconciliationRequired"
+            && conflict.ResourceId == "11111111-1111-1111-1111-111111111111");
+
+        var reset = await ReconcileFactoryResetV0Async(CreateService(), "guild-bounded-unknown-reset");
+
+        Assert.Equal(0, reset.Summary.Completed);
+
+        Assert.Equal(1, reset.Summary.Failed);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, reset.Operation.TerminalErrorCode);
+
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_budget_effects"));
+
+        Assert.Equal(2, await CampaignScalarCountAsync("SELECT count(*) FROM guild_budget_evidence"));
+
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM BillableOperations"));
+    }
+
+    [SkippableFact]
+    public async Task Factory_reset_accepts_unknown_usage_on_new_unmetered_effect()
+    {
+        RequireSqlCipher();
+
+        // A new effect can use a previously finite account without inheriting its old limits.
+        await SeedGuildPhysicalRetentionAsync(2, copied: true, unknown: false, authentic: true,
+            finiteUsd: true, finiteTokens: true);
+
+        await ClosePhysicalRetentionAccountForResetAsync();
+
+        await RecordUnknownPhysicalUsageForResetAsync(finiteTokens: false);
+
+        DataRetentionPlan plan = await CreateService().PlanAsync(new(DataRetentionOperation.FactoryReset));
+
+        Assert.Empty(plan.Conflicts);
+
+        var reset = await ReconcileFactoryResetV0Async(CreateService(), "guild-unmetered-unknown-reset");
+
+        Assert.Equal(1, reset.Summary.Completed);
+
+        Assert.Equal(0, reset.Summary.RequiresAttention);
+    }
+
+    private Task ClosePhysicalRetentionAccountForResetAsync() =>
+        ExecuteAsync("""
             INSERT INTO guild_result_receipts(QuestId,ResultId,Digest,OutcomeCode,NoDispatchProven,WorkStoppedProven,MutationId,AcceptedRevision,CreatedAtUtc)
             VALUES('11111111-1111-1111-1111-111111111111','99999999-9999-9999-9999-999999999999',zeroblob(32),5,0,1,
                 '88888888-8888-8888-8888-888888888888',1,'2000-01-01T00:00:00.0000000Z');
             UPDATE guild_budget_accounts SET Closed=1,SettlementReceiptId='99999999-9999-9999-9999-999999999999',Revision=2;
             """);
 
-        DataRetentionPlan baseline = await CreateService().PlanAsync(new(DataRetentionOperation.FactoryReset));
-
-        Assert.Empty(baseline.Conflicts);
-
-        await ExecuteAsync("""
+    private Task RecordUnknownPhysicalUsageForResetAsync(bool finiteTokens) =>
+        ExecuteAsync("""
             UPDATE guild_budget_effects SET UnknownUsd=@usd,UnknownTokens=@tokens,Revision=Revision+1;
             INSERT INTO guild_budget_evidence(ReceiptId,EffectId,Digest,KnownUsd,KnownTokens,UnknownUsd,UnknownTokens,Complete,NoDispatchProven,AppliedRevision)
             SELECT 'ABCDEF12-3456-4789-ABCD-EF1234567892',EffectId,zeroblob(32),KnownUsd,KnownTokens,UnknownUsd,UnknownTokens,1,0,Revision
             FROM guild_budget_effects;
             """, ("@usd", finiteTokens ? 0 : 1), ("@tokens", finiteTokens ? 1 : 0));
-
-        DataRetentionPlan plan = await CreateService().PlanAsync(new(DataRetentionOperation.FactoryReset));
-
-        Assert.Contains(plan.Conflicts, conflict => conflict.Code == "Guild.ReconciliationRequired"
-            && conflict.ResourceId == "11111111-1111-1111-1111-111111111111");
-    }
 
     [SkippableFact]
     public async Task Reset_lineage_child_lookup_uses_parent_index()

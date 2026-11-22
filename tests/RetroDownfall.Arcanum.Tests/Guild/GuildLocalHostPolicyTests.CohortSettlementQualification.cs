@@ -196,11 +196,20 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(4)]
-    [InlineData(3)]
-    [InlineData(1)]
-    public async Task Cohort_finalization_rechecks_live_reservation_even_when_settlement_epoch_is_unchanged(int disposition)
+    [InlineData(null, false)]
+    [InlineData(BudgetReservationStatus.UncertainPaid, false)]
+    [InlineData(BudgetReservationStatus.Expired, true)]
+    [InlineData(BudgetReservationStatus.Reconciled, true)]
+    public Task Cohort_finalization_rechecks_live_reservation_even_when_settlement_epoch_is_unchanged(
+        BudgetReservationStatus? replacementStatus, bool unknownUsage) =>
+        VerifyCohortProviderFinalizationAsync(historicalReservation: true, replacementStatus, unknownUsage);
+
+    [Fact]
+    public Task Cohort_finalizes_a_new_unmetered_provider_result_without_a_reservation() =>
+        VerifyCohortProviderFinalizationAsync(historicalReservation: false, replacementStatus: null, unknownUsage: false);
+
+    private static async Task VerifyCohortProviderFinalizationAsync(
+        bool historicalReservation, BudgetReservationStatus? replacementStatus, bool unknownUsage)
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
@@ -219,24 +228,28 @@ public sealed partial class GuildLocalHostPolicyTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(lease.Connection);
 
-        BudgetReservationService daily = new(db);
+        BudgetReservationService? daily = historicalReservation ? new(db) : null;
 
-        GuildQuestStore store = f.CreateDailyStore(daily);
+        GuildQuestStore store = daily is null ? f.Store : f.CreateDailyStore(daily);
 
         execution = new(store, execution.Driver, execution.Dispatch);
 
-        GuildBudgetEffectRequest effect = new(Guid.NewGuid(), member.Quest.Id, execution.Dispatch.DispatchId,
-            member.Quest.RunId, GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, 1m, 1000);
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        bool unknown = disposition is 1 or 3;
+        BudgetReservation? reservation = historicalReservation
+            ? await LegacyBudgetFixture.SeedAsync(db, new(member.Quest.RunId, 1m, now.AddHours(1),
+                BudgetReservationService.UtcBudgetPeriod(now)))
+            : null;
+
+        GuildBudgetEffectRequest effect = new(Guid.NewGuid(), member.Quest.Id, execution.Dispatch.DispatchId,
+            member.Quest.RunId, GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), reservation?.Id, reservation?.ReservedUsd,
+            historicalReservation ? 1000L : null);
 
         BillableOperationRecord bill = new(member.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
-            now, now, 100, 20, 5, 40, "{}", unknown ? 0m : .25m,
-            unknown ? BillableOperationStatus.Failed : BillableOperationStatus.Completed, "request-id");
+            now, now, 100, 20, 5, 40, "{}", historicalReservation && !unknownUsage ? .25m : 0m,
+            unknownUsage ? BillableOperationStatus.Failed : BillableOperationStatus.Completed, "request-id");
 
-        var sent = unknown
+        var sent = unknownUsage || reservation is null
             ? await store.ExecuteAndSettleProviderResponseAsync(execution, daily, effect,
                 _ => Task.FromResult(Result<string>.Success("answer")), _ => bill, default)
             : await store.ExecuteProviderEffectAsync(execution, daily, effect,
@@ -244,26 +257,40 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(sent.IsSuccess, sent.Error.Message);
 
-        var settled = await store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
+        var settled = daily is null
+            ? await f.Authority.InQuestTransactionAsync<GuildBudgetEffect>(root.Quest.RootQuestId,
+                (connection, transaction, _, ct) => new GuildBudgetLedger().ReadEffectWithinAsync(connection, transaction, effect.EffectId, ct),
+                default)
+            : await store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
 
         Assert.True(settled.IsSuccess, settled.Error.Message);
 
-        if (unknown)
+        Assert.Equal(reservation?.Id, settled.Value.Request.ReservationId);
+
+        bool unknownUsd = unknownUsage || reservation is null;
+
+        Assert.Equal(unknownUsd, settled.Value.UnknownUsd);
+
+        Assert.Equal(unknownUsage, settled.Value.UnknownTokens);
+
+        Assert.Equal(historicalReservation ? 1L : 0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+        if (reservation is not null)
         {
-            Assert.True(settled.Value.UnknownUsd);
+            await using var find = lease.Connection.CreateCommand();
 
-            Assert.True(settled.Value.UnknownTokens);
-        }
+            find.CommandText = "SELECT Status,ReconciledUsd FROM BudgetReservations WHERE Id=$id";
 
-        Guid reservation;
+            find.Parameters.AddWithValue("$id", reservation.Id.ToString("N"));
 
-        await using (var find = lease.Connection.CreateCommand())
-        {
-            find.CommandText = "SELECT ReservationId FROM guild_budget_effects WHERE EffectId=$id";
+            await using var row = await find.ExecuteReaderAsync();
 
-            find.Parameters.AddWithValue("$id", effect.EffectId.ToString("D").ToUpperInvariant());
+            Assert.True(await row.ReadAsync());
 
-            reservation = Guid.Parse(Assert.IsType<string>(await find.ExecuteScalarAsync()));
+            Assert.Equal(unknownUsage ? BudgetReservationStatus.UncertainPaid : BudgetReservationStatus.Reconciled,
+                (BudgetReservationStatus)row.GetInt32(0));
+
+            Assert.Equal(bill.ActualCostUsd, ExactUsdText.Read(row, 1));
         }
 
         await using (var query = lease.Connection.CreateCommand())
@@ -320,22 +347,24 @@ public sealed partial class GuildLocalHostPolicyTests
 
         long epoch = await f.ScalarAsync("SELECT Revision FROM guild_cohort_settlement_clock");
 
-        if (disposition != 0)
+        if (replacementStatus is { } replacement)
         {
+            Assert.NotNull(reservation);
+
             await using var mutate = lease.Connection.CreateCommand();
 
             mutate.CommandText = "UPDATE BudgetReservations SET Status=$status,ReconciledUsd='0' WHERE Id=$id";
 
-            mutate.Parameters.AddWithValue("$status", disposition);
+            mutate.Parameters.AddWithValue("$status", (int)replacement);
 
-            mutate.Parameters.AddWithValue("$id", reservation.ToString("N"));
+            mutate.Parameters.AddWithValue("$id", reservation.Id.ToString("N"));
 
             Assert.Equal(1, await mutate.ExecuteNonQueryAsync());
         }
 
         Assert.Equal(epoch, await f.ScalarAsync("SELECT Revision FROM guild_cohort_settlement_clock"));
 
-        if (disposition != 0)
+        if (replacementStatus is not null)
         {
             var blocked = await cohorts.ReconcileAsync(owner, cohort.Id, default);
 
@@ -343,16 +372,20 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(GuildCohortState.Draining, blocked.Value.State);
 
-            if (disposition is 1 or 3)
-            {
-                Assert.True(blocked.Value.Spend.UnknownUsd);
+            Assert.Equal(unknownUsd, blocked.Value.Spend.UnknownUsd);
 
-                Assert.True(blocked.Value.Spend.UnknownTokens);
-            }
+            Assert.Equal(unknownUsage, blocked.Value.Spend.UnknownTokens);
         }
         else
         {
-            _ = await WaitForConvergenceAsync(cohorts, owner, cohort.Id, value => value.State == GuildCohortState.Completed);
+            CohortConvergenceDto completed = await WaitForConvergenceAsync(cohorts, owner, cohort.Id,
+                value => value.State == GuildCohortState.Completed);
+
+            Assert.Equal(unknownUsd, completed.Spend.UnknownUsd);
+
+            Assert.Equal(unknownUsage, completed.Spend.UnknownTokens);
+
+            Assert.Equal(historicalReservation ? 1L : 0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
         }
     }
 }
