@@ -45,6 +45,7 @@ using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
@@ -576,8 +577,8 @@ public static class ApiBootstrapper
             sp.GetRequiredService<ILoggerFactory>(),
             sp.GetRequiredService<PromptCacheConfigurationEpoch>(),
             sp.GetRequiredService<RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator>(),
-            sp.GetRequiredService<LocalRuntimeInspector>(),
-            sp.GetRequiredService<InferenceTokenizerResolver>()));
+            sp.GetService<LocalRuntimeInspector>(),
+            sp.GetService<InferenceTokenizerResolver>()));
 
         services.AddSingleton(sp => new LongRestConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
             sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));
@@ -639,7 +640,19 @@ public static class ApiBootstrapper
         services.AddScoped<InferenceContextBuilder>();
         services.AddScoped<SessionContextPinMaterializer>();
 
-        services.AddScoped<ToolExecutionPipeline>();
+        services.AddScoped<ToolExecutionPipeline>(static sp => new ToolExecutionPipeline(
+            sp.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<IWard>(),
+            sp.GetRequiredService<ISanctumGuard>(),
+            sp.GetRequiredService<ISessionAttachmentStore>(),
+            sp.GetRequiredService<ILogger<ToolExecutionPipeline>>(),
+            sp.GetRequiredService<IToolInvocationStore>(),
+            sp.GetService<IToolResultMaterializer>(),
+            sp.GetService<GrimoireTurnWriter>(),
+            sp.GetService<IAttachmentSourceResolver>(),
+            sp.GetService<CovenantToolEgressGuard>(),
+            sp.GetService<ICovenantAuthoritySnapshotProvider>()));
 
         services.AddScoped<DiagnosticMcpInvocationService>();
 

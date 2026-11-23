@@ -68,6 +68,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public sealed class ToolExecutionPipeline(
     IOptionsSnapshot<ArcanumSettings> settings,
+    IOptionsMonitor<ArcanumSettings> liveSettings,
     IWard ward,
     ISanctumGuard sanctumGuard,
     ISessionAttachmentStore sessionAttachmentStore,
@@ -77,9 +78,37 @@ public sealed class ToolExecutionPipeline(
     GrimoireTurnWriter? grimoireTurnWriter = null,
     IAttachmentSourceResolver? attachmentSourceResolver = null,
     CovenantToolEgressGuard? covenantEgressGuard = null,
-    ICovenantAuthoritySnapshotProvider? covenantAuthority = null,
-    IOptionsMonitor<ArcanumSettings>? liveSettings = null)
+    ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
 {
+    private readonly IOptionsMonitor<ArcanumSettings> _liveSettings = liveSettings ?? throw new ArgumentNullException(nameof(liveSettings));
+
+    /// <summary>Constructs a pipeline for callers that supply fixed options. The host supplies a live monitor.</summary>
+    public ToolExecutionPipeline(
+        IOptionsSnapshot<ArcanumSettings> settings,
+        IWard ward,
+        ISanctumGuard sanctumGuard,
+        ISessionAttachmentStore sessionAttachmentStore,
+        ILogger<ToolExecutionPipeline> logger,
+        IToolInvocationStore? toolInvocationStore,
+        IToolResultMaterializer? toolResultMaterializer = null,
+        GrimoireTurnWriter? grimoireTurnWriter = null,
+        IAttachmentSourceResolver? attachmentSourceResolver = null,
+        CovenantToolEgressGuard? covenantEgressGuard = null,
+        ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
+        : this(settings, new SnapshotOptionsMonitor(settings), ward, sanctumGuard, sessionAttachmentStore, logger, toolInvocationStore,
+            toolResultMaterializer, grimoireTurnWriter, attachmentSourceResolver, covenantEgressGuard, covenantAuthority)
+    {
+    }
+
+    private sealed class SnapshotOptionsMonitor(IOptionsSnapshot<ArcanumSettings> settings) : IOptionsMonitor<ArcanumSettings>
+    {
+        public ArcanumSettings CurrentValue => settings.Value;
+
+        public ArcanumSettings Get(string? name) => settings.Get(name);
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+    }
+
     /// <summary>
     /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated
     /// rather than failing the whole turn under the code-owned tolerant mode policy. The model sees
@@ -1983,8 +2012,8 @@ public sealed class ToolExecutionPipeline(
 
         bool nativeWriter = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool { IsNativeWorkspaceWriter: true };
 
-        bool requiresWorkspaceAuthority = nativeWriter && (WorkspaceMutationFence.IsInstalled
-            || (liveSettings?.CurrentValue ?? settings.Value).Features.Guild);
+        bool requiresWorkspaceAuthority = nativeWriter && (turnContext.WorkspaceWrite is not null
+            || WorkspaceMutationFence.IsInstalled || _liveSettings.CurrentValue.Features.Guild);
 
         PersistedToolInvocationContext? persisted = PersistedToolInvocationAmbient.Current;
 
@@ -1992,7 +2021,7 @@ public sealed class ToolExecutionPipeline(
             ? turnContext.WorkspaceWrite?.BeginCall(persisted.SessionId, persisted.AssistantEntryId, fcc.Name)
             : null;
 
-        if (requiresWorkspaceAuthority && workspaceCall is null)
+        if (requiresWorkspaceAuthority && (workspaceCall is null || !WorkspaceMutationFence.IsInstalled))
         {
             return new(GuildToolInvocationContext.Format(GuildOperatorWorkspaceWrite.Forbidden), wardEvents, Denied: true)
             {

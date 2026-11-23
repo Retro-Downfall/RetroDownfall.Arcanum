@@ -2856,6 +2856,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeLeaseService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeMessageService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeRoster.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOperatorVisibility.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOperatorWorkspaceWrite.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPhysicalRetentionProof.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortRouter.cs
