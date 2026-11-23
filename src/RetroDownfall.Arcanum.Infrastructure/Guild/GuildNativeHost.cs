@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -17,6 +18,46 @@ internal sealed class GuildNativeHost(GuildLocalHostPolicy policy, IGuildLocalHo
         policy.CreateNativeOperatorAsync(invocation, ct);
 
     internal Result RequireExecutionReady() => readiness.RequireExecutionReady();
+
+    internal async Task<Result<GuildOperatorWorkspaceWrite>> PrepareWorkspaceWriteAsync(Guid sessionId, Guid? sessionCampaignId,
+        Guid assistantEntryId, Guid workspaceId, string workingDirectory, CancellationToken ct)
+    {
+        Result<GuildWorkspaceMutationFence> fence = readiness.GetWorkspaceMutationFence();
+
+        if (fence.IsFailure) return fence.Error;
+
+        Result owner = await policy.ValidateWorkspaceWriterSessionAsync(sessionId, sessionCampaignId, assistantEntryId, ct)
+            .ConfigureAwait(false);
+
+        if (owner.IsFailure) return owner.Error;
+
+        Result<GuildOperatorWorkspaceHostEvidence> workspace = await policy.ResolveOperatorAsync(workspaceId, ct).ConfigureAwait(false);
+
+        if (workspace.IsFailure) return workspace.Error;
+
+        string root = workspace.Value.WorkspaceRoot;
+
+        if (sessionCampaignId is { } campaignId && campaignId != workspaceId
+            || !WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, workingDirectory, out _))
+            return GuildOperatorWorkspaceWrite.Forbidden;
+
+        WorkspaceLeaseIdentityResolver identities = new();
+
+        string relativeRoot = Path.GetRelativePath(root, workingDirectory).Replace(Path.DirectorySeparatorChar, '/');
+
+        var physical = await identities.ResolveAsync(root, [new(relativeRoot, GuildPathScopeKind.Subtree)], ct).ConfigureAwait(false);
+
+        if (physical.IsFailure) return physical.Error;
+
+        Result<GuildCallerContext> caller = await CreateCallerAsync(assistantEntryId, ct).ConfigureAwait(false);
+
+        if (caller.IsFailure) return caller.Error;
+
+        GuildVerifiedAuthority authority = new(caller.Value, GuildAuthorityAction.WorkspaceMutate, workspaceId, 1);
+
+        return new GuildOperatorWorkspaceWrite(policy, readiness, identities, physical.Value, fence.Value, authority,
+            sessionId, sessionCampaignId, assistantEntryId, workspaceId, workingDirectory);
+    }
 
     internal async Task<Result<GuildStatusDto>> GetStatusAsync(CancellationToken ct)
     {

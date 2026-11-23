@@ -1315,6 +1315,9 @@ internal sealed partial class ArcanumInternalToolServer
                 return BuildToolsCallResponse(rpcId, ToolError($"Unknown tool: {call.Name}"));
             }
 
+            using IDisposable? workspaceInvocation = PersistedToolInvocationAmbient.Current?.WorkspaceMutation
+                ?.TryEnter(call.Name, _workspaceRoot);
+
             McpToolsCallResultWire result = await handler(toolArguments, toolScope.Token).ConfigureAwait(false);
 
             return BuildToolsCallResponse(rpcId, result);

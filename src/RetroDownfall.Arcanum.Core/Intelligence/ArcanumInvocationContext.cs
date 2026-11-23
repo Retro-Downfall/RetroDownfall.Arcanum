@@ -26,6 +26,20 @@ public sealed class ArcanumInvocationContext
 {
     internal IGuildInvocationBinding? GuildBinding { get; private init; }
 
+    internal bool HasAuthenticatedWorkspaceTurn { get; private set; }
+
+    internal bool UsesGlobalWorkspaceSelection { get; private set; }
+
+    internal void MarkAuthenticatedWorkspaceTurn(bool usesGlobalWorkspaceSelection)
+    {
+        if (Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn or ArcanumExecutionSurface.StatelessOperatorTurn)
+        {
+            HasAuthenticatedWorkspaceTurn = true;
+
+            UsesGlobalWorkspaceSelection = usesGlobalWorkspaceSelection && Campaign == CanonicalCampaignContext.GlobalOnly;
+        }
+    }
+
     internal static ArcanumInvocationContext ForGuild(IGuildInvocationBinding binding, CanonicalCampaignContext? campaign = null) => new(
         ArcanumExecutionSurface.InternalBackground, campaign, InvocationAttendance.Unattended,
         CovenantContextPolicy.None, ToolPolicy.NoTools, null) { GuildBinding = binding };

@@ -183,7 +183,8 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
         CancellationToken cancellationToken) => AdmitMutationCoreAsync(authority, plan, null, cancellationToken);
 
     private Task<Result<GuildMutationPermit>> AdmitMutationCoreAsync(GuildVerifiedAuthority authority, GuildMutationPlan plan,
-        string? writerRoot, CancellationToken cancellationToken, WorkspaceLeaseIdentitySet? initialTargets = null)
+        string? writerRoot, CancellationToken cancellationToken, WorkspaceLeaseIdentitySet? initialTargets = null,
+        WorkspaceLeaseIdentitySet? selectedDirectory = null)
     {
         if (authority is null || plan is null || plan.WorkspaceId == Guid.Empty || plan.Scopes.IsDefaultOrEmpty
             || string.IsNullOrWhiteSpace(plan.EffectPlanDigest)) return Task.FromResult(Result<GuildMutationPermit>.Failure(Invalid));
@@ -205,6 +206,9 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
 
             if (initialTargets is not null && !resolved.Value.IncludesExactTargets(initialTargets))
                 return Result<GuildMutationPermit>.Failure(WorkspaceLeaseIdentityResolver.Unavailable);
+
+            if (selectedDirectory is not null && (selectedDirectory.RootIdentity != resolved.Value.RootIdentity
+                || !selectedDirectory.Covers(resolved.Value))) return Result<GuildMutationPermit>.Failure(Forbidden);
 
             Result coverage = await CoversAllowedAsync(binding, resolved.Value, plan.Scopes, token).ConfigureAwait(false);
 

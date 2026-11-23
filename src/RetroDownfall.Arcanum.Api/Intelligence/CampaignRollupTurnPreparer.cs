@@ -33,7 +33,8 @@ public sealed class CampaignRollupTurnSnapshot(
     bool requiresRollups = true,
     LongRestConfigurationStamp? longRestStamp = null,
     ILongRestConfigurationProvider? longRestConfiguration = null,
-    ICanonicalCampaignRootEnricher? rootEnricher = null) : IAsyncDisposable
+    ICanonicalCampaignRootEnricher? rootEnricher = null,
+    bool usesGlobalWorkspaceSelection = false) : IAsyncDisposable
 {
     private readonly CovenantDigest _configurationDigest = frozenConfigurationDigest
         ?? CampaignRollupTurnPreparer.ConfigurationDigest(settings.CurrentValue);
@@ -97,8 +98,11 @@ public sealed class CampaignRollupTurnSnapshot(
             }
         }
 
+        string? campaignDirectory = usesGlobalWorkspaceSelection && Campaign == CanonicalCampaignContext.GlobalOnly
+            ? null : request.WorkingDirectory;
+
         Result<CanonicalCampaignContext> current = await resolver.ResolveAsync(
-            new(request.SessionId, request.CampaignId, request.WorkingDirectory), cancellationToken).ConfigureAwait(false);
+            new(request.SessionId, request.CampaignId, campaignDirectory), cancellationToken).ConfigureAwait(false);
 
         if (current.IsFailure)
         {
@@ -683,7 +687,7 @@ public sealed class CampaignRollupTurnPreparer(
             }
 
             CampaignRollupTurnSnapshot snapshot = new(artifact, campaign, boundRequest, store, settings, resolver, authority, lease, claims,
-                configurationDigest, maintainRollups, longRestStamp, longRestConfiguration, rootEnricher);
+                configurationDigest, maintainRollups, longRestStamp, longRestConfiguration, rootEnricher, invocation.UsesGlobalWorkspaceSelection);
 
             transferred = true;
 

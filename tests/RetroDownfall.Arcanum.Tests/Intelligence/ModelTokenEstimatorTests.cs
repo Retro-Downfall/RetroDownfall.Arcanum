@@ -1,7 +1,9 @@
 using System.Text.Json;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -13,6 +15,117 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Trait("Suite", "Dci")]
 public sealed class ModelTokenEstimatorTests
 {
+    [SkippableFact]
+    public async Task EstimateContext_VerifiedOllamaTokenizer_RetainsCodingEvidenceWithinConfiguredWindow()
+    {
+        string model = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_OLLAMA_MODEL")
+            ?? "qwen3.8-flash-next:125b-mlx";
+        ProviderSettings provider = Provider(model);
+        provider.Endpoint = "http://127.0.0.1:11434/v1";
+        provider.LocalRuntimeId = "local-ollama";
+        provider.ContextWindowLimit = 32_768;
+        ArcanumSettings settings = new()
+        {
+            Providers = [provider],
+            LocalRuntimes =
+            [
+                new() { Id = "local-ollama", Adapter = "ollama", ManagementEndpoint = "http://127.0.0.1:11434" },
+            ],
+        };
+
+        Skip.IfNot(global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_OLLAMA_TOKENIZER") == "1",
+            "Set ARCANUM_TEST_OLLAMA_TOKENIZER=1 to qualify the actual installed Ollama tokenizer bundle.");
+
+        using ServiceProvider services = new ServiceCollection().AddHttpClient().BuildServiceProvider();
+        IHttpClientFactory http = services.GetRequiredService<IHttpClientFactory>();
+        IOptionsMonitor<ArcanumSettings> optionsMonitor = new TestOptionsMonitor<ArcanumSettings>(settings);
+        InferenceTokenizerResolver resolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
+        ModelTokenEstimator estimator = new(resolver);
+
+        string manifestDigest = Assert.IsType<string>(resolver.FindQualifiedOllamaManifestDigest(model));
+        ChatClientFactory Factory(LocalRuntimeInspector inspector) =>
+            new(http, optionsMonitor, null, null, null, null, null, inspector, resolver);
+
+        ObservedOllamaRuntime equal = new(model, manifestDigest);
+        ObservedOllamaRuntime unequal = new(model, new string('0', 64));
+        Task<ChatClientLease> matchingLease = Factory(new([equal])).ResolveClientAsync(model, CancellationToken.None);
+        Task<ChatClientLease> mismatchedLease = Factory(new([unequal])).ResolveClientAsync(model, CancellationToken.None);
+        using ChatClientLease qualified = await matchingLease;
+        using ChatClientLease mismatch = await mismatchedLease;
+        Assert.Equal(1, equal.InspectionCount);
+        Assert.Equal(1, unequal.InspectionCount);
+
+        string codingEvidence = string.Concat(Enumerable.Repeat(
+            "public static string JoinItems(IEnumerable<string> items) => string.Join(\", \", items);\n", 512));
+        ChatMessage[] messages = [
+            new(ChatRole.User, "Inspect the public test data."),
+            new(ChatRole.Assistant, [new FunctionCallContent("read-1", "read_file")]),
+            new(ChatRole.Tool, [new FunctionResultContent("read-1", codingEvidence)]),
+        ];
+
+        ModelTokenizationRequest request = new(
+            qualified.Provider, model, messages, new ChatOptions(), ReservedAnswerTokens: 1_024, ReservedReasoningTokens: 0);
+        Assert.True(estimator.EstimateContext(request with { Provider = provider }).Profile.UsesUtf8ByteFloor);
+        Assert.True(estimator.EstimateContext(request with { Provider = mismatch.Provider }).Profile.UsesUtf8ByteFloor);
+
+        ContextTokenBreakdown breakdown = estimator.EstimateContext(request);
+
+        Assert.True(TurnContextGuards.CheckContextBudget(breakdown, provider.ContextWindowLimit).IsSuccess,
+            $"The local {breakdown.TotalTokens:N0}-token estimate rejected a complete coding exchange.");
+
+        Assert.Equal(ModelTokenizationProfileType.CalibratedApproximation, breakdown.Profile.Type);
+        Assert.False(breakdown.Profile.UsesUtf8ByteFloor);
+        Assert.Equal(32_768, breakdown.ContextWindowLimit);
+        Assert.Equal(1_024, breakdown.ReservedAnswerTokens);
+        Assert.True(breakdown.ToolExchangeTokens > 0);
+        Assert.True(breakdown.SafetyMarginTokens > 0);
+        Assert.True(TurnContextGuards.CheckContextBudget(breakdown, 4_096).IsFailure);
+        Assert.Equal(breakdown.Profile, estimator.ResolveEffectiveProfile(request));
+
+        TokenEstimate numeric = estimator.EstimateText(qualified.Provider, model, "12345678901234567890");
+        Assert.Equal(20, numeric.TokenCount - numeric.SafetyMarginTokens);
+
+        ChatMessage image = new(ChatRole.User, [new DataContent(new byte[] { 1 }, "image/png")]);
+        ModelTokenizationRequest imageRequest = request with { Messages = [.. messages, image] };
+        Assert.True(estimator.EstimateContext(imageRequest).Profile.UsesUtf8ByteFloor);
+        Assert.True(estimator.ResolveEffectiveProfile(imageRequest).UsesUtf8ByteFloor);
+
+        ProviderSettings proxy = provider with { Endpoint = "http://example.invalid/v1" };
+        using ChatClientLease remote = await Factory(new([equal])).ResolveClientAsync(proxy, model, CancellationToken.None);
+        Assert.True(estimator.EstimateContext(request with { Provider = remote.Provider }).Profile.UsesUtf8ByteFloor);
+        Assert.Equal(1, equal.InspectionCount);
+
+        ObservedOllamaRuntime slow = new(model, manifestDigest, delay: true);
+        using ChatClientLease timedOut = await Factory(new([slow])).ResolveClientAsync(model, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(estimator.EstimateContext(request with { Provider = timedOut.Provider }).Profile.UsesUtf8ByteFloor);
+        Assert.Equal(1, slow.InspectionCount);
+        Assert.Equal(1, equal.InspectionCount);
+    }
+
+    private sealed class ObservedOllamaRuntime(string model, string? digest, bool delay = false) : ILocalRuntimeAdapter
+    {
+        public string AdapterId => LocalRuntimeAdapterCatalog.Ollama;
+
+        public int InspectionCount { get; private set; }
+
+        public async Task<Result<LocalRuntimeInspection>> InspectAsync(LocalRuntimeSettings runtime, CancellationToken cancellationToken)
+        {
+            InspectionCount++;
+
+            if (delay)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return Result<LocalRuntimeInspection>.Success(new("fixture-version", new(true, false, false),
+                digest is null ? [] : [new(model, digest, null, null)]));
+        }
+
+        public Task<Result> RetainModelAsync(LocalRuntimeSettings runtime, string model, TimeSpan retention, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Context qualification must not load a model.");
+    }
+
     [Fact]
     public void EstimateContext_KnownO200kModel_UsesExactTextTokenizerWithoutMargin()
     {

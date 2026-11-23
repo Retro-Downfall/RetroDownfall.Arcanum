@@ -1,4 +1,3 @@
-using System.Text;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -25,19 +24,18 @@ public sealed partial class ModelTokenEstimator
     private ContextTokenBreakdown EstimateClosedChat(ProviderSettings provider, string canonicalModel,
         string systemPrompt, string userPrompt, string[] schemaParts, int reservedAnswerTokens)
     {
-        ResolvedModelTokenizationProfile profile = ResolveUsableProfile(ResolveProfile(provider, canonicalModel), out _);
-        InferenceTextCounter counter = _tokenizerResolver.Resolve(profile.TokenizerId).Counter;
+        ResolvedModelTokenizationProfile profile = ResolveUsableProfile(ResolveBaseProfile(provider, canonicalModel), out InferenceTextCounter counter);
         Dictionary<ContextTokenSource, MutableEstimate> estimates = [];
 
-        TokenEstimate system = CountCampaignText(systemPrompt, profile, counter);
-        TokenEstimate user = CountCampaignText(userPrompt, profile, counter);
+        TokenEstimate system = CountText(systemPrompt, profile, counter);
+        TokenEstimate user = CountText(userPrompt, profile, counter);
 
         Add(estimates, ContextTokenSource.SystemCodexSpell, system.TokenCount, system.Classification, system.Confidence);
         Add(estimates, ContextTokenSource.CurrentPrompt, user.TokenCount, user.Classification, user.Confidence);
 
         foreach (string part in schemaParts)
         {
-            TokenEstimate counted = CountCampaignText(part, profile, counter);
+            TokenEstimate counted = CountText(part, profile, counter);
 
             Add(estimates, ContextTokenSource.StructuredOutput, counted.TokenCount, counted.Classification, counted.Confidence);
         }
@@ -90,27 +88,5 @@ public sealed partial class ModelTokenEstimator
             OverallClassification = unknown ? TokenEstimateClassification.Unknown : estimated ? TokenEstimateClassification.Estimated : TokenEstimateClassification.Exact,
             SafetyMarginTokens = safetyMargin,
         };
-    }
-
-    private static TokenEstimate CountCampaignText(string text, ResolvedModelTokenizationProfile profile, InferenceTextCounter counter)
-    {
-        TextTokenCacheKey key = new(profile.TokenizerId, ModelCallPayloadFingerprint.ComputeText(text));
-
-        if (!TextTokenCache.TryGetValue(key, out int count))
-        {
-            count = counter.CountTokens(text);
-
-            TextTokenCache.Set(key, count);
-        }
-
-        if (profile.Type == ModelTokenizationProfileType.UnknownFallback)
-        {
-            count = Math.Max(count, Encoding.UTF8.GetByteCount(text));
-        }
-
-        return new(count,
-            profile.Type == ModelTokenizationProfileType.ExactLocalTokenizer ? TokenEstimateClassification.Exact : TokenEstimateClassification.Estimated,
-            profile.ProfileId,
-            profile.Type == ModelTokenizationProfileType.ExactLocalTokenizer ? 1d : profile.Confidence);
     }
 }

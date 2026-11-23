@@ -210,6 +210,7 @@ internal static class WorkspaceCheckProcessStartInfoFactory
     internal static ProcessStartInfo Create(
         string executablePath,
         string sdkEntryPointPath,
+        int sdkMajorVersion,
         string workspaceRoot,
         WorkspaceCheckResolvedProfile profile,
         WorkspaceCheckRunDirectories directories,
@@ -248,13 +249,20 @@ internal static class WorkspaceCheckProcessStartInfoFactory
             }
         }
 
-        // .NET 10's --artifacts-path sets BaseOutputPath, BaseIntermediateOutputPath, and
-        // MSBuildProjectExtensionsPath to project-isolated subtrees beneath this trusted root.
+        WorkspaceCheckEnvironmentBuilder.Apply(startInfo, environment);
+
         if (profile.Kind is WorkspaceCheckKind.Build or WorkspaceCheckKind.Test)
         {
+            if (sdkMajorVersion >= 8)
+            {
+                startInfo.ArgumentList.Add("--artifacts-path");
 
-            startInfo.ArgumentList.Add("--artifacts-path");
-            startInfo.ArgumentList.Add(directories.Artifacts);
+                startInfo.ArgumentList.Add(directories.Artifacts);
+            }
+            else
+            {
+                startInfo.Environment["AlternateCommonProps"] = WriteLegacyOutputLayout(directories.Root);
+            }
         }
 
         if (profile.Kind == WorkspaceCheckKind.Test)
@@ -266,7 +274,6 @@ internal static class WorkspaceCheckProcessStartInfoFactory
             startInfo.ArgumentList.Add("trx");
         }
 
-        WorkspaceCheckEnvironmentBuilder.Apply(startInfo, environment);
         startInfo.Environment["ArtifactsPath"] =
             directories.Artifacts;
         startInfo.Environment["UseArtifactsOutput"] = "true";
@@ -286,6 +293,34 @@ internal static class WorkspaceCheckProcessStartInfoFactory
         }
 
         return startInfo;
+    }
+
+    private static string WriteLegacyOutputLayout(string controlRoot)
+    {
+        // SDKs before .NET 8 import AlternateCommonProps before evaluating per-project output
+        // and NuGet paths. Keep the SDK's own import, including repository Directory.Build.props.
+        const string contents = """
+            <Project>
+              <PropertyGroup>
+                <BaseIntermediateOutputPath>$(ArtifactsPath)/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+                <BaseOutputPath>$(ArtifactsPath)/bin/$(MSBuildProjectName)/</BaseOutputPath>
+                <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+              </PropertyGroup>
+              <Import Project="$(MSBuildExtensionsPath)/$(MSBuildToolsVersion)/Microsoft.Common.props" />
+            </Project>
+            """;
+
+        string path = Path.Combine(controlRoot, "Arcanum.WorkspaceCheck.props");
+
+        using FileStream file = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+
+        using StreamWriter writer = new(file);
+
+        writer.Write(contents);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
+        return path;
     }
 }
 

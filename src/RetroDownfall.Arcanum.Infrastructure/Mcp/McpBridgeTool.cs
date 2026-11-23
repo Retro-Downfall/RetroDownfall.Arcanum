@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -58,6 +59,8 @@ internal sealed class McpBridgeTool : AIFunction
 
     internal bool OwnsSessionAttachmentResult =>
         _name == "attach_session_file" && IsHostResultTransport(_client);
+
+    internal bool IsNativeWorkspaceWriter => GuildOperatorWorkspaceWrite.IsWriter(_name) && IsHostResultTransport(_client);
 
     public McpBridgeTool(
         string name,
@@ -157,7 +160,7 @@ internal sealed class McpBridgeTool : AIFunction
             // dispatched. Timeout, disposal, channel completion, and generic transport failures
             // after CallToolAsync begins are ambiguous: the tool may already have side effects,
             // so retrying on another server could double-execute a mutation.
-            if (_fallbackClient is null)
+            if (_fallbackClient is null || PersistedToolInvocationAmbient.Current?.WorkspaceMutation is not null)
             {
                 throw;
             }

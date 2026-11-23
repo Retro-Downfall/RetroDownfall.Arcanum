@@ -33,11 +33,9 @@ public sealed partial class ModelTokenEstimator
             throw new ArgumentException("An embedding estimate requires the closed embedding payload.", nameof(payload));
         }
 
-        ResolvedModelTokenizationProfile profile = ResolveEffectiveProfile(provider, canonicalModel);
+        ResolvedModelTokenizationProfile profile = ResolveUsableProfile(ResolveBaseProfile(provider, canonicalModel), out InferenceTextCounter counter);
 
-        InferenceTextCounter counter = _tokenizerResolver.Resolve(profile.TokenizerId).Counter;
-
-        TokenEstimate raw = CountCampaignText(payload.EmbeddingText!, profile, counter);
+        TokenEstimate raw = CountText(payload.EmbeddingText!, profile, counter);
 
         int margin = profile.Type == ModelTokenizationProfileType.ExactLocalTokenizer ? 0 : PercentageCeiling(raw.TokenCount, profile.SafetyMarginPercent);
 

@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -37,7 +36,10 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
     public ModelTokenEstimator(InferenceTokenizerResolver tokenizerResolver) =>
         _tokenizerResolver = tokenizerResolver;
 
-    public ResolvedModelTokenizationProfile ResolveProfile(
+    public ResolvedModelTokenizationProfile ResolveProfile(ProviderSettings provider, string canonicalModel) =>
+        ResolveChatProfile(provider, canonicalModel, allowInstalledOllama: true, out _);
+
+    private static ResolvedModelTokenizationProfile ResolveBaseProfile(
         ProviderSettings provider,
         string canonicalModel)
     {
@@ -75,9 +77,8 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         string canonicalModel,
         string? text)
     {
-        ResolvedModelTokenizationProfile profile = ResolveUsableProfile(
-            ResolveProfile(provider, canonicalModel),
-            out Tokenizer tokenizer);
+        ResolvedModelTokenizationProfile profile = ResolveChatProfile(
+            provider, canonicalModel, allowInstalledOllama: true, out InferenceTextCounter tokenizer);
         TokenEstimate raw = CountText(text, profile, tokenizer);
 
         if (raw.Classification == TokenEstimateClassification.Exact || raw.TokenCount == 0)
@@ -96,9 +97,10 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
     public ResolvedModelTokenizationProfile ResolveEffectiveProfile(
         ProviderSettings provider,
         string canonicalModel) =>
-        ResolveUsableProfile(
-            ResolveProfile(provider, canonicalModel),
-            out _);
+        ResolveChatProfile(provider, canonicalModel, allowInstalledOllama: true, out _);
+
+    public ResolvedModelTokenizationProfile ResolveEffectiveProfile(ModelTokenizationRequest request) =>
+        ResolveChatProfile(request.Provider, request.Model, OllamaQwenContextSupported(request), out _);
 
     public ContextTokenBreakdown EstimateContext(ModelTokenizationRequest request)
     {
@@ -107,9 +109,10 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         ArgumentNullException.ThrowIfNull(request.Messages);
         ArgumentNullException.ThrowIfNull(request.Options);
 
-        ResolvedModelTokenizationProfile profile = ResolveUsableProfile(
-            ResolveProfile(request.Provider, request.Model),
-            out Tokenizer tokenizer);
+        ResolvedModelTokenizationProfile profile = ResolveChatProfile(
+            request.Provider, request.Model,
+            OllamaQwenContextSupported(request),
+            out InferenceTextCounter tokenizer);
         Dictionary<ContextTokenSource, MutableEstimate> estimates = [];
         List<int> messageTokenCounts = new(request.Messages.Count);
         int finalUserIndex = FindFinalUserIndex(request.Messages);
@@ -223,6 +226,12 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
 
         long toolCatalogTokens = (estimates.TryGetValue(ContextTokenSource.Tools, out MutableEstimate? tools)
             ? tools.Count : 0) - toolExchangeTokens;
+        if (toolCatalogTokens > 0 && profile.TokenizerId == OllamaQwenTokenizer.EncodingId)
+        {
+            // The model template adds a tool protocol header with examples and handling instructions.
+            Add(estimates, ContextTokenSource.ProviderFraming, 192, TokenEstimateClassification.Estimated, profile.Confidence);
+        }
+
         EstimateStructuredOutput(estimates, request.Options.ResponseFormat, profile, tokenizer);
 
         if (request.Options.AdditionalProperties is { Count: > 0 } optionProperties)
@@ -348,12 +357,65 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         };
     }
 
+    private ResolvedModelTokenizationProfile ResolveChatProfile(
+        ProviderSettings provider,
+        string model,
+        bool allowInstalledOllama,
+        out InferenceTextCounter tokenizer)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+
+        if (allowInstalledOllama && _tokenizerResolver.TryResolveInstalledOllama(provider, model) is { } installed)
+        {
+            tokenizer = installed;
+
+            return new ResolvedModelTokenizationProfile
+            {
+                ProfileId = $"catalog:ollama:{model}:{OllamaQwenTokenizer.EncodingId}",
+                Type = ModelTokenizationProfileType.CalibratedApproximation,
+                TokenizerId = OllamaQwenTokenizer.EncodingId,
+                SafetyMarginPercent = ArcanumRuntimeDefaults.Intelligence.EstimatedTokenSafetyMarginPercent,
+                PerMessageOverheadTokens = 10,
+                PerToolOverheadTokens = 32,
+                ProviderFramingTokens = 96,
+                StopTokenOverheadTokens = 4,
+                UnknownImageReserveTokens = ResolveUnknownImageReserve(),
+                Confidence = 0.8d,
+            };
+        }
+
+        return ResolveUsableProfile(ResolveBaseProfile(provider, model), out tokenizer);
+    }
+
+    private static bool OllamaQwenContextSupported(ModelTokenizationRequest request)
+    {
+        if (string.IsNullOrEmpty(request.Provider.LocalRuntimeId)
+            || request.Options.RawRepresentationFactory is not null
+            || request.Options.Tools?.Any(static tool => tool is not AIFunction { JsonSchema.ValueKind: JsonValueKind.Object }) == true)
+        {
+            return false;
+        }
+
+        foreach (ChatMessage message in request.Messages)
+        {
+            if (message.RawRepresentation is not null || message.Contents.Any(static content =>
+                content.RawRepresentation is not null
+                || content is not (TextContent or TextReasoningContent { ProtectedData: null }
+                    or FunctionCallContent or FunctionResultContent { Result: null or string or JsonElement or JsonDocument })))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private ResolvedModelTokenizationProfile ResolveUsableProfile(
         ResolvedModelTokenizationProfile profile,
-        out Tokenizer tokenizer)
+        out InferenceTextCounter tokenizer)
     {
         ResolvedInferenceTokenizer resolved = _tokenizerResolver.Resolve(profile.TokenizerId);
-        tokenizer = resolved.Tokenizer;
+        tokenizer = resolved.Counter;
 
         if (!resolved.UsedFallback)
         {
@@ -385,7 +447,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         Dictionary<ContextTokenSource, MutableEstimate> estimates,
         ChatMessage message,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer,
+        InferenceTextCounter tokenizer,
         SystemPromptAttributionMap? attribution)
     {
         string text = message.Text ?? string.Empty;
@@ -395,9 +457,11 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         if (attribution is { HasRollupContent: true }
             && string.Equals(attribution.Prompt, text, StringComparison.Ordinal))
         {
-            SystemPromptTokenAttribution partition = SystemPromptTokenAttribution.Compute(tokenizer, attribution);
+            SystemPromptTokenAttribution? partition = tokenizer.Tokenizer is { } offsetTokenizer
+                ? SystemPromptTokenAttribution.Compute(offsetTokenizer, attribution)
+                : null;
 
-            int renderedTotal = partition.OffsetExact ? partition.TotalTokens : tokenizer.CountTokens(text);
+            int renderedTotal = partition is { OffsetExact: true } ? partition.TotalTokens : tokenizer.CountTokens(text);
 
             if (profile.Type is ModelTokenizationProfileType.UnknownFallback)
             {
@@ -405,7 +469,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
             }
 
             TokenEstimateClassification classification = profile.Type is ModelTokenizationProfileType.ExactLocalTokenizer
-                && partition.OffsetExact
+                && partition is { OffsetExact: true }
                     ? TokenEstimateClassification.Exact
                     : TokenEstimateClassification.Estimated;
 
@@ -424,7 +488,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
                 int count = profile.Type is ModelTokenizationProfileType.UnknownFallback
                     ? attribution.Spans.Where(span => span.Attribution == category)
                         .Sum(span => Encoding.UTF8.GetByteCount(attribution.Prompt.AsSpan(span.Utf16Start, span.Utf16Length)))
-                    : partition[category];
+                    : partition?[category] ?? tokenizer.CountTokens(attribution.Concatenate(category));
 
                 count = Math.Clamp(count, 0, renderedTotal - allocated);
 
@@ -631,7 +695,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         AIContent content,
         bool currentPrompt,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer)
+        InferenceTextCounter tokenizer)
     {
         ContextTokenSource metadataSource = ResolveContentSource(content, currentPrompt);
 
@@ -694,10 +758,15 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
                     profile,
                     tokenizer,
                     forceEstimated: true);
+                // Qwen emits XML tags around every named tool argument.
+                long argumentFraming = profile.TokenizerId == OllamaQwenTokenizer.EncodingId
+                    ? 12L * (functionCall.Arguments?.Count ?? 0)
+                    : 0L;
+
                 Add(
                     estimates,
                     ContextTokenSource.ProviderFraming,
-                    profile.PerToolOverheadTokens,
+                    profile.PerToolOverheadTokens + argumentFraming,
                     TokenEstimateClassification.Estimated,
                     profile.Confidence);
                 return;
@@ -814,7 +883,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         Dictionary<ContextTokenSource, MutableEstimate> estimates,
         IList<AITool>? tools,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer)
+        InferenceTextCounter tokenizer)
     {
         if (tools is null)
         {
@@ -858,7 +927,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         Dictionary<ContextTokenSource, MutableEstimate> estimates,
         ChatResponseFormat? responseFormat,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer)
+        InferenceTextCounter tokenizer)
     {
         if (responseFormat is not ChatResponseFormatJson json)
         {
@@ -884,7 +953,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         ContextTokenSource source,
         string? text,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer,
+        InferenceTextCounter tokenizer,
         bool forceEstimated = false)
     {
         TokenEstimate counted = CountText(text, profile, tokenizer);
@@ -902,7 +971,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
     private static TokenEstimate CountText(
         string? text,
         ResolvedModelTokenizationProfile profile,
-        Tokenizer tokenizer)
+        InferenceTextCounter tokenizer)
     {
         if (string.IsNullOrEmpty(text))
         {
@@ -1197,7 +1266,7 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         }
     }
 
-    private int ResolveUnknownImageReserve()
+    private static int ResolveUnknownImageReserve()
     {
         IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
         return ArcanumSettingClamps.UnknownImageTokenReserve(

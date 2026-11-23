@@ -8,8 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 internal sealed partial class GuildWorkspaceLeaseBroker
 {
     internal Task<Result<GuildMutationPermit>> AdmitWriterMutationAsync(GuildVerifiedAuthority authority, GuildMutationPlan plan,
-        string writerRoot, CancellationToken cancellationToken, WorkspaceLeaseIdentitySet? initialTargets = null) =>
-        AdmitMutationCoreAsync(authority, plan, writerRoot, cancellationToken, initialTargets);
+        string writerRoot, CancellationToken cancellationToken, WorkspaceLeaseIdentitySet? initialTargets = null,
+        WorkspaceLeaseIdentitySet? selectedDirectory = null) =>
+        AdmitMutationCoreAsync(authority, plan, writerRoot, cancellationToken, initialTargets, selectedDirectory);
 
     private static Result<GuildMutationPlan> TranslateWriterPlan(string workspaceRoot, string writerRoot, GuildMutationPlan plan)
     {

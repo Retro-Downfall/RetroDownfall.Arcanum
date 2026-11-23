@@ -28,8 +28,10 @@ internal sealed class SubagentRunner(
     private static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromMinutes(5);
 
     private const string IsolatedSystemInstruction =
-        "You are an isolated subagent. Work only from this system message, the child task prompt, "
-        + "and explicitly attached file content. Do not assume parent conversation or memory. "
+        "You are an isolated subagent. Work only from the task and supplied content. "
+        + "Do not assume access to the parent conversation or memory. "
+        + "You can analyze supplied content, but have no tools or workspace access and cannot execute commands or run tests. "
+        + "If asked to do any of those things, report that limitation. Attribute any observed results in the input to the supplied content. "
         + "Return a concise result summary for the parent agent.";
 
     public async Task<SubagentRunResult> RunAsync(

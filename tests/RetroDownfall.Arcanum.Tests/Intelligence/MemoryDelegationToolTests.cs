@@ -86,9 +86,10 @@ public sealed class MemoryDelegationToolTests
         var parent = new PingRequest("parent");
         var binding = new MemoryDelegationRootBinding(parent, h.Source.Invocation, h.RootId, root, h.Coordinator);
         var output = await new ArcanumDelegateTaskTool(new CapturingRunner(), "model", binding).InvokeAsync(Arguments("memory"));
-        Assert.NotNull(output);
-        Assert.IsNotType<string>(output);
-        Assert.Equal("summary", output.ToString());
+        var protectedResult = Assert.IsType<MemoryDelegationToolResult>(output);
+        Assert.Equal(root.Sensitivity.Digest, protectedResult.Sensitivity.Digest);
+        Assert.StartsWith("Host-observed command execution: none.", protectedResult.Text, StringComparison.Ordinal);
+        Assert.Contains("summary", protectedResult.Text, StringComparison.Ordinal);
     }
 
     [SkippableFact]

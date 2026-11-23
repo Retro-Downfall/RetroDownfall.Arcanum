@@ -1099,9 +1099,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             && precomputed.ReservedTokens == expectedReserved
             && precomputed.ReservedAnswerTokens == expectedAnswer
             && precomputed.ReservedReasoningTokens == expectedReasoning
-            && precomputed.Profile == _tokenEstimator.ResolveEffectiveProfile(
-                context.Provider,
-                context.Model)
+            && precomputed.Profile == _tokenEstimator.ResolveEffectiveProfile(new ModelTokenizationRequest(
+                context.Provider, context.Model, messageList, options, expectedAnswer, expectedReasoning))
             && precomputed.InputTokens >= 0
             && precomputed.TotalTokens == ContextTokenBreakdown.SaturatingInt(
                 (long)precomputed.InputTokens + precomputed.ReservedTokens)

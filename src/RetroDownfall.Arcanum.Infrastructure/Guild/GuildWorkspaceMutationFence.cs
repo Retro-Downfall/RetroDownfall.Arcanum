@@ -20,13 +20,13 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
 
     internal IDisposable EnterInvocation(GuildVerifiedAuthority authority, Guid workspaceId,
         GuildChildToolAdmission? toolAdmission = null, WorkspaceLeaseIdentitySet? initialTargets = null,
-        string? callDigest = null)
+        string? callDigest = null, GuildOperatorWorkspaceWrite.Call? operatorCall = null)
     {
         ArgumentNullException.ThrowIfNull(authority);
 
         Invocation? previous = Current.Value;
 
-        Invocation invocation = new(this, authority, workspaceId, toolAdmission, initialTargets, callDigest);
+        Invocation invocation = new(this, authority, workspaceId, toolAdmission, initialTargets, callDigest, operatorCall);
 
         Current.Value = invocation;
 
@@ -49,19 +49,30 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
             if (!invocation.Active || !ReferenceEquals(Current.Value, invocation)) return Forbidden;
         }
 
+        if (invocation.OperatorCall is { } operatorCall)
+        {
+            Result live = await operatorCall.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+            if (live.IsFailure) return live.Error;
+
+            if (!invocation.Active || !operatorCall.IsActive || !ReferenceEquals(Current.Value, invocation)) return Forbidden;
+        }
+
         GuildMutationPlan plan = new(invocation.WorkspaceId, scopes, string.Empty);
 
         string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(workspaceRoot + "\0" + invocation.CallDigest + "\0"
             + JsonSerializer.Serialize(plan, GuildJsonContext.Default.GuildMutationPlan))));
 
         Result<GuildMutationPermit> admitted = await broker.AdmitWriterMutationAsync(invocation.Authority,
-            plan with { EffectPlanDigest = digest }, workspaceRoot, cancellationToken, invocation.InitialTargets).ConfigureAwait(false);
+            plan with { EffectPlanDigest = digest }, workspaceRoot, cancellationToken, invocation.InitialTargets,
+            invocation.OperatorCall?.PhysicalScope).ConfigureAwait(false);
 
         return admitted.IsSuccess ? Result<IWorkspaceMutationLease>.Success(new Lease(this, invocation, admitted.Value)) : admitted.Error;
     }
 
     private sealed class Invocation(GuildWorkspaceMutationFence owner, GuildVerifiedAuthority authority, Guid workspaceId,
-        GuildChildToolAdmission? toolAdmission, WorkspaceLeaseIdentitySet? initialTargets, string? callDigest)
+        GuildChildToolAdmission? toolAdmission, WorkspaceLeaseIdentitySet? initialTargets, string? callDigest,
+        GuildOperatorWorkspaceWrite.Call? operatorCall)
     {
         internal GuildWorkspaceMutationFence Owner { get; } = owner;
 
@@ -74,6 +85,8 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
         internal WorkspaceLeaseIdentitySet? InitialTargets { get; } = initialTargets;
 
         internal string? CallDigest { get; } = callDigest;
+
+        internal GuildOperatorWorkspaceWrite.Call? OperatorCall { get; } = operatorCall;
 
         internal volatile bool Active = true;
     }
@@ -105,6 +118,15 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
                 if (!CanUse(rollback)) return Forbidden;
             }
 
+            if (!rollback && invocation.OperatorCall is { } operatorCall)
+            {
+                Result live = await operatorCall.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+                if (live.IsFailure) return live;
+
+                if (!CanUse(rollback)) return Forbidden;
+            }
+
             return rollback
                 ? await owner.Broker.ValidateRollbackAsync(permit, cancellationToken).ConfigureAwait(false)
                 : await owner.Broker.ValidateCommitAsync(permit, cancellationToken).ConfigureAwait(false);
@@ -126,7 +148,7 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
             CanUse(true) ? new(owner.Broker.AdoptRemovedDirectoryAsync(permit, proof, rollback, cancellationToken)) : ValueTask.FromResult(Result.Failure(Forbidden));
 
         private bool CanUse(bool rollback) => Volatile.Read(ref _disposed) == 0
-            && (rollback || invocation.Active && ReferenceEquals(Current.Value, invocation));
+            && (rollback || invocation.Active && invocation.OperatorCall?.IsActive != false && ReferenceEquals(Current.Value, invocation));
 
         public IDisposable Enter()
         {

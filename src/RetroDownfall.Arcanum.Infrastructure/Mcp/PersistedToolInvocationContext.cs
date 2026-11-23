@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
@@ -9,6 +11,8 @@ internal sealed record PersistedToolInvocationContext(
     Guid SessionId,
     Guid AssistantEntryId)
 {
+    internal GuildOperatorWorkspaceWrite.Call? WorkspaceMutation { get; init; }
+
     internal bool IsValid =>
         SessionId != Guid.Empty
         && AssistantEntryId != Guid.Empty;

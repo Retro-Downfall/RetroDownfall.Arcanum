@@ -17,6 +17,9 @@ public sealed record ProviderSettings
     /// <summary>Optional physical runtime identity. Unset providers receive ordinary independent HTTP dispatch.</summary>
     public string? LocalRuntimeId { get; set; }
 
+    /// <summary>Ephemeral observation from the runtime bound to one provider lease.</summary>
+    internal (string Model, string Digest)? LoadedOllamaModel { get; set; }
+
     /// <summary>
     /// Optional exact environment-variable name containing this provider's API key. When omitted,
     /// Arcanum derives <c>ARCANUM_PROVIDER_{NORMALIZED_NAME}_API_KEY</c>; secret values never enter

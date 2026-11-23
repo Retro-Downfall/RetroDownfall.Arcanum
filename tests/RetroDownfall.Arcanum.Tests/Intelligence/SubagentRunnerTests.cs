@@ -348,6 +348,9 @@ public sealed class SubagentRunnerTests
         Assert.Equal(2, messages.Count);
         Assert.Equal("system", messages[0].Role);
         Assert.Contains("isolated subagent", messages[0].Content);
+        Assert.Contains("analyze supplied content", messages[0].Content, StringComparison.Ordinal);
+        Assert.Contains("cannot execute commands", messages[0].Content, StringComparison.Ordinal);
+        Assert.Contains("report that limitation", messages[0].Content, StringComparison.Ordinal);
         Assert.DoesNotContain("parent", messages[1].Content, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("Review the explicit file.", messages[1].Content);
 

@@ -3104,6 +3104,10 @@ public sealed partial class WizardIntelligenceProvider(
                 streamTurnAmbients.HumanPromptEmitter = liveHumanPromptEmitter;
             }
 
+            GuildOperatorWorkspaceWrite? workspaceWrite = streamModelDeclaresToolsUnsupported
+                ? null
+                : await ResolveWorkspaceWriteAsync(request, invocationContext, grimoireTurn, inferenceToken).ConfigureAwait(false);
+
             List<AITool> streamToolSet = request.DisableAllTools
                 || streamModelDeclaresToolsUnsupported
                 ? []
@@ -3117,7 +3121,8 @@ public sealed partial class WizardIntelligenceProvider(
                         inferenceToken,
                         memoryDelegation: memoryDelegation,
                         recallInvocation: invocationContext,
-                        recallTurn: covenantScope).ConfigureAwait(false);
+                        recallTurn: covenantScope,
+                        workspaceWrite: workspaceWrite).ConfigureAwait(false);
 
             ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
                 request,
@@ -3127,7 +3132,8 @@ public sealed partial class WizardIntelligenceProvider(
                 targetModel,
                 streamAttachmentPrep.VisibleAttachmentIds,
                 invocationContext,
-                inferenceToken).ConfigureAwait(false);
+                inferenceToken,
+                workspaceWrite).ConfigureAwait(false);
 
             recoveryWorkspace = streamTurnContext.WorkspaceRoot;
 
@@ -5505,7 +5511,8 @@ public sealed partial class WizardIntelligenceProvider(
         string targetModel,
         IReadOnlySet<Guid>? visibleAttachmentIds,
         ArcanumInvocationContext? invocation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GuildOperatorWorkspaceWrite? workspaceWrite = null)
     {
         // The Sanctum is the bound Campaign's: its policy, its mode and its disabled tools come from that Campaign, not from whether the
         // working directory string equals its registered path (SanctumCampaignResolution).
@@ -5533,7 +5540,8 @@ public sealed partial class WizardIntelligenceProvider(
         {
             Campaign = sanctum.Campaign,
             CampaignId = sanctum.CampaignId?.ToString(),
-            WorkspaceRoot = ResolveSanctumWorkspaceRoot(request, sanctum.Campaign),
+            WorkspaceRoot = workspaceWrite?.WorkingDirectory ?? ResolveSanctumWorkspaceRoot(request, sanctum.Campaign),
+            WorkspaceWrite = workspaceWrite,
             PersistedSessionId = grimoireTurn.SessionId,
             AssistantEntryId = grimoireTurn.AssistantEntryId,
             ClaimLease = grimoireTurn.ClaimLease,
@@ -7621,14 +7629,15 @@ public sealed partial class WizardIntelligenceProvider(
         List<ContextPreviewTool>? previewExclusions = null,
         MemoryDelegationRootBinding? memoryDelegation = null,
         ArcanumInvocationContext? recallInvocation = null,
-        CovenantTurnScope? recallTurn = null)
+        CovenantTurnScope? recallTurn = null,
+        GuildOperatorWorkspaceWrite? workspaceWrite = null)
     {
         if (request.DisableAllTools)
         {
             return [];
         }
 
-        string workingDirectory = request.WorkingDirectory;
+        string workingDirectory = workspaceWrite?.WorkingDirectory ?? request.WorkingDirectory;
 
         ParsedSpell? activeSpell = resolvedSpell?.Primary;
 
@@ -7795,17 +7804,11 @@ public sealed partial class WizardIntelligenceProvider(
                 continue;
             }
 
-            if (!advertiseApplyPatch
-                && string.Equals(
-                    t.Name,
-                    ToolRiskClassifier.ApplyPatchToolName,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+            bool isManagedWriter = IsLegacyMutatingFilesystemTool(t.Name)
+                || string.Equals(t.Name, ToolRiskClassifier.ApplyPatchToolName, StringComparison.OrdinalIgnoreCase);
 
-            if (!advertiseApplyPatch
-                && IsLegacyMutatingFilesystemTool(t.Name))
+            if (isManagedWriter && (!advertiseApplyPatch || RequiresGuildWorkspaceAuthority
+                && (workspaceWrite is null || t is not McpBridgeTool { IsNativeWorkspaceWriter: true })))
             {
                 continue;
             }

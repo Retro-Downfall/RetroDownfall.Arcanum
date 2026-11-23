@@ -77,7 +77,8 @@ public sealed class ToolExecutionPipeline(
     GrimoireTurnWriter? grimoireTurnWriter = null,
     IAttachmentSourceResolver? attachmentSourceResolver = null,
     CovenantToolEgressGuard? covenantEgressGuard = null,
-    ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
+    ICovenantAuthoritySnapshotProvider? covenantAuthority = null,
+    IOptionsMonitor<ArcanumSettings>? liveSettings = null)
 {
     /// <summary>
     /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated
@@ -99,6 +100,8 @@ public sealed class ToolExecutionPipeline(
     public sealed class TurnContext
     {
         internal GuildToolInvocationContext? GuildTools { get; init; }
+
+        internal GuildOperatorWorkspaceWrite? WorkspaceWrite { get; init; }
 
         public Campaign? Campaign { get; init; }
 
@@ -1977,6 +1980,29 @@ public sealed class ToolExecutionPipeline(
                 return new(saved, wardEvents) { FailureEvidence = savedFailure };
             }
         }
+
+        bool nativeWriter = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool { IsNativeWorkspaceWriter: true };
+
+        bool requiresWorkspaceAuthority = nativeWriter && (WorkspaceMutationFence.IsInstalled
+            || (liveSettings?.CurrentValue ?? settings.Value).Features.Guild);
+
+        PersistedToolInvocationContext? persisted = PersistedToolInvocationAmbient.Current;
+
+        using GuildOperatorWorkspaceWrite.Call? workspaceCall = requiresWorkspaceAuthority && persisted is { IsValid: true }
+            ? turnContext.WorkspaceWrite?.BeginCall(persisted.SessionId, persisted.AssistantEntryId, fcc.Name)
+            : null;
+
+        if (requiresWorkspaceAuthority && workspaceCall is null)
+        {
+            return new(GuildToolInvocationContext.Format(GuildOperatorWorkspaceWrite.Forbidden), wardEvents, Denied: true)
+            {
+                FailureEvidence = new(TurnFailurePhase.ToolAuthorization, TurnEffectState.NotDispatched, TurnRecoveryAction.UseAuthorizedScope),
+            };
+        }
+
+        using IDisposable? workspaceScope = workspaceCall is not null
+            ? PersistedToolInvocationAmbient.Begin(persisted! with { WorkspaceMutation = workspaceCall })
+            : null;
 
         object? rawResult = await InvokeToolCallAsync(
             fcc,

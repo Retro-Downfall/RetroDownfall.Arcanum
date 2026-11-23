@@ -8,6 +8,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 internal sealed record WorkspaceCheckSdkSnapshot(
     string Version,
+    int MajorVersion,
     string SdkPath,
     string RuntimeVersion,
     string RuntimePath,
@@ -301,6 +302,7 @@ internal static class WorkspaceCheckSdkResolver
             null,
             new WorkspaceCheckSdkSnapshot(
                 selectedVersion.Original,
+                selectedVersion.Major,
                 selectedPath,
                 runtimeVersion,
                 runtimePath,

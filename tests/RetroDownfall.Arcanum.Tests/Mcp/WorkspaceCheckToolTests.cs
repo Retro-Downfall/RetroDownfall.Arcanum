@@ -183,6 +183,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [InlineData("-p:MSBuildProjectExtensionsPath=/workspace/obj")]
     [InlineData("-p:ArtifactsPath=/workspace/artifacts")]
     [InlineData("-p:UseArtifactsOutput=true")]
+    [InlineData("-p:AlternateCommonProps=/workspace/override.props")]
     [InlineData("-p:NuGetPackages=/workspace/packages")]
     [InlineData("--output")]
     [InlineData("-o")]
@@ -1824,6 +1825,61 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Equal("restore_required", stale.Code);
     }
 
+    [Theory]
+    [InlineData(@"..\Library/Library.csproj", @"sub\Common.props", true)]
+    [InlineData(@"..\Library\Library.csproj", @"..\..\Outside.props", false)]
+    public async Task Restore_seed_follows_msbuild_separators_and_keeps_imports_inside_the_workspace(
+        string reference,
+        string import,
+        bool expected)
+    {
+        using TestTree tree = new();
+
+        string workspace = tree.CreateDirectory("workspace");
+        string app = tree.CreateDirectory("workspace/App");
+        string library = tree.CreateDirectory("workspace/Library");
+        string properties = tree.CreateDirectory("workspace/Library/sub");
+
+        File.WriteAllText(Path.Combine(app, "App.csproj"),
+            $"""<Project><ItemGroup><ProjectReference Include="{reference}" /></ItemGroup></Project>""");
+
+        File.WriteAllText(Path.Combine(library, "Library.csproj"),
+            $"""<Project><Import Project="{import}" /></Project>""");
+
+        File.WriteAllText(Path.Combine(properties, "Common.props"), "<Project />");
+
+        File.WriteAllText(Path.Combine(workspace, "..", "Outside.props"), "<Project />");
+
+        WriteRestoreArtifacts(tree.CreateDirectory("workspace/App/obj"), "App.csproj");
+        WriteRestoreArtifacts(tree.CreateDirectory("workspace/Library/obj"), "Library.csproj");
+
+        var result = await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(workspace,
+            tree.CreateDirectory("run/artifacts"), WorkspaceCheckRestoreSeedOptions.Default, CancellationToken.None);
+
+        Assert.Equal(expected, result.Success);
+
+        if (!expected)
+        {
+            Assert.Equal("restore_required", result.Code);
+
+            return;
+        }
+
+        Assert.Equal(2, result.ProjectCount);
+
+        if (Path.DirectorySeparatorChar == '/')
+        {
+            // Unix can also store a filename containing a literal backslash.
+            File.WriteAllText(Path.Combine(library, @"sub\Common.props"), "<Project />");
+
+            var ambiguous = await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(workspace,
+                tree.CreateDirectory("run/ambiguous"), WorkspaceCheckRestoreSeedOptions.Default, CancellationToken.None);
+
+            Assert.False(ambiguous.Success);
+            Assert.Equal("restore_required", ambiguous.Code);
+        }
+    }
+
     [Fact]
     public async Task Restore_seed_recurses_through_project_references()
     {
@@ -1970,6 +2026,50 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                     CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(WorkspaceCheckKind.Build, "build")]
+    [InlineData(WorkspaceCheckKind.Test, "test")]
+    public void Pre_net8_checks_use_a_private_per_project_layout_supported_by_the_selected_sdk(
+        WorkspaceCheckKind kind,
+        string command)
+    {
+        using TestTree tree = new();
+
+        string workspace = tree.CreateDirectory("source");
+        string dotnet = tree.CreateDirectory("dotnet");
+
+        WorkspaceCheckRunDirectories directories =
+            WorkspaceCheckRunDirectories.CreateUnder(tree.CreateDirectory("control"));
+
+        directories.PinSelectedSdk("7.0.102", dotnet);
+
+        WorkspaceCheckResolvedProfile profile = new(
+            "legacy-check",
+            WorkspaceCheckCatalogDefaults.DotNetExecutableId,
+            kind,
+            WorkspaceCheckDiagnosticParserKind.MsBuild,
+            [command, "--no-restore"]);
+
+        WorkspaceCheckEnvironmentPaths environment = new(
+            dotnet, directories.Home, directories.CliHome,
+            directories.HttpCache, directories.Temp, tree.CreateDirectory("packages"));
+
+        var start = WorkspaceCheckProcessStartInfoFactory.Create(
+            Path.Combine(dotnet, "dotnet"),
+            Path.Combine(dotnet, "sdk", "7.0.102", "dotnet.dll"),
+            7,
+            workspace, profile, directories, environment, Path.Combine(workspace, "Library.csproj"));
+
+        Assert.DoesNotContain("--artifacts-path", start.ArgumentList);
+
+        string layout = Assert.IsType<string>(start.Environment["AlternateCommonProps"]);
+
+        Assert.Equal(directories.Root, Path.GetDirectoryName(layout));
+        Assert.True(File.Exists(layout));
+        Assert.Contains("--no-restore", start.ArgumentList);
+        Assert.Equal(directories.Artifacts, start.Environment["ArtifactsPath"]);
+    }
+
     [Fact]
     public void Process_start_info_uses_argument_list_artifacts_path_and_test_results_root()
     {
@@ -1998,6 +2098,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             WorkspaceCheckProcessStartInfoFactory.Create(
                 "/trusted/dotnet/dotnet",
                 "/trusted/dotnet/sdk/10.0.100/dotnet.dll",
+                10,
                 workspace,
                 profile,
                 directories,
@@ -2044,6 +2145,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             WorkspaceCheckProcessStartInfoFactory.Create(
                 "/trusted/dotnet/dotnet",
                 "/trusted/dotnet/sdk/10.0.100/dotnet.dll",
+                10,
                 workspace,
                 lintProfile,
                 directories,

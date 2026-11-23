@@ -978,6 +978,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
             Assert.Equal("Bearer " + ProviderKey, call.Authorization);
         });
         var function = Assert.Single(calls[0].Payload.GetProperty("tools").EnumerateArray(), tool => tool.GetProperty("function").GetProperty("name").GetString() == "delegate_task").GetProperty("function");
+        Assert.Contains("cannot execute commands or run tests", function.GetProperty("description").GetString(), StringComparison.Ordinal);
         var schema = function.GetProperty("parameters");
         Assert.False(schema.GetProperty("properties").TryGetProperty("max_tokens", out _));
         Assert.False(schema.GetProperty("properties").TryGetProperty("max_cost_usd", out _));
@@ -985,6 +986,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         Assert.DoesNotContain(schema.GetProperty("required").EnumerateArray(), item => item.GetString() == "memory_grant");
         if (resolveCreatedSession is null) Assert.Contains(DelegationHistory, calls[0].Payload.GetProperty("messages").GetRawText());
         string child = calls[1].Payload.GetProperty("messages").GetRawText();
+        Assert.Contains("cannot execute commands or run tests", child, StringComparison.Ordinal);
         Assert.Contains(DelegationSelected, child);
         Assert.DoesNotContain(DelegationUnselected, child);
         Assert.DoesNotContain(DelegationHistory, child);
@@ -996,6 +998,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         Assert.False(calls[1].Payload.TryGetProperty("tool_choice", out _));
         var toolResult = Assert.Single(calls[2].Payload.GetProperty("messages").EnumerateArray(), message => message.GetProperty("role").GetString() == "tool");
         Assert.Equal("call-published-delegation", toolResult.GetProperty("tool_call_id").GetString());
+        Assert.Contains("Host-observed command execution: none.", toolResult.GetProperty("content").GetRawText(), StringComparison.Ordinal);
         Assert.Contains(DelegationChildAnswer, toolResult.GetProperty("content").GetRawText());
 
         if (resolveCreatedSession is not null) sessionId = await resolveCreatedSession();
@@ -1008,6 +1011,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         var finalEntry = Assert.Single(entries, entry => entry.Content == DelegationFinal);
         Assert.Equal("assistant", callEntry.Role);
         Assert.Equal("system", resultEntry.Role);
+        Assert.Contains("Host-observed command execution: none.", resultEntry.Content, StringComparison.Ordinal);
         Assert.Contains(DelegationChildAnswer, resultEntry.Content);
         Assert.Equal("assistant", finalEntry.Role);
 

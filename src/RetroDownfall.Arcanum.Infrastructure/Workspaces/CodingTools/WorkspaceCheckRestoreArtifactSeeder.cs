@@ -952,8 +952,16 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                     return false;
                 }
 
+                // MSBuild accepts backslashes on Unix. If both spellings could name inputs,
+                // refuse the ambiguous restore graph rather than fingerprinting a different file.
+                if (Path.DirectorySeparatorChar == '/' && expanded.Contains('\\')
+                    && File.Exists(Path.GetFullPath(expanded, currentDirectory)))
+                {
+                    return false;
+                }
+
                 string child = Path.GetFullPath(
-                    expanded,
+                    expanded.Replace('\\', Path.DirectorySeparatorChar),
                     currentDirectory);
                 Dictionary<string, string> childProperties =
                     projectReference

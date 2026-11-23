@@ -29,6 +29,7 @@ public static class WorkspaceCheckArgumentPolicy
             || normalized.Contains("outdir", StringComparison.Ordinal)
             || normalized.Contains("intermediateoutputpath", StringComparison.Ordinal)
             || normalized.Contains("projectextensionspath", StringComparison.Ordinal)
+            || normalized.Contains("alternatecommonprops", StringComparison.Ordinal)
             || normalized.Contains("artifactspath", StringComparison.Ordinal)
             || normalized.Contains("useartifactsoutput", StringComparison.Ordinal)
             || normalized.Contains("nuget_packages", StringComparison.Ordinal)

@@ -438,6 +438,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 WorkspaceCheckProcessStartInfoFactory.Create(
                     executable.Snapshot.CanonicalPath,
                     sdk.Snapshot.SdkEntryPointPath,
+                    sdk.Snapshot.MajorVersion,
                     request.WorkspaceRoot,
                     profile.Profile,
                     directories,

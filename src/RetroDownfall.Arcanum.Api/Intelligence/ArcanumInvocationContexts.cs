@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -114,6 +115,11 @@ internal static class ArcanumInvocationContexts
         ArcanumInvocationContext invocation = request.SessionId is not null || campaignTurn
             ? ForSessionTurn(httpContext, request, campaign)
             : ForStatelessTurn(httpContext, request, campaign);
+
+        if (!InferenceContextBuilder.HasStatelessMessages(request) && ApiKeyAuthenticator.HasAuthenticatedOperator(httpContext))
+        {
+            invocation.MarkAuthenticatedWorkspaceTurn(CanonicalPingResolution.HasGlobalWorkspaceSelection(httpContext, request));
+        }
 
         if (recallTurn)
         {

@@ -57,8 +57,13 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.Equal(2, chat.BufferedCallCount);
 
-        Assert.Contains(chat.LastBufferedMessages, message => message.Role == ChatRole.Tool
-            && message.Contents.OfType<FunctionResultContent>().Any(content => content.Result?.ToString() == "child summary"));
+        var toolMessage = Assert.Single(chat.LastBufferedMessages, message => message.Role == ChatRole.Tool);
+
+        var childReport = Assert.IsType<string>(Assert.Single(toolMessage.Contents.OfType<FunctionResultContent>()).Result);
+
+        Assert.StartsWith("Host-observed command execution: none.", childReport, StringComparison.Ordinal);
+
+        Assert.Contains("child summary", childReport, StringComparison.Ordinal);
     }
 
     [SkippableTheory]

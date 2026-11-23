@@ -404,6 +404,9 @@ public interface IModelTokenEstimator
         ProviderSettings provider,
         string canonicalModel);
 
+    ResolvedModelTokenizationProfile ResolveEffectiveProfile(ModelTokenizationRequest request) =>
+        ResolveEffectiveProfile(request.Provider, request.Model);
+
     TokenEstimate EstimateText(ProviderSettings provider, string canonicalModel, string? text);
 
     ContextTokenBreakdown EstimateContext(ModelTokenizationRequest request);

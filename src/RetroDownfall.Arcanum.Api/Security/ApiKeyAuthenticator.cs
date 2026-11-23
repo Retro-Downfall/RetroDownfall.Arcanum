@@ -54,6 +54,11 @@ public sealed class ApiKeyAuthenticator(
 
     private sealed record FailedRefresh(long Generation, long FailedAtTimestamp);
 
+    private sealed class AuthenticatedOperator;
+
+    internal static bool HasAuthenticatedOperator(HttpContext context) =>
+        context.Features.Get<AuthenticatedOperator>() is not null;
+
     public async ValueTask<bool> IsAuthorizedAsync(HttpContext httpContext)
     {
         if (httpContext.GetEndpoint()?.Metadata.GetMetadata<A2APeerRouteMetadata>() is { } route)
@@ -85,8 +90,10 @@ public sealed class ApiKeyAuthenticator(
                 return false;
             }
 
-            return ArcanumTransportPeer.IsLoopback(httpContext)
+            bool authorized = ArcanumTransportPeer.IsLoopback(httpContext)
                 && processCapabilities?.IsValidEncoded(capabilityHeader[0]) == true;
+
+            return MarkOperatorAuthentication(httpContext, authorized);
         }
 
         if (!TryExtractHeaderValue(headers, out string? headerValue))
@@ -129,9 +136,8 @@ public sealed class ApiKeyAuthenticator(
                     // reachable with an undersized span.
                     _ = SHA256.HashData(headerUtf8, headerDigest);
 
-                    return CryptographicOperations.FixedTimeEquals(
-                        expectedDigest,
-                        headerDigest);
+                    return MarkOperatorAuthentication(httpContext,
+                        CryptographicOperations.FixedTimeEquals(expectedDigest, headerDigest));
                 }
                 finally
                 {
@@ -147,6 +153,13 @@ public sealed class ApiKeyAuthenticator(
         {
             CryptographicOperations.ZeroMemory(expectedDigest);
         }
+    }
+
+    private static bool MarkOperatorAuthentication(HttpContext context, bool authorized)
+    {
+        if (authorized) context.Features.Set(new AuthenticatedOperator());
+
+        return authorized;
     }
 
     /// <summary>

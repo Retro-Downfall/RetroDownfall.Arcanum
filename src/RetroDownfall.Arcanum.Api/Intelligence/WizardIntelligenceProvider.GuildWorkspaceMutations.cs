@@ -1,3 +1,6 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -5,11 +8,46 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed partial class WizardIntelligenceProvider
 {
+    private bool RequiresGuildWorkspaceAuthority => WorkspaceMutationFence.IsInstalled
+        || (serviceProvider?.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue ?? settings.Value).Features.Guild;
+
+    private async Task<GuildOperatorWorkspaceWrite?> ResolveWorkspaceWriteAsync(PingRequest request,
+        ArcanumInvocationContext invocation, GrimoireTurnWriter.TurnHandle turn, CancellationToken ct)
+    {
+        if (!RequiresGuildWorkspaceAuthority || ShouldDisableMcpTools(request) || request.ForwardClientTools
+            || request.ToolPolicy == ToolPolicy.ReadOnlyTools || invocation.GuildBinding is not null
+            || !invocation.HasAuthenticatedWorkspaceTurn || turn.SessionId is not { } sessionId
+            || request.SessionId is { } requestedSession && requestedSession != sessionId
+            || turn.AssistantEntryId is not { } assistantEntryId || invocation.Campaign is not { } campaign || campaign == default
+            || serviceProvider?.GetService<GuildNativeHost>() is not { } host || host.RequireExecutionReady().IsFailure)
+            return null;
+
+        Guid? campaignId = campaign.CampaignId;
+
+        Campaign? workspace = string.IsNullOrWhiteSpace(request.WorkingDirectory)
+            ? campaignId is { } id ? await campaignRepository.GetByIdAsync(id, ct).ConfigureAwait(false) : null
+            : await campaignRepository.GetByContainedPathAsync(request.WorkingDirectory, ct).ConfigureAwait(false);
+
+        if (workspace is null) return null;
+
+        string directory = string.IsNullOrWhiteSpace(request.WorkingDirectory) ? workspace.Path : request.WorkingDirectory;
+
+        var allowed = CampaignPathPolicy.ValidateAndNormalizePath(directory, settings.Value);
+
+        if (allowed.IsFailure) return null;
+
+        var prepared = await host.PrepareWorkspaceWriteAsync(sessionId, campaignId, assistantEntryId, workspace.Id, allowed.Value, ct)
+            .ConfigureAwait(false);
+
+        return prepared.IsSuccess ? prepared.Value : null;
+    }
+
     internal sealed class WorkspaceMutationRuntime(WizardIntelligenceProvider owner, GuildProviderCallBinding binding) : IGuildWorkspaceMutationRuntime
     {
         public Task<ResourceLimits> GetResourceLimitsAsync(string root, CancellationToken cancellationToken) =>

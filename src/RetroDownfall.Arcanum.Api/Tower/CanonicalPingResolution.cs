@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -23,7 +24,8 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// </remarks>
 internal sealed record CanonicalPingTurn(
     PingRequest Request,
-    CanonicalCampaignContext Campaign);
+    CanonicalCampaignContext Campaign,
+    bool UsesGlobalWorkspaceSelection = false);
 
 /// <summary>
 /// Resolves canonical Campaign authority for a ping-shaped request at an HTTP seam.
@@ -32,8 +34,8 @@ internal sealed record CanonicalPingTurn(
 /// Replaces <c>PingRequestResolver</c>, which answered a strictly weaker question. That helper returned
 /// as soon as any source produced a directory, so a request naming Campaign C while supplying a path
 /// inside Campaign D was accepted, and which Campaign won depended on which field happened to be
-/// populated. Here every supplied source is verified against every other one, and a disagreement is a
-/// typed conflict.
+/// populated. The canonical resolver verifies the supplied sources. An authenticated native Guild turn
+/// may independently select a workspace for an existing Global Session while retaining its Global binding.
 ///
 /// <para>The working-directory fill from the old helper is preserved verbatim: when a request names a
 /// Campaign and supplies no directory, the Campaign's recorded path is filled in. That behaviour feeds
@@ -42,6 +44,13 @@ internal sealed record CanonicalPingTurn(
 /// </remarks>
 internal static class CanonicalPingResolution
 {
+    private sealed record GlobalWorkspaceSelection(Guid SessionId, string Directory);
+
+    internal static bool HasGlobalWorkspaceSelection(HttpContext context, PingRequest request) =>
+        context.Features.Get<GlobalWorkspaceSelection>() is { } selection
+        && request.SessionId == selection.SessionId && request.CampaignId is null
+        && string.Equals(request.WorkingDirectory, selection.Directory, StringComparison.Ordinal);
+
     /// <summary>
     /// Resolves authority and fills the workspace directory, or returns the first typed failure. The answer is the resolver's alone: it never
     /// carries the Campaign's registered root and never reads the registry, so inspection and every caller that is not a turn keep exactly what
@@ -70,18 +79,36 @@ internal static class CanonicalPingResolution
 
         if (prepared.IsFailure) return prepared.Error;
 
-        return await ResolveCoreAsync(
-            prepared.Value,
+        PingRequest effective = prepared.Value;
+
+        ArcanumSettings? settings = httpContext.RequestServices.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue;
+
+        bool maySelectGlobalWorkspace = settings?.Features.Guild == true
+            && effective is { SessionId: not null, CampaignId: null, DisableAllTools: false, DisableMcpTools: false, ForwardClientTools: false }
+            && !InferenceContextBuilder.HasStatelessMessages(effective)
+            && ApiKeyAuthenticator.HasAuthenticatedOperator(httpContext);
+
+        Result<CanonicalPingTurn> resolved = await ResolveCoreAsync(
+            effective,
             httpContext.RequestServices,
             ArcanumInvocationContexts.ResolveContextPolicy(httpContext),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            maySelectGlobalWorkspace ? settings : null).ConfigureAwait(false);
+
+        if (resolved.IsSuccess && resolved.Value.UsesGlobalWorkspaceSelection && effective.SessionId is { } sessionId)
+        {
+            httpContext.Features.Set(new GlobalWorkspaceSelection(sessionId, effective.WorkingDirectory));
+        }
+
+        return resolved;
     }
 
     private static async Task<Result<CanonicalPingTurn>> ResolveCoreAsync(
         PingRequest request,
         IServiceProvider services,
         CovenantContextPolicy? turnContextPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArcanumSettings? globalWorkspaceSettings = null)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -90,14 +117,26 @@ internal static class CanonicalPingResolution
         ICanonicalCampaignContextResolver resolver =
             services.GetRequiredService<ICanonicalCampaignContextResolver>();
 
-        Result<CanonicalCampaignContext> campaign = await resolver
-            .ResolveAsync(
-                new CanonicalCampaignResolutionRequest(
-                    request.SessionId,
-                    request.CampaignId,
-                    string.IsNullOrWhiteSpace(request.WorkingDirectory) ? null : request.WorkingDirectory),
-                cancellationToken)
-            .ConfigureAwait(false);
+        CanonicalCampaignResolutionRequest selection = new(request.SessionId, request.CampaignId,
+            string.IsNullOrWhiteSpace(request.WorkingDirectory) ? null : request.WorkingDirectory);
+
+        Result<CanonicalCampaignContext> campaign = await resolver.ResolveAsync(selection, cancellationToken).ConfigureAwait(false);
+
+        bool usesGlobalWorkspaceSelection = false;
+
+        if (globalWorkspaceSettings is not null && campaign.IsFailure && campaign.Error.Code == ErrorCodes.Covenant.CampaignBindingConflict
+            && Core.Configuration.CampaignPathPolicy.ValidateAndNormalizePath(request.WorkingDirectory, globalWorkspaceSettings).IsSuccess)
+        {
+            Result<CanonicalCampaignContext> binding = await resolver
+                .ResolveAsync(selection with { WorkingDirectory = null }, cancellationToken).ConfigureAwait(false);
+
+            if (binding.IsSuccess && binding.Value == CanonicalCampaignContext.GlobalOnly)
+            {
+                campaign = binding;
+
+                usesGlobalWorkspaceSelection = true;
+            }
+        }
 
         if (campaign.IsFailure)
         {
@@ -136,7 +175,7 @@ internal static class CanonicalPingResolution
 
         return filled.IsFailure
             ? filled.Error
-            : Result<CanonicalPingTurn>.Success(new CanonicalPingTurn(filled.Value, resolved));
+            : Result<CanonicalPingTurn>.Success(new CanonicalPingTurn(filled.Value, resolved, usesGlobalWorkspaceSelection));
     }
 
     private static Task<Result<PingRequest>> FillWorkingDirectoryAsync(

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.ML.Tokenizers;
+using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -18,7 +19,17 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
 
     private readonly object _initializationLock = new();
 
+    private readonly OllamaQwenTokenizer _ollamaQwen = new();
+
     public Tokenizer ResolveTokenizer(string? encodingName) => Resolve(encodingName).Tokenizer;
+
+    internal string? FindQualifiedOllamaManifestDigest(string model) =>
+        _ollamaQwen.FindQualifiedManifestDigest(model);
+
+    internal InferenceTextCounter? TryResolveInstalledOllama(ProviderSettings provider, string model) =>
+        provider.LoadedOllamaModel is { } observed && observed.Model == model
+            ? _ollamaQwen.TryResolve(model, observed.Digest)
+            : null;
 
     internal ResolvedInferenceTokenizer Resolve(string? encodingName)
     {
@@ -78,16 +89,26 @@ internal sealed record ResolvedInferenceTokenizer(
     string ActualEncoding,
     bool UsedFallback)
 {
-    public TiktokenTokenizer Tokenizer => Counter.Tokenizer;
+    public TiktokenTokenizer Tokenizer => Counter.Tokenizer!;
 }
 
 /// <summary>Owns the exact embedded-encoding factory result; accepts no caller tokenizer or hooks.</summary>
-internal sealed class InferenceTextCounter(string encodingName)
+internal sealed class InferenceTextCounter
 {
-    private readonly TiktokenTokenizer _tokenizer = TiktokenTokenizer.CreateForEncoding(encodingName);
+    private readonly Func<string, int> _count;
 
-    public TiktokenTokenizer Tokenizer => _tokenizer;
+    public InferenceTextCounter(string encodingName)
+    {
+        TiktokenTokenizer tokenizer = TiktokenTokenizer.CreateForEncoding(encodingName);
 
-    public int CountTokens(string text) =>
-        _tokenizer.CountTokens(text, considerPreTokenization: true, considerNormalization: false);
+        Tokenizer = tokenizer;
+
+        _count = text => tokenizer.CountTokens(text, considerPreTokenization: true, considerNormalization: false);
+    }
+
+    public InferenceTextCounter(Func<string, int> count) => _count = count;
+
+    public TiktokenTokenizer? Tokenizer { get; }
+
+    public int CountTokens(string text) => _count(text);
 }

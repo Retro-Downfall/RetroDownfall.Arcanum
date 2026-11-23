@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+using System.Net;
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
@@ -8,6 +9,7 @@ using OpenAI;
 using OpenAI.Chat;
 using RetroDownfall.Arcanum.Api.Intelligence.Familiars;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
@@ -39,7 +41,9 @@ public sealed class ChatClientFactory(
     IFamiliarProcessRunner? familiarProcessRunner,
     ILoggerFactory? loggerFactory,
     PromptCacheConfigurationEpoch? promptCacheConfigurationEpoch,
-    ITapestryProviderValidator? tapestryValidator) : IChatClientFactory
+    ITapestryProviderValidator? tapestryValidator,
+    LocalRuntimeInspector? runtimeInspector = null,
+    InferenceTokenizerResolver? tokenizerResolver = null) : IChatClientFactory
 {
     /// <summary>Existing ordinary-only construction; an active Tapestry observation still fails closed.</summary>
     public ChatClientFactory(IHttpClientFactory httpClientFactory, IOptionsMonitor<ArcanumSettings> optionsMonitor,
@@ -139,6 +143,12 @@ public sealed class ChatClientFactory(
                 $"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'.");
         }
 
+        if (providerWork?.Ollama == true)
+        {
+            provider.LoadedOllamaModel = await ObserveTokenizerModelAsync(
+                provider, resolvedModel, configuration, cancellationToken).ConfigureAwait(false);
+        }
+
         if (enabled)
         {
             ResolvedProviderCredential captured = await _apiKeyResolver
@@ -153,6 +163,63 @@ public sealed class ChatClientFactory(
             .ConfigureAwait(false);
 
         return CreateOpenAiCompatibleLease(provider, resolvedModel, resolvedApiKey, providerWork!);
+    }
+
+    private async Task<(string Model, string Digest)?> ObserveTokenizerModelAsync(
+        ProviderSettings provider,
+        string model,
+        ArcanumSettings configuration,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeInspector is null || tokenizerResolver is null
+            || !ProviderResolver.TryResolveModelEntry(provider, model, out ModelEntry? entry)
+            || !string.Equals(entry?.Name, model, StringComparison.Ordinal)
+            || !Uri.TryCreate(provider.Endpoint, UriKind.Absolute, out Uri? endpoint)
+            || !IPAddress.TryParse(endpoint.IdnHost.Trim('[', ']'), out IPAddress? address) || !IPAddress.IsLoopback(address)
+            || endpoint.Scheme != Uri.UriSchemeHttp || endpoint.Port != 11434 || endpoint.AbsolutePath.TrimEnd('/') != "/v1"
+            || endpoint.UserInfo.Length != 0 || endpoint.Query.Length != 0 || endpoint.Fragment.Length != 0)
+        {
+            return null;
+        }
+
+        LocalRuntimeSettings runtime = configuration.LocalRuntimes.Single(candidate =>
+            string.Equals(candidate.Id, provider.LocalRuntimeId, StringComparison.OrdinalIgnoreCase));
+
+        if (!LocalRuntimeAdapterCatalog.TryGetManagementUri(runtime, out Uri? management)
+            || management!.AbsolutePath != "/" || management.Scheme != endpoint.Scheme || management.Port != endpoint.Port
+            || !string.Equals(management.IdnHost, endpoint.IdnHost, StringComparison.Ordinal)
+            || tokenizerResolver.FindQualifiedOllamaManifestDigest(model) is not { } manifestDigest)
+        {
+            return null;
+        }
+
+        // Bind one short, read-only management observation to the frozen lease. A slow or
+        // unloaded runtime leaves the conservative estimate available for the entire turn.
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        deadline.CancelAfter(TimeSpan.FromMilliseconds(500));
+
+        try
+        {
+            var inspection = await runtimeInspector.InspectAsync(configuration, runtime.Id, deadline.Token).ConfigureAwait(false);
+
+            deadline.Token.ThrowIfCancellationRequested();
+
+            if (inspection.IsFailure)
+            {
+                return null;
+            }
+
+            LocalRuntimeLoadedModel[] matches = inspection.Value.LoadedModels
+                .Where(item => string.Equals(item.Name, model, StringComparison.Ordinal)).Take(2).ToArray();
+
+            return matches is [{ Digest: { } digest }] &&
+                (digest == manifestDigest || digest == "sha256:" + manifestDigest) ? (model, manifestDigest) : null;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -199,7 +266,7 @@ public sealed class ChatClientFactory(
     {
         string key = resolvedApiKey ?? KeylessOpenAiPlaceholder;
 
-        provider = PromptCacheClientIdentity.Freeze(provider);
+        provider = PromptCacheClientIdentity.Freeze(provider) with { LoadedOllamaModel = provider.LoadedOllamaModel };
 
         var credential = new ApiKeyCredential(key);
 
