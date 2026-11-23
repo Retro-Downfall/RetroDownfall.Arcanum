@@ -205,6 +205,43 @@ public sealed class OrdinaryWorkspaceWriterEndpointTests
 
         if (enrolled && sessionId is not null)
         {
+            if (campaignId is { } selected)
+            {
+                using var response = await client.GetAsync($"/api/sessions/{sessionId:D}/entries", ct);
+
+                var entries = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseEntryDtoArray, ct);
+
+                Guid assistant = entries!.Data!.Last(e => string.Equals(e.Role, "assistant", StringComparison.OrdinalIgnoreCase)).Id;
+
+                await using var serviceScope = factory.Services.CreateAsyncScope();
+
+                var host = serviceScope.ServiceProvider.GetRequiredService<GuildNativeHost>();
+
+                var prepared = await host.PrepareWorkspaceWriteAsync(sessionId.Value, selected, assistant, selected, workspace, ct);
+
+                Assert.True(prepared.IsSuccess);
+
+                Assert.Null(prepared.Value.BeginCall(Guid.NewGuid(), assistant, "workspace_check"));
+
+                using var check = prepared.Value.BeginCall(sessionId.Value, assistant, "workspace_check");
+
+                Assert.NotNull(check);
+
+                Assert.Null(check.TryEnter("edit_file", workspace));
+
+                Assert.Null(check.TryEnter("workspace_check", factory.TempHome));
+
+                using var entered = check.TryEnter("workspace_check", workspace);
+
+                Assert.NotNull(entered);
+
+                Assert.Null(check.TryEnter("workspace_check", workspace));
+
+                Assert.True((await check.ValidateAsync(ct)).IsSuccess);
+
+                Assert.True((await WorkspaceMutationFence.AdmitAsync(workspace, [], ct)).IsFailure);
+            }
+
             using HttpResponseMessage mismatch = await client.PostAsync("/api/intelligence/ping", JsonContent.Create(
                 new PingRequest(EditPrompt, WorkingDirectory: workingDirectory, SessionId: sessionId,
                     CampaignId: Guid.NewGuid(), SkipSpellRouting: true), ArcanumJsonContext.Default.PingRequest), ct);

@@ -960,10 +960,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         WorkspaceCheckSdkResolution selected = WorkspaceCheckSdkResolver.Resolve(
             workspace,
-            host,
-            (_, _) => new WorkspaceCheckMuxerSdkSelection(
-                "10.0.100",
-                Path.Combine(dotnetRoot, "sdk", "10.0.100")));
+            host);
 
         Assert.True(selected.Success, selected.Message);
         Assert.Equal("10.0.100", selected.Snapshot!.Version);
@@ -1009,8 +1006,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         WorkspaceCheckSdkResolution selected = WorkspaceCheckSdkResolver.Resolve(
             workspace,
-            host,
-            (_, _) => null);
+            host);
 
         Assert.False(selected.Success);
         Assert.Equal("sdk_unavailable", selected.Code);
@@ -1040,13 +1036,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         WorkspaceCheckSdkResolution selected =
             WorkspaceCheckSdkResolver.Resolve(
                 workspace,
-                host,
-                (_, _) => new WorkspaceCheckMuxerSdkSelection(
-                    "10.0.201",
-                    Path.Combine(
-                        dotnetRoot,
-                        "sdk",
-                        "10.0.201")));
+                host);
 
         Assert.True(selected.Success, selected.Message);
         Assert.Equal("10.0.201", selected.Snapshot!.Version);
@@ -1055,26 +1045,53 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     [Theory]
     [InlineData(
         """{"sdk":{"version":"10.0.100","rollForward":"patch"}}""",
-        "10.0.101")]
+        "10.0.100")]
     [InlineData(
         """{"sdk":{"version":"10.0.100","rollForward":"latestPatch"}}""",
         "10.0.199")]
     [InlineData(
         """{"sdk":{"version":"10.0.100-preview.1"}}""",
-        "10.0.100-preview.2")]
-    public void Sdk_resolver_defers_roll_forward_and_default_prerelease_to_muxer(
+        "10.0.199")]
+    [InlineData(
+        """{"sdk":{"version":"11.0.100-preview.1","allowPrerelease":false}}""",
+        "11.0.100-preview.10")]
+    [InlineData(
+        """{"sdk":{"version":"10.0.100-preview.2","rollForward":"latestPatch"}}""",
+        "10.0.199")]
+    [InlineData(
+        """{"sdk":{"version":"10.0.400","rollForward":"minor","allowPrerelease":false}}""",
+        "10.1.102")]
+    [InlineData(
+        """{"sdk":{"version":"10.1.104","rollForward":"major"}}""",
+        "11.0.100-preview.10")]
+    [InlineData(
+        """{"sdk":{"version":"10.0.100","rollForward":"latestFeature"}}""",
+        "10.0.300")]
+    [InlineData(
+        """{"sdk":{"version":"10.0.100","rollForward":"latestMinor"}}""",
+        "10.1.103-preview.1")]
+    [InlineData(
+        """{"sdk":{"version":"10.0.100","rollForward":"latestMajor","allowPrerelease":false}}""",
+        "10.1.102")]
+    [InlineData("""{}""", "11.0.100-preview.10")]
+    public void Sdk_resolver_applies_roll_forward_and_prerelease_policy_without_starting_dotnet(
         string globalJson,
-        string authoritativeVersion)
+        string expectedVersion)
     {
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
         string workspace = tree.CreateDirectory("workspace");
         string executable = tree.CreateNativeExecutable(
             Path.Combine("dotnet", NativeDotNetFileName));
-        tree.CreateSdk(
-            dotnetRoot,
-            authoritativeVersion,
-            "10.0.2");
+        foreach (string version in new[]
+        {
+            "10.0.100-preview.2", "10.0.100", "10.0.101", "10.0.199", "10.0.300",
+            "10.1.100", "10.1.102", "10.1.103-preview.1",
+            "11.0.100-preview.2", "11.0.100-preview.10",
+        })
+        {
+            tree.CreateSdk(dotnetRoot, version, "10.0.2");
+        }
         File.WriteAllText(
             Path.Combine(workspace, "global.json"),
             globalJson);
@@ -1087,17 +1104,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         WorkspaceCheckSdkResolution selected =
             WorkspaceCheckSdkResolver.Resolve(
                 workspace,
-                host,
-                (_, _) => new WorkspaceCheckMuxerSdkSelection(
-                    authoritativeVersion,
-                    Path.Combine(
-                        dotnetRoot,
-                        "sdk",
-                        authoritativeVersion)));
+                host);
 
         Assert.True(selected.Success, selected.Message);
         Assert.Equal(
-            authoritativeVersion,
+            expectedVersion,
             selected.Snapshot!.Version);
     }
 
@@ -1130,13 +1141,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         WorkspaceCheckSdkResolution trusted =
             WorkspaceCheckSdkResolver.Resolve(
                 workspace,
-                host,
-                (_, _) => new WorkspaceCheckMuxerSdkSelection(
-                    "10.0.100",
-                    Path.Combine(
-                        dotnetRoot,
-                        "sdk",
-                        "10.0.100")));
+                host);
 
         Assert.True(trusted.Success, trusted.Message);
 
@@ -1149,16 +1154,18 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         WorkspaceCheckSdkResolution untrusted =
             WorkspaceCheckSdkResolver.Resolve(
                 workspace,
-                host,
-                (_, _) => throw new InvalidOperationException(
-                    "Untrusted paths must fail before muxer resolution."));
+                host);
 
         Assert.False(untrusted.Success);
         Assert.Equal("invalid_global_json", untrusted.Code);
     }
 
-    [Fact]
-    public void Sdk_resolver_accepts_muxer_selected_sdk_from_ordered_trusted_paths()
+    [Theory]
+    [InlineData("10.0.0", true)]
+    [InlineData("9.0.0", false)]
+    public void Sdk_resolver_honors_ordered_alternate_paths_only_when_supported_by_the_host(
+        string hostVersion,
+        bool supportsAlternatePaths)
     {
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
@@ -1167,8 +1174,12 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         string workspace = tree.CreateDirectory("workspace");
         string executable = tree.CreateNativeExecutable(
             Path.Combine("dotnet", NativeDotNetFileName));
+        string hostLibrary = OperatingSystem.IsWindows() ? "hostfxr.dll"
+            : OperatingSystem.IsMacOS() ? "libhostfxr.dylib" : "libhostfxr.so";
+        tree.CreateNativeExecutable(Path.Combine("dotnet", "host", "fxr", hostVersion, hostLibrary));
         tree.CreateSdk(dotnetRoot, "10.0.100", "10.0.1");
-        tree.CreateSdk(second, "10.0.100", "10.0.1");
+        tree.CreateSdk(first, "10.0.100", "10.0.1");
+        tree.CreateSdk(second, "10.0.200", "10.0.1");
         File.WriteAllText(
             Path.Combine(workspace, "global.json"),
             JsonSerializer.Serialize(new
@@ -1176,6 +1187,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 sdk = new
                 {
                     version = "10.0.100",
+                    rollForward = "latestMajor",
                     paths = new[] { first, second },
                 },
             }, AdHocJson.Options));
@@ -1188,97 +1200,58 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         WorkspaceCheckSdkResolution selected =
             WorkspaceCheckSdkResolver.Resolve(
                 workspace,
-                host,
-                (_, _) => new WorkspaceCheckMuxerSdkSelection(
-                    "10.0.100",
-                    Path.Combine(
-                        second,
-                        "sdk",
-                        "10.0.100")));
+                host);
+
+        if (!supportsAlternatePaths)
+        {
+            Assert.False(selected.Success);
+            Assert.Equal("invalid_global_json", selected.Code);
+            Assert.Contains(".NET 10", selected.Message, StringComparison.Ordinal);
+            return;
+        }
 
         Assert.True(selected.Success, selected.Message);
         Assert.EndsWith(
             Path.Combine(
-                "second",
+                "first",
                 "sdk",
                 "10.0.100"),
             selected.Snapshot!.SdkPath,
             StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void Sdk_resolver_uses_sanitized_server_snapshot_when_workspace_global_json_is_replaced()
+    [Theory]
+    [InlineData("""{"sdk":{"paths":[]}}""", "sdk_unavailable")]
+    [InlineData("""{"sdk":{"version":"10.0.100","rollForward":"unknown"}}""", "invalid_global_json")]
+    [InlineData("""{"sdk":{"rollForward":"feature"}}""", "invalid_global_json")]
+    [InlineData("""{"sdk":{"version":100}}""", "invalid_global_json")]
+    [InlineData("""{"sdk":{"version":"10.0.300","version":"10.0.100"}}""", "invalid_global_json")]
+    [InlineData("""{"sdk":{"allowPrerelease":"false"}}""", "invalid_global_json")]
+    [InlineData("""{"sdk":[]}""", "invalid_global_json")]
+    [InlineData("""[]""", "invalid_global_json")]
+    [InlineData("""{"sdk":{"version":"10.0.100/../../bad"}}""", "invalid_global_json")]
+    public void Sdk_resolver_refuses_invalid_or_empty_sdk_selection(
+        string globalJson,
+        string expectedCode)
     {
         using TestTree tree = new();
         string dotnetRoot = tree.CreateDirectory("dotnet");
         string workspace = tree.CreateDirectory("workspace");
-        string resolverRoot = tree.CreateDirectory("run/resolver");
         string executable = tree.CreateNativeExecutable(
             Path.Combine("dotnet", NativeDotNetFileName));
         tree.CreateSdk(dotnetRoot, "10.0.100", "10.0.1");
-        string globalJson = Path.Combine(workspace, "global.json");
-        File.WriteAllText(
-            globalJson,
-            """{"sdk":{"version":"10.0.100","rollForward":"disable","paths":["$host$"]}}""");
+        File.WriteAllText(Path.Combine(workspace, "global.json"), globalJson);
         WorkspaceCheckExecutableSnapshot host =
             WorkspaceCheckExecutableRuntimePolicy
                 .ForTrustedRoots([dotnetRoot])
                 .Capture(executable, workspace)
                 .Snapshot!;
-        bool muxerInvoked = false;
 
         WorkspaceCheckSdkResolution selected =
-            WorkspaceCheckSdkResolver.Resolve(
-                workspace,
-                host,
-                (workingRoot, _) =>
-                {
-                    muxerInvoked = true;
-                    Assert.EndsWith(
-                        Path.Combine("run", "resolver"),
-                        workingRoot,
-                        StringComparison.Ordinal);
-                    File.WriteAllText(
-                        globalJson,
-                        """{"sdk":{"version":"99.0.100","paths":["local-sdk"]}}""");
-                    string sanitized = File.ReadAllText(
-                        Path.Combine(
-                            resolverRoot,
-                            "global.json"));
-                    Assert.Contains(
-                        "10.0.100",
-                        sanitized,
-                        StringComparison.Ordinal);
-                    using JsonDocument sanitizedJson = JsonDocument.Parse(sanitized);
-                    string[] sanitizedPaths = sanitizedJson.RootElement
-                        .GetProperty("sdk")
-                        .GetProperty("paths")
-                        .EnumerateArray()
-                        .Select(static path => path.GetString()!)
-                        .ToArray();
-                    Assert.Contains(
-                        sanitizedPaths,
-                        path => PathsEqual(path, host.DotNetRoot));
-                    Assert.DoesNotContain(
-                        "$host$",
-                        sanitized,
-                        StringComparison.Ordinal);
-                    Assert.DoesNotContain(
-                        "local-sdk",
-                        sanitized,
-                        StringComparison.Ordinal);
-                    return new WorkspaceCheckMuxerSdkSelection(
-                        "10.0.100",
-                        Path.Combine(
-                            dotnetRoot,
-                            "sdk",
-                            "10.0.100"));
-                },
-                resolverRoot);
+            WorkspaceCheckSdkResolver.Resolve(workspace, host);
 
-        Assert.True(muxerInvoked);
-        Assert.True(selected.Success, selected.Message);
-        Assert.Equal("10.0.100", selected.Snapshot!.Version);
+        Assert.False(selected.Success);
+        Assert.Equal(expectedCode, selected.Code);
     }
 
     [Fact]

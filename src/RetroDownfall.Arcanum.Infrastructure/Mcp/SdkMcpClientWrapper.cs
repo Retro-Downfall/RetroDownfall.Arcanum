@@ -6,6 +6,7 @@ using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using SdkMcpClient = ModelContextProtocol.Client.McpClient;
 
@@ -370,14 +371,39 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
         using CancellationTokenSource? timeoutCts = noPerRequestTimeout ? null : new CancellationTokenSource(timeout);
 
-        using CancellationTokenSource linked = timeoutCts is null
-            ? CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                _completionCts.Token)
-            : CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                timeoutCts.Token,
-                _completionCts.Token);
+        var check = IsHostOwned && toolName == ToolRiskClassifier.WorkspaceCheckToolName
+            ? PersistedToolInvocationAmbient.Current?.WorkspaceMutation
+            : null;
+
+        using CancellationTokenSource? checkTimeout = check is not null && timeoutCts is not null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
+            : null;
+
+        CancellationToken checkCancellation = checkTimeout?.Token ?? cancellationToken;
+
+        if (check is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!check.TryBindCheckCaller(checkCancellation))
+            {
+                throw new InvalidOperationException("The owned workspace check has already been dispatched.");
+            }
+        }
+
+        // Only the exact host-owned check receives the caller and configured timeout signal
+        // directly. Its SDK request stays open while the handler establishes a cleanup receipt.
+        using CancellationTokenSource linked = check is not null
+            ? CancellationTokenSource.CreateLinkedTokenSource(_completionCts.Token)
+            : timeoutCts is null
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _completionCts.Token)
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token, _completionCts.Token);
+
+        using CancellationTokenRegistration cleanupDeadline = check is not null
+            ? checkCancellation.UnsafeRegister(
+                static state => ((CancellationTokenSource)state!).CancelAfter(
+                    WorkspaceCheckAppleContainerRunner.MaximumCancellationSettlement), linked)
+            : default;
 
         // The calling turn's emitter is readable here, on the caller's own execution context; the
         // connection's elicitation handler runs elsewhere and resolves it from the sink for as long

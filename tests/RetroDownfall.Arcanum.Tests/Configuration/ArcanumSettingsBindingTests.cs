@@ -16,6 +16,46 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class ArcanumSettingsBindingTests
 {
     [Fact]
+    public void Configure_preserves_portable_dotnet_image_and_offline_feed_settings()
+    {
+        const string prefix = "Arcanum:Integrations:WorkspaceChecks:PortableDotNet:";
+        string digest = new('a', 64);
+        string sdk = $"mcr.microsoft.com/dotnet/sdk@sha256:{digest}";
+        string init = $"ghcr.io/apple/container-init@sha256:{digest}";
+        string feed = Path.GetFullPath("portable-feed");
+        IConfigurationRoot configuration = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                [prefix + "Images:0:SdkVersion"] = "7.0.102",
+                [prefix + "Images:0:ImageReference"] = sdk,
+                [prefix + "InitImageReference"] = init,
+                [prefix + "OfflinePackageFeed"] = feed,
+            }).Build();
+        ServiceCollection services = new();
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+        using ServiceProvider provider = services.BuildServiceProvider();
+        ArcanumSettings bound = provider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+        using JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(
+            bound, ConfigurationJsonContext.Default.ArcanumSettings));
+
+        JsonElement configured = document.RootElement.GetProperty("integrations")
+            .GetProperty("workspaceChecks").GetProperty("portableDotNet");
+        Assert.Equal(feed, configured.GetProperty("offlinePackageFeed").GetString());
+        Assert.Equal(init, configured.GetProperty("initImageReference").GetString());
+        JsonElement image = Assert.Single(configured.GetProperty("images").EnumerateArray());
+        Assert.Equal("7.0.102", image.GetProperty("sdkVersion").GetString());
+        Assert.Equal(sdk, image.GetProperty("imageReference").GetString());
+        Assert.Equal(init, bound.ResolveWorkspaceChecks().PortableDotNet!.InitImageReference);
+        Assert.True(new ConfigurationValidator().RejectObsoleteKeys(configuration).IsSuccess);
+
+        ConfigurationPathUpdate updated = ConfigurationPathAccessor.Set(
+            new ArcanumSettings(), "integrations.workspaceChecks.portableDotNet", configured.GetRawText());
+
+        Assert.True(updated.IsSuccess, updated.Error);
+        Assert.Equal(feed, updated.Settings!.ResolveWorkspaceChecks().PortableDotNet!.OfflinePackageFeed);
+    }
+
+    [Fact]
     public void Configure_binds_agent_recall_opt_in_and_omission_is_disabled()
     {
         using JsonDocument defaults = JsonDocument.Parse(JsonSerializer.Serialize(

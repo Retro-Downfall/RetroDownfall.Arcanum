@@ -9,6 +9,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Client;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
@@ -5200,6 +5201,98 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 }
             }
         }
+    }
+
+    [Fact]
+    public async Task Abandoned_owned_workspace_check_can_settle_after_the_ordinary_grace_period()
+    {
+        using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+
+        (var requests, var responses, var server) = InProcessMcpTransport.CreateServerChannelPair(
+            new HumanPromptRegistry(), services.GetRequiredService<IServiceScopeFactory>(), new AbandonmentPacer(),
+            workspaceRootNormalizedOrNull: null, listDirectoryMaxPaths: 16, new IntelligenceSettings(),
+            maxFileReadSizeBytes: 1024, conclaveEnabled: false, sagaEnabled: false, a2aClientEnabled: false,
+            attachmentsToolEnabled: false, maxJsonRpcLineBytes: 4096,
+            logger: NullLogger<ArcanumInternalToolServer>.Instance);
+
+        ChannelClientTransport transport = new(requests, responses, 4096, server.AmbientConnectionKey);
+
+        await using SdkMcpClientWrapper client = new(
+            transport, new McpClientOptions(), TimeSpan.FromSeconds(5),
+            toolOutputCapBytes: 4096, maxToolsTotalBytes: 8192,
+            elicitationSink: new McpElicitationSink(), internalServer: server);
+
+        using JsonDocument schema = JsonDocument.Parse("{}");
+
+        McpBridgeTool tool = new(
+            ToolRiskClassifier.WorkspaceCheckToolName, "Check the workspace", schema.RootElement,
+            client, toolOutputCapBytes: 4096, trustedStructuredResultKind: TrustedStructuredToolResultKind.WorkspaceCheck);
+
+        Assert.True(tool.OwnsWorkspaceCheckResult);
+
+        ManualTimerTimeProvider clock = new();
+
+        TaskCompletionSource cleanup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task abandonment = WizardIntelligenceProvider.WaitForAbandonedToolAsync(
+            cleanup.Task, tool, ownsWorkspaceCheck: true, clock);
+
+        await clock.FirstTimerCreated.WaitAsync(TimeSpan.FromSeconds(5));
+
+        clock.Advance(TimeSpan.FromSeconds(4));
+
+        try
+        {
+            Assert.Equal(1, clock.ActiveTimers);
+
+            Assert.False(abandonment.IsCompleted);
+        }
+        finally
+        {
+            cleanup.TrySetResult();
+        }
+
+        await abandonment.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    [Fact]
+    public async Task Abandoned_ordinary_tool_returns_at_the_ordinary_grace_period()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        TaskCompletionSource pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task abandonment = WizardIntelligenceProvider.WaitForAbandonedToolAsync(
+            pending.Task, function: null, ownsWorkspaceCheck: false, clock);
+
+        await clock.FirstTimerCreated.WaitAsync(TimeSpan.FromSeconds(5));
+
+        clock.Advance(TimeSpan.FromSeconds(4));
+
+        try
+        {
+            await abandonment.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(pending.Task.IsCompleted);
+        }
+        finally
+        {
+            pending.TrySetResult();
+        }
+    }
+
+    private sealed class AbandonmentPacer : IUnseenServantPacer
+    {
+        public Task<bool> SetDynamicIntervalAsync(string jobName, int intervalMinutes, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public int GetEffectiveInterval(UnseenServantJob job) =>
+            throw new NotSupportedException();
+
+        public Task HydrateAsync(IReadOnlyList<UnseenServantWatermark> watermarks, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     [Fact]

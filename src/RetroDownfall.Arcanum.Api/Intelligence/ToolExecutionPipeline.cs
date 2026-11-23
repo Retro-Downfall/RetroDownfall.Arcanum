@@ -1497,7 +1497,7 @@ public sealed class ToolExecutionPipeline(
         }
     }
 
-    private static AIFunction? ResolveRegisteredFunction(ChatOptions chatOptions, string? functionName)
+    internal static AIFunction? ResolveRegisteredFunction(ChatOptions chatOptions, string? functionName)
     {
         if (string.IsNullOrEmpty(functionName) || chatOptions.Tools is null)
         {
@@ -1667,7 +1667,7 @@ public sealed class ToolExecutionPipeline(
     {
         string recordWardId = Guid.NewGuid().ToString();
 
-        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName);
+        string disclosure = ToolRiskClassifier.GetWardDisclosure(toolName, WorkspaceMutationFence.IsInstalled);
 
         JsonElement? recordWardArguments = null;
 
@@ -2010,9 +2010,10 @@ public sealed class ToolExecutionPipeline(
             }
         }
 
-        bool nativeWriter = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool { IsNativeWorkspaceWriter: true };
+        bool nativeWorkspaceTool = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool
+            { IsNativeWorkspaceWriter: true } or McpBridgeTool { OwnsWorkspaceCheckResult: true };
 
-        bool requiresWorkspaceAuthority = nativeWriter && (turnContext.WorkspaceWrite is not null
+        bool requiresWorkspaceAuthority = nativeWorkspaceTool && (turnContext.WorkspaceWrite is not null
             || WorkspaceMutationFence.IsInstalled || _liveSettings.CurrentValue.Features.Guild);
 
         PersistedToolInvocationContext? persisted = PersistedToolInvocationAmbient.Current;
@@ -2033,10 +2034,21 @@ public sealed class ToolExecutionPipeline(
             ? PersistedToolInvocationAmbient.Begin(persisted! with { WorkspaceMutation = workspaceCall })
             : null;
 
-        object? rawResult = await InvokeToolCallAsync(
-            fcc,
-            chatOptions,
-            cancellationToken).ConfigureAwait(false);
+        object? rawResult;
+
+        try
+        {
+            rawResult = await InvokeToolCallAsync(fcc, chatOptions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested
+            && workspaceCall is { ToolName: ToolRiskClassifier.WorkspaceCheckToolName, CheckCallerBound: false }
+            && recovery is { AdmittedForDispatch: true })
+        {
+            // The exact local transport never bound this check, so no worker could enter it.
+            await recovery.ReleaseUndispatchedAsync(CancellationToken.None).ConfigureAwait(false);
+
+            throw;
+        }
 
         if (rawResult is McpToolFailure failure)
         {
@@ -2106,7 +2118,8 @@ public sealed class ToolExecutionPipeline(
         {
             var result = JsonSerializer.Deserialize(serializedResult, McpJsonSerializerContext.Default.WorkspaceCheckToolResultEnvelope);
 
-            if (result is not { Status: "failed", ExitCode: not null })
+            if (result is not ({ Status: "failed", ExitCode: not null }
+                or { Status: "canceled", Code: "workspace_check_canceled" }))
             {
                 return null;
             }

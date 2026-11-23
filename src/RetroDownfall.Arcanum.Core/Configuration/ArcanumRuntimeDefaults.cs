@@ -209,6 +209,7 @@ public static class ArcanumRuntimeSettings
             Enabled = features.WorkspaceChecks,
             ExecutableCatalog =
                 integration.ExecutableCatalog ?? new WorkspaceCheckExecutableCatalogSettings(),
+            PortableDotNet = integration.PortableDotNet,
             CustomProfiles =
                 integration.CustomProfiles
                 ?? new Dictionary<string, WorkspaceCheckProfileSettings>(

@@ -25,6 +25,8 @@ public enum SettingKind
 
     Dictionary,
 
+    JsonObject,
+
 }
 
 /// <summary>

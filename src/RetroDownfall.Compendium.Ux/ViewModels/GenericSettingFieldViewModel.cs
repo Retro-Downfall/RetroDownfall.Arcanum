@@ -17,9 +17,12 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         CollectionTemplatePath = GenericSettingsUpdater.ResolveCollectionTemplatePath(descriptor.Key);
 
-        _value = descriptor.Kind == SettingKind.Dictionary
-            ? SerializeDictionary(value)
-            : value;
+        _value = descriptor.Kind switch
+        {
+            SettingKind.Dictionary => SerializeJson(value, "{}"),
+            SettingKind.JsonObject => SerializeJson(value, "null"),
+            _ => value,
+        };
 
         if (descriptor.EnumType is not null)
         {
@@ -229,6 +232,18 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             errors.Add(dictionaryError ?? "Invalid JSON");
         }
 
+        if (Descriptor.Kind == SettingKind.JsonObject)
+        {
+            try
+            {
+                _ = GenericSettingsUpdater.ParseJsonObject(Descriptor.Key, StringValue);
+            }
+            catch (JsonException ex)
+            {
+                errors.Add(ex.Message);
+            }
+        }
+
         // Validate numeric ranges. An unset value has nothing to range-check: template descriptors such
         // as providers.contextWindowLimit read as null until a provider exists, and NumericValue would
         // otherwise report their placeholder 0 as out of bounds.
@@ -330,11 +345,11 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         return char.ToUpperInvariant(value[0]) + value[1..];
     }
 
-    private static string SerializeDictionary(object? value)
+    private static string SerializeJson(object? value, string unset)
     {
         if (value is null)
         {
-            return "{}";
+            return unset;
         }
 
         return JsonSerializer.Serialize(

@@ -1326,6 +1326,18 @@ public sealed class ConfigurationValidator(
         }
     }
 
+    /// <summary>Validates the complete optional portable .NET toolchain for a configuration editor.</summary>
+    public static IReadOnlyList<ConfigurationValidationError> ValidatePortableDotNet(WorkspaceCheckPortableDotNetSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        List<ConfigurationValidationError> errors = [];
+
+        WorkspaceCheckPortableDotNetPolicy.Validate(settings, errors);
+
+        return errors;
+    }
+
     private static void ValidateCodingTools(
         ArcanumSettings settings,
         List<ConfigurationValidationError> errors)
@@ -1337,6 +1349,11 @@ public sealed class ConfigurationValidator(
             settings.ResolveDefaultWorkspace(),
             errors);
         ValidateWorkspaceCheckProfiles(check, errors);
+
+        if (check.PortableDotNet is WorkspaceCheckPortableDotNetSettings portable)
+        {
+            WorkspaceCheckPortableDotNetPolicy.Validate(portable, errors);
+        }
     }
 
     private static void ValidateWorkspaceCheckProfiles(

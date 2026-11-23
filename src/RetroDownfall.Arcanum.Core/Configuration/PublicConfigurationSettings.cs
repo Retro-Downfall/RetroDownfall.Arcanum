@@ -334,6 +334,8 @@ public sealed record WorkspaceCheckIntegrationSettings
 {
     public WorkspaceCheckExecutableCatalogSettings ExecutableCatalog { get; set; } = new();
 
+    public WorkspaceCheckPortableDotNetSettings? PortableDotNet { get; set; }
+
     public Dictionary<string, WorkspaceCheckProfileSettings> CustomProfiles { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
 }

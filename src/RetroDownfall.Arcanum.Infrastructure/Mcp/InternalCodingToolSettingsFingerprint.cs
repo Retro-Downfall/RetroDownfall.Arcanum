@@ -87,6 +87,28 @@ internal static class InternalCodingToolSettingsFingerprint
             value.ExecutableCatalog?.DotNet?.Path
             ?? string.Empty);
 
+        WorkspaceCheckPortableDotNetSettings? portable = value.PortableDotNet;
+
+        fingerprint.Append(portable is not null);
+
+        if (portable is not null)
+        {
+            fingerprint.Append(portable.InitImageReference);
+
+            fingerprint.Append(portable.OfflinePackageFeed);
+
+            WorkspaceCheckPortableImageSettings[] images = portable.Images ?? [];
+
+            fingerprint.Append(images.Length);
+
+            foreach (WorkspaceCheckPortableImageSettings? image in images)
+            {
+                fingerprint.Append(image?.SdkVersion);
+
+                fingerprint.Append(image?.ImageReference);
+            }
+        }
+
         KeyValuePair<string, WorkspaceCheckProfileSettings>[]
             profiles = (value.CustomProfiles
                 ?? new Dictionary<

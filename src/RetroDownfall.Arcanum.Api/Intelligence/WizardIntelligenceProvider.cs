@@ -57,6 +57,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -4662,44 +4663,18 @@ public sealed partial class WizardIntelligenceProvider(
 
                                 if (processTask is { IsCompleted: false } pendingToolTask)
                                 {
-                                    // Reached only on abandonment — the happy path already awaited
-                                    // processTask above. A disconnected client must not orphan this
-                                    // tool call, so wait for it here, bounded so a hung/uncancelled
-                                    // tool cannot block the unwind forever.
-                                    using CancellationTokenSource graceCts = new();
+                                    bool ownsWorkspaceCheck = streamTurnContext.WorkspaceWrite is not null
+                                        && WorkspaceMutationFence.IsInstalled
+                                        && invokeFcc.Name == ToolRiskClassifier.WorkspaceCheckToolName;
 
-                                    try
-                                    {
-                                        await Task.WhenAny(
-                                                pendingToolTask,
-                                                Task.Delay(ToolTaskAbandonmentGrace, graceCts.Token))
-                                            .ConfigureAwait(false);
-                                    }
-                                    finally
-                                    {
-                                        // Stop the grace timer the instant the race is decided. An
-                                        // uncancelled Task.Delay keeps its timer alive for the full grace
-                                        // period even after WhenAny already returned because
-                                        // pendingToolTask won — this cancels it out from under that case.
-                                        await graceCts.CancelAsync().ConfigureAwait(false);
-                                    }
-
-                                    if (!pendingToolTask.IsCompleted)
-                                    {
-                                        // Still running past the grace: never await it directly here —
-                                        // that would replace whatever exception is already unwinding
-                                        // this finally. Attach a silent observer instead, so an eventual
-                                        // fault never surfaces as an unobserved Task exception.
-                                        _ = pendingToolTask.ContinueWith(
-                                            static observed => _ = observed.Exception,
-                                            CancellationToken.None,
-                                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                                            TaskScheduler.Default);
-                                    }
-                                    else if (pendingToolTask.IsFaulted)
-                                    {
-                                        _ = pendingToolTask.Exception;
-                                    }
+                                    await WaitForAbandonedToolAsync(
+                                            pendingToolTask,
+                                            ownsWorkspaceCheck
+                                                ? ToolExecutionPipeline.ResolveRegisteredFunction(streamChatOptions, invokeFcc.Name)
+                                                : null,
+                                            ownsWorkspaceCheck,
+                                            TimeProvider.System)
+                                        .ConfigureAwait(false);
                                 }
 
                                 if (!toolInteractionRecorded
@@ -5717,6 +5692,44 @@ public sealed partial class WizardIntelligenceProvider(
     {
         public ValueTask EmitAsync(IntelligenceEvent evt, CancellationToken cancellationToken) =>
             channel.Writer.WriteAsync(evt, cancellationToken);
+    }
+
+    internal static async Task WaitForAbandonedToolAsync(
+        Task pendingToolTask,
+        AIFunction? function,
+        bool ownsWorkspaceCheck,
+        TimeProvider timeProvider)
+    {
+        // Allow the owned native check to record its cleanup result before releasing the turn.
+        TimeSpan grace = ownsWorkspaceCheck
+            && function is McpBridgeTool { OwnsWorkspaceCheckResult: true, Name: ToolRiskClassifier.WorkspaceCheckToolName }
+            ? WorkspaceCheckAppleContainerRunner.MaximumCancellationSettlement + ToolTaskAbandonmentGrace
+            : ToolTaskAbandonmentGrace;
+
+        using CancellationTokenSource graceCts = new();
+
+        try
+        {
+            await Task.WhenAny(pendingToolTask, Task.Delay(grace, timeProvider, graceCts.Token))
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            await graceCts.CancelAsync().ConfigureAwait(false);
+        }
+
+        if (!pendingToolTask.IsCompleted)
+        {
+            _ = pendingToolTask.ContinueWith(
+                static observed => _ = observed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        else if (pendingToolTask.IsFaulted)
+        {
+            _ = pendingToolTask.Exception;
+        }
     }
 
     /// <summary>
@@ -7809,6 +7822,12 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (isManagedWriter && (!advertiseApplyPatch || RequiresGuildWorkspaceAuthority
                 && (workspaceWrite is null || t is not McpBridgeTool { IsNativeWorkspaceWriter: true })))
+            {
+                continue;
+            }
+
+            if (t.Name == ToolRiskClassifier.WorkspaceCheckToolName && RequiresGuildWorkspaceAuthority
+                && (workspaceWrite is null || t is not McpBridgeTool { OwnsWorkspaceCheckResult: true }))
             {
                 continue;
             }

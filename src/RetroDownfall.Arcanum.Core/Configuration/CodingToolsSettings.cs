@@ -83,12 +83,35 @@ public sealed record WorkspaceCheckSettings
 
     public WorkspaceCheckExecutableCatalogSettings ExecutableCatalog { get; set; } = new();
 
+    public WorkspaceCheckPortableDotNetSettings? PortableDotNet { get; set; }
+
     /// <summary>
     /// Opaque operator-authored profile collection. Compendium preserves this dictionary but does
     /// not expose child-field editing for its security-sensitive internals.
     /// </summary>
     public Dictionary<string, WorkspaceCheckProfileSettings> CustomProfiles { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// Operator-approved, digest-pinned .NET toolchains and an offline NuGet package feed.
+/// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record WorkspaceCheckPortableDotNetSettings
+{
+    public WorkspaceCheckPortableImageSettings[] Images { get; set; } = [];
+
+    public string InitImageReference { get; set; } = string.Empty;
+
+    public string OfflinePackageFeed { get; set; } = string.Empty;
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record WorkspaceCheckPortableImageSettings
+{
+    public string SdkVersion { get; set; } = string.Empty;
+
+    public string ImageReference { get; set; } = string.Empty;
 }
 
 /// <summary>

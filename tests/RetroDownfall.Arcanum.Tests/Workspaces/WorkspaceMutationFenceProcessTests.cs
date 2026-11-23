@@ -9,6 +9,8 @@ using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Result = RetroDownfall.Arcanum.Core.Primitives.Result;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
@@ -233,6 +235,46 @@ public sealed class WorkspaceMutationFenceProcessTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Guild.ToolBoundaryUnavailable, run.Code);
 
         Assert.Equal(0, probes);
+    }
+
+    [Fact]
+    public async Task Guild_workspace_check_health_explains_missing_portable_runtime_without_probing_host_sdk()
+    {
+        using IDisposable installed = WorkspaceMutationFence.Install(new ProtectedFence());
+
+        var settings = new ArcanumSettings { Features = new FeatureSettings { WorkspaceChecks = true } };
+
+        int probes = 0;
+
+        WorkspaceCheckCapabilityReporter reporter = new(new TestOptionsMonitor<ArcanumSettings>(settings),
+            _ => "current", null, TimeProvider.System, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5), () => { probes++; return false; });
+
+        var status = await reporter.GetStatusAsync(_workspace.Root, CancellationToken.None);
+
+        Assert.False(status.IsAvailable);
+
+        Assert.Contains("portable", status.Reason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, probes);
+    }
+
+    [Fact]
+    public void Unverified_guest_shutdown_is_an_unknown_effect_requiring_reconciliation()
+    {
+        var evidence = ArcanumInternalToolServer.ObserveWorkspaceCheckFailure(new WorkspaceCheckToolResultEnvelope
+        {
+            Status = "unavailable",
+            Code = "portable_cleanup_pending",
+        });
+
+        Assert.NotNull(evidence);
+
+        Assert.Equal(TurnFailurePhase.ToolExecution, evidence.Phase);
+
+        Assert.Equal(TurnEffectState.Unknown, evidence.Effect);
+
+        Assert.Equal(TurnRecoveryAction.ReconcileTool, evidence.NextAction);
     }
 
     [Theory]

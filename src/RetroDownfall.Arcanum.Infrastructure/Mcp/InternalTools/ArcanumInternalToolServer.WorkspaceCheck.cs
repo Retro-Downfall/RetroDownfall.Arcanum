@@ -1,6 +1,7 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
@@ -58,6 +59,13 @@ internal sealed partial class ArcanumInternalToolServer
                 });
         }
 
+        CancellationToken ownerCancellation =
+            GuildOperatorWorkspaceWrite.Call.CurrentCheck(_workspaceRoot!)?.CheckCallerCancellation ?? default;
+
+        using CancellationTokenSource? invocation = ownerCancellation.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, ownerCancellation)
+            : null;
+
         WorkspaceCheckToolResultEnvelope result =
             await _workspaceCheckRuntime.RunAsync(
                 new WorkspaceCheckRuntimeRequest(
@@ -66,7 +74,7 @@ internal sealed partial class ArcanumInternalToolServer
                     request.Options
                         ?? new Dictionary<string, string>(
                             StringComparer.OrdinalIgnoreCase)),
-                cancellationToken).ConfigureAwait(false);
+                invocation?.Token ?? cancellationToken).ConfigureAwait(false);
 
         TurnFailureEvidence? evidence = ObserveWorkspaceCheckFailure(result);
 
@@ -97,8 +105,14 @@ internal sealed partial class ArcanumInternalToolServer
             "ok" => null,
             "invalid_request" => new(TurnFailurePhase.ToolArguments, TurnEffectState.NotDispatched, TurnRecoveryAction.CorrectArguments),
             "restore_required" => new(TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectWorkspace),
+            "unavailable" when result.Code == "portable_cleanup_pending" =>
+                new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool),
             "unavailable" when result.Code != "resource_limit_unavailable" =>
                 new(TurnFailurePhase.ToolAuthorization, TurnEffectState.NotDispatched, TurnRecoveryAction.UseAuthorizedScope),
+            "canceled" when result.Code == "workspace_check_canceled_before_start" =>
+                new(TurnFailurePhase.ToolExecution, TurnEffectState.NotDispatched, TurnRecoveryAction.InspectSession),
+            "canceled" when result.Code == "workspace_check_canceled" =>
+                new(TurnFailurePhase.ToolExecution, TurnEffectState.Completed, TurnRecoveryAction.InspectSession),
             "failed" when result.ExitCode is not null =>
                 new(TurnFailurePhase.ToolExecution, TurnEffectState.Completed, TurnRecoveryAction.InspectWorkspace),
             _ => new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectWorkspace),

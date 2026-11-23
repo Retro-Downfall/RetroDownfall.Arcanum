@@ -36,12 +36,15 @@ public static class ToolRiskClassifier
             ReadToolOutputToolName,
             StringComparison.OrdinalIgnoreCase);
 
-    public static string GetWardDisclosure(string? toolName) =>
+    public static string GetWardDisclosure(string? toolName, bool portableWorkspaceCheck = false) =>
         string.Equals(
             toolName,
             WorkspaceCheckToolName,
             StringComparison.OrdinalIgnoreCase)
-            ? "This check executes workspace-authored code, including MSBuild tasks, source generators, analyzers, and tests. "
+            ? portableWorkspaceCheck
+              ? "This portable .NET check executes workspace-authored code in a disposable Linux ARM64 guest. "
+                + "Staged source and offline packages are mounted read-only. The guest uses private writable build outputs and isolated loopback."
+              : "This check executes workspace-authored code, including MSBuild tasks, source generators, analyzers, and tests. "
               + "The source workspace is mounted read-only, but server-created writable build, intermediate, CLI, temporary, and test-result roots are available. "
               + "The filesystem jail does not isolate network egress, so workspace code can exfiltrate readable source or package data. "
               + "Process-group and descendant cleanup are best effort; an intentionally malicious detached descendant may survive the check and continue network exfiltration. "

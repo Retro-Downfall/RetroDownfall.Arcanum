@@ -28,7 +28,7 @@ public sealed class SettingDescriptorCoverageTests
     [Fact]
     public void Editable_descriptor_count_matches_the_documented_total()
     {
-        Assert.Equal(201, SettingDescriptors.All.Count);
+        Assert.Equal(202, SettingDescriptors.All.Count);
 
         string documentation = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -326,7 +326,8 @@ public sealed class SettingDescriptorCoverageTests
 
             Type propertyType = UnwrapNullable(property.PropertyType);
 
-            if (IsDictionary(propertyType))
+            // The closed portable .NET object is edited atomically, including every image row.
+            if (IsDictionary(propertyType) || propertyType == typeof(WorkspaceCheckPortableDotNetSettings))
             {
                 keys.Add(key);
             }

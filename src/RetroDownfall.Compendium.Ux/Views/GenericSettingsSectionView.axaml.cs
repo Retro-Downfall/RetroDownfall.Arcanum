@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
+using Avalonia.Markup.Xaml.MarkupExtensions;
 using Avalonia.Media;
 using System.Collections.Immutable;
 using System.ComponentModel;
@@ -211,7 +212,7 @@ public partial class GenericSettingsSectionView : UserControl
             SettingKind.Int or SettingKind.Long or SettingKind.Float => CreateStepper(field, root),
             SettingKind.Enum => CreatePicker(field, root),
             SettingKind.StringArray => CreateChips(field, root),
-            SettingKind.Dictionary => CreateDictionaryEditor(field, root),
+            SettingKind.Dictionary or SettingKind.JsonObject => CreateJsonEditor(field, root),
             SettingKind.Color => CreateColor(field, root),
             SettingKind.Secret => CreateEntry(field, root, isPassword: true),
             _ => CreateEntry(field, root, isPassword: false),
@@ -497,7 +498,7 @@ public partial class GenericSettingsSectionView : UserControl
 
     }
 
-    private static Control CreateDictionaryEditor(GenericSettingFieldViewModel field, ConfigurationViewModel root)
+    private static Control CreateJsonEditor(GenericSettingFieldViewModel field, ConfigurationViewModel root)
     {
 
         TextBox editor = new()
@@ -524,6 +525,17 @@ public partial class GenericSettingsSectionView : UserControl
             Source = root,
         });
 
+        TextBlock localError = new()
+        {
+            DataContext = field,
+            TextWrapping = TextWrapping.Wrap,
+            [!TextBlock.ForegroundProperty] = new DynamicResourceExtension("ForgeErrorBrush"),
+        };
+
+        localError.Bind(TextBlock.TextProperty, new Binding(nameof(GenericSettingFieldViewModel.ErrorMessage)));
+
+        localError.Bind(IsVisibleProperty, new Binding(nameof(GenericSettingFieldViewModel.HasError)));
+
         return new StackPanel
         {
             Spacing = 4,
@@ -540,6 +552,7 @@ public partial class GenericSettingsSectionView : UserControl
                     TextWrapping = TextWrapping.Wrap,
                 },
                 editor,
+                localError,
                 validation,
             },
         };

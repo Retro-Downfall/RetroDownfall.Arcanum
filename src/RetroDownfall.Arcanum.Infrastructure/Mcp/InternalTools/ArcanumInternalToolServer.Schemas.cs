@@ -231,8 +231,13 @@ internal sealed partial class ArcanumInternalToolServer
 
     private static JsonElement BuildWorkspaceCheckSchema(
         WorkspaceCheckProfileCatalog profiles,
-        WorkspaceCheckSettings settings)
+        WorkspaceCheckSettings settings,
+        bool portable = false)
     {
+        bool Supported(string id, Dictionary<string, string>? options = null) =>
+            !portable || profiles.Resolve(id, options).Profile is { } profile
+            && WorkspaceCheckRuntime.TryGetPortableOptions(profile, out _, out _, out _);
+
         return BuildSchema(w =>
         {
             w.WriteString("type", "object");
@@ -260,6 +265,8 @@ internal sealed partial class ArcanumInternalToolServer
                              static value => value,
                              StringComparer.OrdinalIgnoreCase))
             {
+                if (!Supported(profileId)) continue;
+
                 w.WriteStartObject();
                 w.WriteString("type", "object");
                 w.WriteStartObject("properties");
@@ -283,11 +290,15 @@ internal sealed partial class ArcanumInternalToolServer
                                  profileId,
                                  StringComparison.OrdinalIgnoreCase)))
                 {
+                    string[] available = valueIds.Where(value => Supported(profileId, new() { [optionId] = value })).ToArray();
+
+                    if (available.Length == 0) continue;
+
                     w.WriteStartObject(optionId);
                     w.WriteString("type", "string");
                     w.WriteStartArray("enum");
 
-                    foreach (string valueId in valueIds)
+                    foreach (string valueId in available)
                     {
                         w.WriteStringValue(valueId);
                     }

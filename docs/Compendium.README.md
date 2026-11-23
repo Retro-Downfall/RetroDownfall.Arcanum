@@ -76,7 +76,7 @@ No preset silently enables `ListenAny`, unsandboxed tool children, untrusted wor
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. All 201 editable paths in `SettingDescriptors.All` appear below, and that total is pinned by `SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a descriptor change updates the code, the test, and this page together. Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact top-level `"Arcanum"` object.
+This is the sole complete documentation reference for `arcanum.json`. All 202 editable paths in `SettingDescriptors.All` appear below, and that total is pinned by `SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a descriptor change updates the code, the test, and this page together. Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact top-level `"Arcanum"` object.
 
 Compendium exposes policy and facts, not incidental implementation mechanics. Retained fields are provider/model capabilities, credentials/endpoints, security/permission choices, explicit feature opt-ins, host concurrency/capacity, pricing, schedules, retention policy, or user preferences. Retry counts, total-operation timeouts, workflow/queue/page/checkpoint counts, and indexing slice sizes are code-owned adaptive behavior and are not editable. Removing a field never removes authentication, containment, SSRF protection, Ward audit records, Sanctum, cryptographic/protocol integrity, single-allocation protection, or explicit operator policy.
 
@@ -306,6 +306,7 @@ The editor carries pricing values as exact decimals through loading, text edits,
 | `integrations.webResearch.perplexityModel` | `string`, `"sonar"` | `sonar` or `sonar-pro` | Perplexity Sonar model used for synthesized search. |
 | `integrations.webResearch.credentialEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact Perplexity credential reference. Omission checks `ARCANUM_PERPLEXITY_API_KEY`, then the secure local provider-key store. |
 | `integrations.workspaceChecks.executableCatalog.dotNet.path` | `string`, `""` | canonical absolute path | Optional trusted native `dotnet`; empty delegates to trusted runtime resolution. |
+| `integrations.workspaceChecks.portableDotNet` | `WorkspaceCheckPortableDotNetSettings?`, `null` | closed JSON object described below | Optional Apple silicon compiler toolchain with pinned images and an offline feed. |
 | `integrations.workspaceChecks.customProfiles` | `Dictionary<string, WorkspaceCheckProfileSettings>`, `{}` | closed shape described below | Case-insensitive operator-authored build, test, and lint profiles; models never supply raw commands. |
 | `execution.maxConcurrentApprentices` | `int`, `5` | 1–50 | Host-wide concurrent Apprentices. |
 | `execution.maxConcurrentApprenticeBranches` | `int`, `3` | 1–64 | Concurrent Simulacrum branches within an Apprentice. |
@@ -386,6 +387,29 @@ For logs, category and search are free-form. Level keeps the API's existing null
 The same per-invocation rule applies to `arcanum context inspect|tools|sources|cost`: `--show-content` is an explicit one-run operator reveal and `--no-retrieval` is a one-run request to skip embedding/RAG work. Compendium does not persist either switch. Use these commands after editing model, tool, Spell, retrieval, or context-window settings to verify the effective provider, tool surface, source-token allocation, reserve, and compression decision before spending main-inference tokens.
 
 `arcanum file upload|list|show|download|delete` and `arcanum batch create|list|show|watch|cancel|reset|output|errors` add no configuration keys. They call the existing authenticated OpenAI-compatible routes and inherit `security.allowedUploadMimeTypes`, the code-owned upload ceiling, `execution.maxConcurrentBatches`, and `execution.maxConcurrentRequestsPerBatch`. Local JSONL preflight checks only the obvious batch wrapper before upload; server validation remains authoritative. Total request count, internal 64-line pages, and durable per-line dispatch/result checkpoints are code-owned rather than user restrictions. Restart skips completed lines and reports an uncertain dispatched line as `batch_interrupted_after_dispatch` without replaying it. Download overwrite approval is a per-invocation `--yes` decision and is never persisted by Compendium.
+
+### Portable .NET workspace checks
+
+Set `integrations.workspaceChecks.portableDotNet` in Compendium’s **Portable .NET toolchain** JSON editor or with `arcanum config edit` to configure the operator-approved container toolchain on Apple silicon. Compendium validates and saves the object as one edit, including its SDK image list. Omit the object or set it to `null` to leave the portable toolchain unavailable. The existing `features.workspaceChecks` setting controls activation.
+
+```json
+{
+  "images": [
+    {
+      "sdkVersion": "8.0.100",
+      "imageReference": "registry.example/dotnet/sdk@sha256:<sdk-image-digest>"
+    }
+  ],
+  "initImageReference": "registry.example/container/init@sha256:<init-image-digest>",
+  "offlinePackageFeed": "/absolute/path/to/approved-nuget-feed"
+}
+```
+
+Set each image reference to a fully qualified registry and repository followed by `@sha256:` and the image's 64 lowercase hexadecimal digest. Each entry identifies a distinct exact SDK version. Install the approved SDK and init images in the local container image store before use. The feed is an operator-approved directory of `.nupkg` packages outside the workspace. The feed directory path must use ordinary directories without symlinks.
+
+Install Apple's signed `container` 1.7.1 package on Apple silicon. Run `container system start` and complete its guest kernel setup. For each configured SDK and init image, run `container image pull --platform linux/arm64 <image-reference>` using its digest-pinned reference. The service and matching images must be available to the user running Arcanum. The SDK image must include the Microsoft .NET CLI and a POSIX shell. Use a flat package feed containing the dependency versions and reference packs needed for offline restore. The Campaign's Sanctum `MaxFileWriteMb` applies to the combined size of the staged source and package archives. [Apple container releases](https://github.com/apple/container/releases/tag/1.7.1)
+
+The nearest applicable workspace `global.json` selects among the configured SDK versions, including its version, roll-forward policy, and prerelease choice. Omit `sdk.paths` or use only `$host$`, which means the configured portable SDK inventory. An empty list yields no match. If the selection yields no image, configure a compatible pinned image or update the workspace's SDK selection.
 
 ### Dynamic dictionary shapes
 

@@ -638,6 +638,54 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public async Task Portable_dotnet_editor_applies_the_full_optional_toolchain_and_rejects_invalid_edits()
+    {
+        await SeedAsync(new ArcanumSettings());
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        GenericSettingFieldViewModel portable = Field(
+            vm, ConfigSection.Integrations, "integrations.workspaceChecks.portableDotNet");
+
+        Assert.Equal("null", portable.StringValue);
+        Assert.Null(vm.BuildSettings().Integrations.WorkspaceChecks.PortableDotNet);
+
+        string digest = new('a', 64);
+        string sdk = $"mcr.microsoft.com/dotnet/sdk@sha256:{digest}";
+        string init = $"ghcr.io/apple/container-init@sha256:{digest}";
+        string feed = Path.GetFullPath("offline-feed");
+        string valid = JsonSerializer.Serialize(new WorkspaceCheckPortableDotNetSettings
+        {
+            Images = [new() { SdkVersion = "7.0.102", ImageReference = sdk }],
+            InitImageReference = init,
+            OfflinePackageFeed = feed,
+        }, ConfigurationJsonContext.Default.WorkspaceCheckPortableDotNetSettings);
+
+        portable.StringValue = valid;
+        Assert.False(portable.HasError, portable.ErrorMessage);
+
+        WorkspaceCheckPortableDotNetSettings saved = vm.BuildSettings().Integrations.WorkspaceChecks.PortableDotNet!;
+        Assert.Equal(feed, saved.OfflinePackageFeed);
+        Assert.Equal(init, saved.InitImageReference);
+        WorkspaceCheckPortableImageSettings image = Assert.Single(saved.Images);
+        Assert.Equal("7.0.102", image.SdkVersion);
+        Assert.Equal(sdk, image.ImageReference);
+
+        portable.StringValue = valid.Replace(sdk, "mcr.microsoft.com/dotnet/sdk:7.0.102", StringComparison.Ordinal);
+        Assert.True(portable.HasError);
+        portable.StringValue = valid.Replace("\"sdkVersion\"", "\"unknownVersion\"", StringComparison.Ordinal);
+        Assert.True(portable.HasError);
+        portable.StringValue = "{}";
+        Assert.True(portable.HasError);
+
+        portable.StringValue = "null";
+        Assert.False(portable.HasError, portable.ErrorMessage);
+        Assert.Null(vm.BuildSettings().Integrations.WorkspaceChecks.PortableDotNet);
+    }
+
+    [Fact]
     public async Task Authored_dictionary_editors_use_source_generated_contracts_and_round_trip()
     {
         WorkspaceCheckProfileSettings original = new()

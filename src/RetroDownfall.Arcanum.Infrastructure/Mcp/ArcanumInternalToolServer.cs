@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -64,6 +65,8 @@ internal sealed partial class ArcanumInternalToolServer
     private readonly JsonElement _applyPatchSchema;
 
     private readonly JsonElement _workspaceCheckSchema;
+
+    private readonly JsonElement _portableWorkspaceCheckSchema;
 
     private readonly JsonElement _executeCommandSchema;
 
@@ -361,6 +364,8 @@ internal sealed partial class ArcanumInternalToolServer
         _workspaceCheckSchema = BuildWorkspaceCheckSchema(
             _workspaceCheckProfiles,
             _workspaceCheckSettings);
+
+        _portableWorkspaceCheckSchema = BuildWorkspaceCheckSchema(_workspaceCheckProfiles, _workspaceCheckSettings, portable: true);
 
         _executeCommandSchema = BuildExecuteCommandSchema();
 
@@ -938,16 +943,20 @@ internal sealed partial class ArcanumInternalToolServer
         if (_workspaceRoot is not null
             && _workspaceCheckRuntime.GetStatus(_workspaceRoot).IsEligible)
         {
+            bool portable = WorkspaceMutationFence.IsInstalled;
+
             tools.Add(
                 new McpToolDefinitionWire
                 {
                     Name = ToolRiskClassifier.WorkspaceCheckToolName,
-                    Description =
-                        "Runs a closed operator-owned .NET build, test, or lint profile. "
+                    Description = portable
+                        ? "Runs the selected portable .NET build or test profile in a disposable Linux ARM64 VM. "
+                            + "The guest uses a copy of the workspace, an offline package feed, and isolated loopback."
+                        : "Runs a closed operator-owned .NET build, test, or lint profile. "
                         + "Workspace-authored MSBuild tasks, generators, analyzers, and tests execute as code. "
                         + "The source workspace is read-only; build/intermediate/test roots are writable outside it. "
                         + "The filesystem jail does not isolate network egress.",
-                    InputSchema = _workspaceCheckSchema,
+                    InputSchema = portable ? _portableWorkspaceCheckSchema : _workspaceCheckSchema,
                 });
         }
 

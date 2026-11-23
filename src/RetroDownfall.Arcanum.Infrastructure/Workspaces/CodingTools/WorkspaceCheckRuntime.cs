@@ -29,7 +29,7 @@ internal interface IWorkspaceCheckRuntime
         CancellationToken cancellationToken);
 }
 
-internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
+internal sealed partial class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 {
     private readonly WorkspaceCheckSettings _settings;
 
@@ -130,7 +130,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
     {
         if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out WorkspaceMutationFence.OpaqueEffect? effect))
         {
-            return new WorkspaceCheckExecutionStatus(false, true, WorkspaceProcessBoundary.Message);
+            return HasCurrentConfiguration() ? PortableStatus(_settings, workspaceRoot)
+                : new(false, true, "Workspace check settings changed. Refresh the tool catalog.");
         }
 
         using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
@@ -197,7 +198,10 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
     }
 
     public bool CanReadRetainedOutput(string workspaceRoot) =>
-        OperatingSystem.IsMacOS()
+        WorkspaceProcessBoundary.RequiresContainment
+        ? _settings.Enabled && HasCurrentConfiguration() && WorkspaceCheckAppleContainerRunner.IsAvailable()
+            && WorkspaceCheckPortableToolchain.Resolve(workspaceRoot, _settings).Success
+        : OperatingSystem.IsMacOS()
         && _settings.Enabled
         && HasCurrentConfiguration()
         && _executablePolicy.ResolveConfiguredOrInstalled(_settings.ExecutableCatalog?.DotNet?.Path, workspaceRoot).Success
@@ -213,14 +217,15 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        cancellationToken.ThrowIfCancellationRequested();
 
         if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out WorkspaceMutationFence.OpaqueEffect? effect))
         {
-            return Outcome("unavailable", ErrorCodes.Guild.ToolBoundaryUnavailable, WorkspaceProcessBoundary.Message, request.ProfileId);
+            return await RunPortableAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
         using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         WorkspaceCheckExecutionStatus status = GetStatus(
             request.WorkspaceRoot);
@@ -315,14 +320,13 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
             return Outcome(
                 "unavailable",
                 "output_root_unavailable",
-                "A server-owned SDK resolver and run root could not be allocated.",
+                "A server-owned run root could not be allocated.",
                 request.ProfileId);
         }
 
         WorkspaceCheckSdkResolution sdk = WorkspaceCheckSdkResolver.Resolve(
             request.WorkspaceRoot,
-            executable.Snapshot,
-            resolverRoot: directories.Root);
+            executable.Snapshot);
 
         if (!sdk.Success || sdk.Snapshot is null)
         {
@@ -601,7 +605,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         string sdkVersion,
         WorkspaceCheckDiagnosticParserKind parser,
         string workspaceRoot,
-        WorkspaceCheckTrxSource testResultsSource,
+        WorkspaceCheckTrxSource? testResultsSource,
         CappedChildProcessRunResult run,
         ResourceLimits runLimits)
     {
@@ -834,7 +838,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         string standardOutput,
         string standardError,
         string workspaceRoot,
-        WorkspaceCheckTrxSource testResultsSource)
+        WorkspaceCheckTrxSource? testResultsSource)
     {
         int maxDiagnostics =
             ArcanumSettingClamps.WorkspaceCheckMaxDiagnostics(
@@ -848,9 +852,9 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 maxDiagnostics,
                 includeVsTestFailures:
                     parser
-                    != WorkspaceCheckDiagnosticParserKind.VsTest);
+                    != WorkspaceCheckDiagnosticParserKind.VsTest || testResultsSource is null);
 
-        if (parser != WorkspaceCheckDiagnosticParserKind.VsTest)
+        if (parser != WorkspaceCheckDiagnosticParserKind.VsTest || testResultsSource is null)
         {
             return console;
         }

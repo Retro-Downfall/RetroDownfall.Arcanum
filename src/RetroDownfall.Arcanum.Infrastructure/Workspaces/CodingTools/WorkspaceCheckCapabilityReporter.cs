@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
@@ -94,6 +95,14 @@ public sealed class WorkspaceCheckCapabilityReporter
     public WorkspaceCheckCapabilityStatus GetStatus(
         string? workspaceRoot = null)
     {
+        if (WorkspaceProcessBoundary.RequiresContainment)
+        {
+            ArcanumSettings current = _settings.CurrentValue;
+
+            return Map(WorkspaceCheckRuntime.PortableStatus(current.ResolveWorkspaceChecks(),
+                ResolveContainmentRoot(workspaceRoot, current.ResolveDefaultWorkspace())));
+        }
+
         string generation;
 
         try
@@ -161,6 +170,9 @@ public sealed class WorkspaceCheckCapabilityReporter
     {
         WorkspaceCheckCapabilityStatus immediate =
             GetStatus(workspaceRoot);
+
+        if (WorkspaceProcessBoundary.RequiresContainment) return immediate;
+
         string generation;
 
         try
@@ -363,6 +375,11 @@ public sealed class WorkspaceCheckCapabilityReporter
         WorkspaceCheckSettings check =
             current.ResolveWorkspaceChecks();
         string platform = WorkspaceCheckExecutionPolicy.DetectPlatform();
+        if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out var admission))
+            return Map(WorkspaceCheckRuntime.PortableStatus(check, ResolveContainmentRoot(workspaceRoot, current.ResolveDefaultWorkspace())));
+
+        using var probeAdmission = admission;
+
         bool jailAvailable = check.Enabled
             && _mandatoryJailAvailability();
         WorkspaceCheckExecutionStatus platformStatus =

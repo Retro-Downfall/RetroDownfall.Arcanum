@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -55,6 +56,153 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         await _workspace.DisposeAsync();
 
         _history.Dispose();
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Owned_workspace_check_cancellation_joins_cleanup_without_canceling_its_sibling(
+        bool cleanupPending, bool configuredTimeout)
+    {
+        ControlledWorkspaceCheck runtime = new(cleanupPending);
+
+        await using SdkMcpClientWrapper client = await CreateInitializedClientAsync(_workspace.Root, runtime);
+
+        using CancellationTokenSource caller = new();
+
+        Task<TrustedStructuredToolResult> first = InvokeOwnedCheckAsync(client, "first", caller.Token,
+            configuredTimeout ? TimeSpan.FromSeconds(2) : Timeout.InfiniteTimeSpan);
+
+        Task<TrustedStructuredToolResult> second = InvokeOwnedCheckAsync(client, "second", CancellationToken.None, TimeSpan.FromSeconds(30));
+
+        using CancellationTokenSource watchdog = new(TimeSpan.FromSeconds(10));
+
+        try
+        {
+            await Task.WhenAll(runtime.First.Started.Task, runtime.Second.Started.Task).WaitAsync(watchdog.Token);
+
+            if (!configuredTimeout)
+            {
+                await caller.CancelAsync();
+            }
+
+            await runtime.First.Canceled.Task.WaitAsync(watchdog.Token);
+
+            Assert.False(first.IsCompleted);
+
+            Assert.False(runtime.Second.Canceled.Task.IsCompleted);
+
+            runtime.First.Release.TrySetResult();
+
+            TrustedStructuredToolResult canceled = await first.WaitAsync(watchdog.Token);
+
+            using JsonDocument receipt = JsonDocument.Parse(canceled.Text);
+
+            Assert.Equal(cleanupPending ? "unavailable" : "canceled", receipt.RootElement.GetProperty("status").GetString());
+            Assert.Equal(cleanupPending ? "portable_cleanup_pending" : "workspace_check_canceled",
+                receipt.RootElement.GetProperty("code").GetString());
+            Assert.Equal(cleanupPending ? TurnEffectState.Unknown : TurnEffectState.Completed, canceled.FailureEvidence?.Effect);
+
+            Assert.False(second.IsCompleted);
+
+            Assert.False(runtime.Second.Canceled.Task.IsCompleted);
+
+            runtime.Second.Release.TrySetResult();
+
+            using JsonDocument unaffected = JsonDocument.Parse((await second.WaitAsync(watchdog.Token)).Text);
+
+            Assert.Equal("ok", unaffected.RootElement.GetProperty("status").GetString());
+        }
+        finally
+        {
+            runtime.First.Release.TrySetResult();
+
+            runtime.Second.Release.TrySetResult();
+        }
+
+    }
+
+    [Fact]
+    public async Task An_already_canceled_owned_workspace_check_does_not_dispatch()
+    {
+        ControlledWorkspaceCheck runtime = new(cleanupPending: false);
+
+        runtime.First.Release.TrySetResult();
+
+        await using SdkMcpClientWrapper client = await CreateInitializedClientAsync(_workspace.Root, runtime);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => InvokeOwnedCheckAsync(client, "first",
+            new CancellationToken(canceled: true), TimeSpan.FromSeconds(30)));
+
+        Assert.False(runtime.First.Started.Task.IsCompleted);
+    }
+
+    private async Task<TrustedStructuredToolResult> InvokeOwnedCheckAsync(
+        SdkMcpClientWrapper client, string profile, CancellationToken token, TimeSpan timeout)
+    {
+        Guid session = Guid.NewGuid();
+
+        Guid assistant = Guid.NewGuid();
+
+        // The fixture substitutes only the physical compiler. The real transport still binds
+        // and enters a distinct Session/assistant-owned operator call for each compiler.
+        GuildOperatorWorkspaceWrite owner = new(null!, null!, null!, new(_workspace.Root, default, []),
+            null!, null!, session, null, assistant, Guid.NewGuid(), _workspace.Root);
+
+        using GuildOperatorWorkspaceWrite.Call call = owner.BeginCall(session, assistant, "workspace_check")!;
+
+        using IDisposable ambient = PersistedToolInvocationAmbient.Begin(
+            new PersistedToolInvocationContext(session, assistant) { WorkspaceMutation = call });
+
+        using JsonDocument schema = JsonDocument.Parse("{}");
+
+        McpBridgeTool bridge = new("workspace_check", "Portable workspace check", schema.RootElement, client, 4096,
+            trustedStructuredResultKind: TrustedStructuredToolResultKind.WorkspaceCheck, requestTimeout: timeout);
+
+        return Assert.IsType<TrustedStructuredToolResult>(
+            await bridge.InvokeAsync(new AIFunctionArguments { ["profile"] = profile }, token));
+    }
+
+    private sealed class ControlledWorkspaceCheck(bool cleanupPending) : IWorkspaceCheckRuntime
+    {
+        internal sealed class Invocation
+        {
+            internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal TaskCompletionSource Canceled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        internal Invocation First { get; } = new();
+
+        internal Invocation Second { get; } = new();
+
+        public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot) => new(true, false, "eligible");
+
+        public bool CanReadRetainedOutput(string workspaceRoot) => false;
+
+        public async Task<WorkspaceCheckToolResultEnvelope> RunAsync(
+            WorkspaceCheckRuntimeRequest request, CancellationToken cancellationToken)
+        {
+            Assert.NotNull(GuildOperatorWorkspaceWrite.Call.CurrentCheck(request.WorkspaceRoot));
+
+            Invocation invocation = request.ProfileId == "first" ? First : Second;
+
+            using CancellationTokenRegistration registration =
+                cancellationToken.Register(() => invocation.Canceled.TrySetResult());
+
+            invocation.Started.TrySetResult();
+
+            await invocation.Release.Task;
+
+            return !cancellationToken.IsCancellationRequested
+                ? new() { Status = "ok", ProfileId = request.ProfileId }
+                : cleanupPending
+                    ? new() { Status = "unavailable", Code = "portable_cleanup_pending", ProfileId = request.ProfileId }
+                    : new() { Status = "canceled", Code = "workspace_check_canceled", ProfileId = request.ProfileId };
+        }
     }
 
     [Fact]

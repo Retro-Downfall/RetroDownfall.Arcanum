@@ -226,9 +226,38 @@ public static class GenericSettingsUpdater
             SettingKind.Int when value is double d => (int)Math.Round(d),
             SettingKind.Long when value is double d => (long)Math.Round(d),
             SettingKind.Bool => value is true,
+            SettingKind.JsonObject => ParseJsonObject(field.Descriptor.Key, field.StringValue),
             _ => value,
         };
 
+    }
+
+    internal static object? ParseJsonObject(string key, string json)
+    {
+        Type targetType = ResolveValueType(key)
+            ?? throw new JsonException("There is no configuration type for this setting.");
+
+        using JsonDocument document = JsonDocument.Parse(
+            json, new JsonDocumentOptions { AllowDuplicateProperties = false });
+
+        if (document.RootElement.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null))
+        {
+            throw new JsonException("Enter a JSON object or null.");
+        }
+
+        object? value = document.RootElement.Deserialize(targetType, ConfigurationJsonContext.Default);
+
+        if (value is WorkspaceCheckPortableDotNetSettings portable)
+        {
+            IReadOnlyList<ConfigurationValidationError> errors = ConfigurationValidator.ValidatePortableDotNet(portable);
+
+            if (errors.Count > 0)
+            {
+                throw new JsonException(string.Join(Environment.NewLine, errors.Select(static error => error.Detail)));
+            }
+        }
+
+        return value;
     }
 
     private static ArcanumSettings? SetByPath(ArcanumSettings root, string key, object? value, ILogger? logger)

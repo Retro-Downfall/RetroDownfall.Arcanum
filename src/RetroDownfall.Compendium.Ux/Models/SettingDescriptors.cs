@@ -165,6 +165,7 @@ public static class SettingDescriptors
         new("integrations.webResearch.perplexityModel", ConfigSection.Integrations, "Perplexity model", "Sonar model used for synthesized web search: sonar or sonar-pro.", SettingKind.String, Group: "Web research", Placeholder: "sonar"),
         new("integrations.webResearch.credentialEnvironmentVariable", ConfigSection.Integrations, "Perplexity key variable", "Optional environment variable containing the Perplexity API key; omission uses the secure local store, with ARCANUM_PERPLEXITY_API_KEY available for unattended hosts.", SettingKind.String, Group: "Web research", Placeholder: "ARCANUM_PERPLEXITY_API_KEY"),
         new("integrations.workspaceChecks.executableCatalog.dotNet.path", ConfigSection.Integrations, "Trusted .NET executable", "Path to a trusted .NET executable for running commands.", SettingKind.Path, Group: "Command execution", Placeholder: "/usr/bin/dotnet"),
+        new("integrations.workspaceChecks.portableDotNet", ConfigSection.Integrations, "Portable .NET toolchain", "Set the offlinePackageFeed path, digest-pinned initImageReference, and images with sdkVersion and imageReference. Use null to disable the toolchain.", SettingKind.JsonObject, Group: "Command execution"),
         new("integrations.workspaceChecks.customProfiles", ConfigSection.Integrations, "Custom command profiles", "JSON configuration for custom build/test/lint commands.", SettingKind.Dictionary, Group: "Command execution"),
 
         // Host capacity and backpressure
