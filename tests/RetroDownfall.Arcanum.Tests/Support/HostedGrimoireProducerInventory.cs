@@ -2749,13 +2749,18 @@ internal static partial class HostedGrimoireProducerInventory
             string? RecoveryEffectFrontier,
             string FieldPublications,
             bool CompletionOwned,
+            bool OrdinaryOperatorAbsent,
             bool Lifecycle);
 
-        private sealed class TraversalCompletionFrame
+        private sealed class TraversalCompletionFrame(string? ordinaryOperatorAbsentRoot)
         {
             internal bool Complete { get; set; } = true;
 
             internal bool FreshNestedPath { get; set; } = true;
+
+            internal string? OrdinaryOperatorAbsentRoot { get; } = ordinaryOperatorAbsentRoot;
+
+            internal bool OrdinaryOperatorAbsent => OrdinaryOperatorAbsentRoot is not null;
         }
 
         private readonly record struct CompletedLifecycleRoot(string Operation, int Occurrence, TraversalEvidence Evidence);
@@ -3897,6 +3902,7 @@ internal static partial class HostedGrimoireProducerInventory
                 recoveryEffect,
                 fieldPublications is null ? "" : string.Join(",", fieldPublications.Order()),
                 completionOwned,
+                traversalCompletion?.OrdinaryOperatorAbsent == true,
                 lifecycle);
         }
 
@@ -20279,7 +20285,22 @@ internal static partial class HostedGrimoireProducerInventory
                 nestedRootCohort = null;
             }
 
-            TraversalCompletionFrame frame = new();
+            // An independent lifecycle entry starts without an operator call. An inline invocation
+            // inherits the caller's context, including when it targets a catalogued method.
+            string? operatorAbsentRoot = parent?.OrdinaryOperatorAbsentRoot;
+
+            if (parent is null && plannedRoot is { } entry && HasNoOrdinaryOperatorAtEntry(entry.Operation))
+            {
+                operatorAbsentRoot = entry.Operation;
+            }
+
+            if (operatorAbsentRoot is { } absentRoot && operationId != absentRoot
+                && (!operationId.StartsWith(absentRoot, StringComparison.Ordinal) || operationId[absentRoot.Length] != '/'))
+            {
+                operatorAbsentRoot = null;
+            }
+
+            TraversalCompletionFrame frame = new(operatorAbsentRoot);
 
             traversalCompletion = frame;
 
@@ -20292,6 +20313,16 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
+                if (member.Symbol.Name == "Enter"
+                    && TypeKey(member.Symbol.ContainingType) == WorkspaceOperatorType
+                    && frame.OrdinaryOperatorAbsent)
+                {
+                    RefuseTraversalCompletion();
+
+                    diagnostics.Add(new("HOSTED_ORDINARY_OPERATOR_ENTRY_REACHABLE", operationId,
+                        "A lifecycle root whose entry has no ordinary workspace operator reached the managed Session binding."));
+                }
+
                 TraversalEvidence result = TraverseState(member, rootType, operationId, active, lifecycle, inheritedWork, inheritedEffect, selection, fieldPublications, completionOwned, recoveryEffect, plannedRoot);
 
                 if (rootEntry && independentHostCapture is { } hostCapture && hostCapture.Operation == operationId && ReferenceEquals(hostCapture.Frame, frame))
@@ -22099,6 +22130,12 @@ internal static partial class HostedGrimoireProducerInventory
 
                                             emittedEvidence = MergeEvidence(emittedEvidence, selfAdmittedEvidence);
 
+                                            continue;
+                                        }
+
+                                        if (node is InvocationExpressionSyntax validation
+                                            && IsAbsentOrdinaryOperatorValidation(member, validation, receiverTarget))
+                                        {
                                             continue;
                                         }
 

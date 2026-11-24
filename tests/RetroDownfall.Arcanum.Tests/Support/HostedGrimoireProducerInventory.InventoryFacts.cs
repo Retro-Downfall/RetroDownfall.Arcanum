@@ -37,6 +37,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Lazy<string[]> unreviewedGateImplementations;
 
+        private readonly Lazy<bool> exclusiveOrdinaryOperatorIngress;
+
         internal InventoryFacts(IReadOnlyList<CSharpCompilation> compilations)
         {
             dbContextConnectionReplacement = new(
@@ -66,7 +68,13 @@ internal static partial class HostedGrimoireProducerInventory
             unreviewedGateImplementations = new(
                 () => FindUnreviewedGateImplementations(compilations),
                 LazyThreadSafetyMode.ExecutionAndPublication);
+
+            exclusiveOrdinaryOperatorIngress = new(
+                () => ScanExclusiveOrdinaryOperatorIngress(compilations, SemanticModelOf),
+                LazyThreadSafetyMode.ExecutionAndPublication);
         }
+
+        internal bool ExclusiveOrdinaryOperatorIngress => exclusiveOrdinaryOperatorIngress.Value;
 
         // One semantic model per tree for the whole discovery, shared by every scan and every isolated root worker graph.
         // A model binds lazily and is safe to read from several threads, so what one scan or worker has bound, the next

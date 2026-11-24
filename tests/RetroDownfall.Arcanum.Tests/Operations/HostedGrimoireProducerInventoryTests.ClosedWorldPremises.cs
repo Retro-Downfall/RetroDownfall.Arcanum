@@ -1094,6 +1094,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             AssertScopedGuildAuthorization(recovery.Items, metrics, operation);
 
+            Assert.DoesNotContain(recovery.Items, static site =>
+                site.MemberIdentity.Contains(".ValidateWorkspaceWriterSessionAsync(", StringComparison.Ordinal));
+
             Assert.Equal(2, metrics.RootTraversals.Count);
 
             var traversal = Assert.Single(metrics.RootTraversals,
