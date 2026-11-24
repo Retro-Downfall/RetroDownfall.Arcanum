@@ -233,11 +233,6 @@ public sealed class CovenantArchitectureBoundaryTests
                 ],
                 [2]),
             new(
-                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendRefreshRecoveryHandler",
-                LongRunningOperationKinds.GuildSpendRefresh,
-                [1],
-                ["System.Net.Http.HttpClient.SendAsync"]),
-            new(
                 "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler",
                 LongRunningOperationKinds.A2AOutboundSending,
                 [1],
@@ -345,6 +340,19 @@ public sealed class CovenantArchitectureBoundaryTests
 
         Assert.DoesNotContain(discovery.Diagnostics, diagnostic =>
             diagnostic.Identity.Contains(parkHandler, StringComparison.Ordinal) || diagnostic.Detail.Contains(parkHandler, StringComparison.Ordinal));
+
+        const string historicalRefreshHandler = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendRefreshRecoveryHandler";
+        const string historicalReceiptRead = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshAdmission.cs";
+
+        Assert.Equal(LongRunningOperationKinds.GuildSpendRefresh, ConstantStringProperty(handlersByName[historicalRefreshHandler], "Kind"));
+
+        Assert.Contains(discovery.Items, static site => site.RootType == historicalRefreshHandler
+            && site.SourcePath == historicalReceiptRead && site.Kind == HostedProducerSiteKind.DatabaseAccess);
+
+        Assert.Contains(metrics.RootTraversals, metric => metric.RootType == historicalRefreshHandler && metric.AnalyzedStates > 0);
+
+        Assert.DoesNotContain(discovery.Diagnostics, diagnostic => diagnostic.Identity.Contains(historicalRefreshHandler, StringComparison.Ordinal)
+            || diagnostic.Detail.Contains(historicalRefreshHandler, StringComparison.Ordinal));
     }
 
     // Recovery never runs a Long Rest sweep. The Pure Park Handler only parks, so it has no required source effect and no row here;
