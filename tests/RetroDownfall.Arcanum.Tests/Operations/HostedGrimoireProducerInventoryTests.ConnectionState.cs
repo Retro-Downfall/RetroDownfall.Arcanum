@@ -295,7 +295,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(
         [
-            "BudgetReservationService.cs|RetroDownfall.Arcanum.Infrastructure.Data.BudgetReservationService.CommittedReadAhead.ConnectionStateChanged|.ctor|Dispose",
             "CovenantConnectionEnrolmentInterceptor.cs|RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantConnectionEnrolmentInterceptor.OnPhysicalStateChanged|BeginOpen|CompleteRelease",
             "GrimoireSchemaQuiescentExecution.cs|RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaQuiescentExecution.OnStateChange|.ctor|Dispose",
             "RetentionSchemaCensus.cs|RetroDownfall.Arcanum.Infrastructure.Data.RetentionSchemaCensus.OnStateChange|ReadVersionAsync|Dispose",
