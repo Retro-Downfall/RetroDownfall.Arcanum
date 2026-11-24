@@ -478,7 +478,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return EnumerationClosure.Of(EnumerationClosureKind.Unproven);
             }
 
-            if (IsClosedFrameworkEnumerationType(type))
+            if (IsClosedFrameworkEnumerationType(type) || IsReviewedRegexValueEnumeration(binding, member.Model))
             {
                 return EnumerationClosure.Of(EnumerationClosureKind.Closed);
             }
@@ -495,6 +495,81 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return EnumerationClosure.Of(EnumerationClosureKind.Unproven);
+        }
+
+        private const string RegexType = "System.Text.RegularExpressions.Regex";
+
+        private const string RegexValueEnumeratorType = "System.Text.RegularExpressions.Regex.ValueMatchEnumerator";
+
+        private const string RegexValueMatchType = "System.Text.RegularExpressions.ValueMatch";
+
+        private static readonly AssemblyName RegexAssembly = typeof(System.Text.RegularExpressions.Regex).Assembly.GetName();
+
+        private static bool IsReviewedRegexValueMatchRead(IPropertySymbol property) =>
+            property is
+            {
+                IsStatic: false,
+                IsIndexer: false,
+                Name: "Index" or "Length",
+                Type.SpecialType: SpecialType.System_Int32,
+                GetMethod: { IsVirtual: false, ReturnsByRef: false, ReturnsByRefReadonly: false },
+                SetMethod: null,
+            }
+            && IsExactFrameworkType(property.ContainingType, RegexValueMatchType, RegexAssembly);
+
+        private static bool IsReviewedRegexValueEnumeration(EnumerationBinding binding, SemanticModel model)
+        {
+            if (!IsExactFrameworkType(binding.OperandType, RegexValueEnumeratorType, RegexAssembly)
+                || binding is not
+                {
+                    Asynchronous: false,
+                    Bound: true,
+                    GetEnumerator: { IsStatic: false, IsVirtual: false, Name: "GetEnumerator", Parameters.IsEmpty: true } getEnumerator,
+                    MoveNext: { IsStatic: false, IsVirtual: false, Name: "MoveNext", Parameters.IsEmpty: true,
+                        ReturnType.SpecialType: SpecialType.System_Boolean } moveNext,
+                    Current: { IsStatic: false, Name: "Current", GetMethod.IsVirtual: false, SetMethod: null } current,
+                }
+                || !IsExactFrameworkType(getEnumerator.ContainingType, RegexValueEnumeratorType, RegexAssembly)
+                || !IsExactFrameworkType(getEnumerator.ReturnType, RegexValueEnumeratorType, RegexAssembly)
+                || !IsExactFrameworkType(moveNext.ContainingType, RegexValueEnumeratorType, RegexAssembly)
+                || !IsExactFrameworkType(current.ContainingType, RegexValueEnumeratorType, RegexAssembly)
+                || !IsExactFrameworkType(current.Type, RegexValueMatchType, RegexAssembly)
+                || model.GetOperation(StripTransparentExpression(binding.Operand)) is not IInvocationOperation call
+                || call.TargetMethod is not { Name: "EnumerateMatches", IsVirtual: false } enumerate
+                || !IsExactFrameworkType(enumerate.ContainingType, RegexType, RegexAssembly))
+            {
+                return false;
+            }
+
+            if (enumerate.IsStatic)
+            {
+                return HasExactParameterTypes(enumerate, "System.ReadOnlySpan`1", "System.String");
+            }
+
+            if (!HasExactParameterTypes(enumerate, "System.ReadOnlySpan`1"))
+            {
+                return false;
+            }
+
+            // MoveNext enters the engine, so the ref struct type alone does not close the loop.
+            return call.Instance switch
+            {
+                IObjectCreationOperation creation => IsExactFrameworkType(creation.Type, RegexType, RegexAssembly),
+                IInvocationOperation factory => IsReviewedGeneratedRegexFactory(factory.TargetMethod),
+                _ => false,
+            };
+        }
+
+        private static bool IsReviewedGeneratedRegexFactory(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.PartialDefinitionPart ?? method;
+
+            return definition is { IsStatic: true, Parameters.IsEmpty: true, PartialImplementationPart: { } implementation }
+                && IsExactFrameworkType(definition.ReturnType, RegexType, RegexAssembly)
+                && definition.GetAttributes().Any(static attribute => IsExactFrameworkType(attribute.AttributeClass,
+                    "System.Text.RegularExpressions.GeneratedRegexAttribute", RegexAssembly))
+                && implementation.DeclaringSyntaxReferences is [SyntaxReference syntax]
+                && ReviewedRegexGeneratorOutput.TryGetValue(syntax.SyntaxTree, out _);
         }
 
         private static bool IsSequenceOrEnumeratorType(ITypeSymbol type) =>

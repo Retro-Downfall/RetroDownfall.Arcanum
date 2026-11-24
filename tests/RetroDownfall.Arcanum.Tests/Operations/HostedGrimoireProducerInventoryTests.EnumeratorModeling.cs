@@ -369,6 +369,91 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
     }
 
+    [Theory]
+    [InlineData("""System.Text.RegularExpressions.Regex.EnumerateMatches("aaa", "a")""", false)]
+    [InlineData("""new System.Text.RegularExpressions.Regex("a").EnumerateMatches("aaa")""", false)]
+    [InlineData("""RegexInput.Unknown().EnumerateMatches("aaa")""", true)]
+    [InlineData("""RegexInput.Authored().EnumerateMatches("aaa")""", true)]
+    public void RegexValueEnumerationRequiresAnExactEngine(string operand, bool unclassified)
+    {
+        string source = R2Source(R2Admission + "foreach (var match in " + operand
+            + """) { _ = match.Index + match.Length; } System.IO.File.Exists("regex-control");""",
+            """
+            internal static partial class RegexInput
+            {
+                internal static extern System.Text.RegularExpressions.Regex Unknown();
+
+                [System.Text.RegularExpressions.GeneratedRegex("a")]
+                internal static partial System.Text.RegularExpressions.Regex Authored();
+
+                internal static partial System.Text.RegularExpressions.Regex Authored() => Unknown();
+            }
+            """);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(unclassified, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Text.RegularExpressions.Regex.ValueMatchEnumerator.GetEnumerator"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail is "System.Text.RegularExpressions.ValueMatch.Index" or "System.Text.RegularExpressions.ValueMatch.Length");
+    }
+
+    [Theory]
+    [InlineData("Microsoft.ML.Tokenizers.BpeTokenizer", ", false, false", false)]
+    [InlineData("Microsoft.ML.Tokenizers.BpeTokenizer", ", true, false", true)]
+    [InlineData("Microsoft.ML.Tokenizers.BpeTokenizer", ", false, true", true)]
+    [InlineData("Microsoft.ML.Tokenizers.BpeTokenizer", "", true)]
+    [InlineData("Microsoft.ML.Tokenizers.Tokenizer", ", false, false", true)]
+    public void BpeCountingRequiresASealedReceiverAndDisabledCallbacks(string receiver, string flags, bool unclassified)
+    {
+        string source = R2Source(R2Admission + "_ = TokenizerInput.Unknown().CountTokens(\"sample\"" + flags
+            + """); System.IO.File.Exists("bpe-control");""",
+            "internal static class TokenizerInput { internal static extern " + receiver + " Unknown(); }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(unclassified, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "Microsoft.ML.Tokenizers.Tokenizer.CountTokens"));
+    }
+
+    [Fact]
+    public void GeneratedQwenPretokenizerClosesTheActualSpanLoop()
+    {
+        const string type = "RetroDownfall.Arcanum.Api.Intelligence.OllamaQwenTokenizer";
+
+        const string operation = type + ".CountText";
+
+        CSharpCompilation compilation = HostedGrimoireProducerInventory.ProductionCompilations.Single(
+            static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        List<HostedProducerRootCompletionObservation> completions = [];
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new([], []), [],
+            [new(operation, "src/RetroDownfall.Arcanum.Api/Intelligence/OllamaQwenTokenizer.cs",
+                type, "CountText", HostedProducerAuthorityKind.EffectFree, "pinned in-memory token count", [])],
+            rootCompletionObserver: completions.Add);
+
+        Assert.True(result.Diagnostics.Count == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(result.Diagnostics));
+
+        Assert.Contains(completions, static completion =>
+            completion.Operation == operation && completion.Planned && completion.Returned && completion.Complete);
+    }
+
     // A value followed through a field or property initializer in another file is proved against that file's
     // semantic model, never the model of the member that reads it.
     [Theory]

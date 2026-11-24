@@ -359,6 +359,8 @@ internal static partial class HostedGrimoireProducerInventory
 
     internal static IReadOnlyList<CSharpCompilation> ProductionCompilations => SourceCompilations.Value;
 
+    private static readonly ConditionalWeakTable<SyntaxTree, object> ReviewedRegexGeneratorOutput = new();
+
     private static readonly Lazy<HostedProducerDiscovery<HostedProducerSite>> ProductionSites = new(DiscoverProductionSites);
 
     internal static HostedProducerDiscovery<HostedProducerSite> ProductionSiteDiscovery => ProductionSites.Value;
@@ -497,6 +499,12 @@ internal static partial class HostedGrimoireProducerInventory
 
             List<ISourceGenerator> generators = [];
 
+            const string regexGeneratorAssembly = "System.Text.RegularExpressions.Generator";
+
+            const string regexGeneratorType = regexGeneratorAssembly + ".RegexGenerator";
+
+            bool regexGeneratorLoaded = false;
+
             foreach (string analyzer in analyzers)
             {
                 AnalyzerFileReference reference = new(analyzer, loader);
@@ -515,6 +523,12 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 generators.AddRange(loaded);
+
+                if (Path.GetFileName(analyzer) == regexGeneratorAssembly + ".dll")
+                {
+                    regexGeneratorLoaded |= loaded.Select(static generator => generator.GetGeneratorType()).Any(type =>
+                        type.FullName == regexGeneratorType && type.Assembly.GetName().Name == regexGeneratorAssembly);
+                }
             }
 
             GeneratorDriver driver = CSharpGeneratorDriver.Create(generators, Inputs("AdditionalFiles").Select(static file => (AdditionalText)new GeneratorText(file)), parse, new GeneratorOptions(Inputs("EditorConfigFiles")));
@@ -526,6 +540,19 @@ internal static partial class HostedGrimoireProducerInventory
             if (errors.Length != 0)
             {
                 throw new InvalidOperationException("Generator-complete compilation failed for " + project + ":\n" + string.Join("\n", errors.Select(static error => error.ToString())));
+            }
+
+            if (regexGeneratorLoaded)
+            {
+                // Roslyn prefixes generated paths with the generator's assembly and type identities.
+                // Match only newly added trees, so an authored tree with this path cannot qualify.
+                const string regexOutput = regexGeneratorAssembly + "/" + regexGeneratorType + "/RegexGenerator.g.cs";
+
+                foreach (SyntaxTree tree in complete.SyntaxTrees.Except(trees).Where(tree =>
+                    tree.FilePath.Replace('\\', '/') == regexOutput))
+                {
+                    ReviewedRegexGeneratorOutput.AddOrUpdate(tree, new object());
+                }
             }
 
             CSharpCompilation completed = (CSharpCompilation)complete;
@@ -26911,6 +26938,25 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            if (method.Name == "CountTokens"
+                && !method.IsStatic
+                && method.ReturnType.SpecialType == SpecialType.System_Int32
+                && TypeKey(method.ContainingType) == "Microsoft.ML.Tokenizers.Tokenizer"
+                && HasExactParameterTypes(method, "System.String", "System.Boolean", "System.Boolean")
+                && invocation.Instance?.Type is INamedTypeSymbol { IsSealed: true } bpe
+                && IsExactFrameworkType(bpe, "Microsoft.ML.Tokenizers.BpeTokenizer",
+                    typeof(Microsoft.ML.Tokenizers.BpeTokenizer).Assembly.GetName())
+                && invocation.Arguments is
+                    [_, { IsImplicit: false, Value.ConstantValue: { HasValue: true, Value: false } } first,
+                        { IsImplicit: false, Value.ConstantValue: { HasValue: true, Value: false } } second]
+                && first.Parameter?.Name is "considerPreTokenization" or "considerNormalization"
+                && second.Parameter?.Name is "considerPreTokenization" or "considerNormalization")
+            {
+                // The sealed BPE implementation skips both callback slots with these flags.
+                // The receiver expression and any factory calls still undergo ordinary analysis.
+                return true;
+            }
+
             if (method.Name != "CountTokens"
                 || TypeKey(method.ContainingType) != "Microsoft.ML.Tokenizers.Tokenizer"
                 || !HasExactParameterTypes(method, "System.String", "System.Boolean", "System.Boolean")
@@ -29962,6 +30008,7 @@ internal static partial class HostedGrimoireProducerInventory
             || IsReviewedReferenceComparerProperty(property, mutation)
             || !mutation && IsReviewedFloatVectorProperty(property)
             || IsReviewedExactGeneratedEmbeddingRead(property, mutation)
+            || !mutation && IsReviewedRegexValueMatchRead(property)
             || IsReviewedExactStoredExternalProperty(property, mutation)
             || !mutation && IsReviewedProviderNeutralOptionsBuilderMember(property)
             || ReviewedNonProducerExternalMembers.Contains(
