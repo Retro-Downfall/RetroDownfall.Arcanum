@@ -1159,8 +1159,9 @@ public sealed partial class PublishedArcanumSessionSmokeTests
                         LocalRuntimeId = "published-runtime",
                         CredentialEnvironmentVariable = ProviderKeyVariable,
                         Models = [new ModelEntry(ExpectedModel, SupportsTools: true)],
-                        // The tool-capable fake model must fit the real advertised server schemas.
-                        ContextWindowLimit = 16384,
+                        // This synthetic provider exercises transport and persistence, not context rejection.
+                        // Leave room for the real tool catalogue, conservative counting, and follow-up turns.
+                        ContextWindowLimit = 65_536,
                     },
                 ],
                 Features = new FeatureSettings
