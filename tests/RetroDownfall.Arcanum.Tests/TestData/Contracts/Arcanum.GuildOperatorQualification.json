@@ -127,6 +127,7 @@
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Corrupt_refresh_effect_alias_retains_its_accounting",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Durable_refresh_pins_the_actual_accounting_candidate_and_writer",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_physically_complete_unlimited_provider_source",
+        "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_unknown_usage_on_new_unmetered_effect",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_clears_settled_Cohort_before_its_account_and_issuer",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_inventory_counts_Cohort_evidence",
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_late_failure_preserves_terminal_provider_evidence",
@@ -345,6 +346,7 @@
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Corrupt_refresh_effect_alias_retains_its_accounting": 3,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Durable_refresh_pins_the_actual_accounting_candidate_and_writer": 5,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_physically_complete_unlimited_provider_source": 1,
+        "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_unknown_usage_on_new_unmetered_effect": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_clears_settled_Cohort_before_its_account_and_issuer": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_inventory_counts_Cohort_evidence": 1,
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_late_failure_preserves_terminal_provider_evidence": 1,
@@ -526,6 +528,9 @@
         ],
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_physically_complete_unlimited_provider_source": [
           "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_physically_complete_unlimited_provider_source"
+        ],
+        "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_unknown_usage_on_new_unmetered_effect": [
+          "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_accepts_unknown_usage_on_new_unmetered_effect"
         ],
         "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_late_failure_preserves_terminal_provider_evidence": [
           "RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_late_failure_preserves_terminal_provider_evidence"

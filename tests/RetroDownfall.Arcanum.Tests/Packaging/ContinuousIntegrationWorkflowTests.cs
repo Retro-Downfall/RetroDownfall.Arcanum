@@ -1941,7 +1941,7 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     [Theory]
 
-    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1", "Assert the SDK is native to the RID", "choco install ripgrep --version=15.2.0")]
+    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1", "Assert the SDK is native to the RID", "python scripts/install_ripgrep.py --rid $env:RID")]
 
     [InlineData("release-macos-arm64.yml", "./scripts/verify-aot-il-warnings.sh osx-arm64", "build-arcanum.sh", "", "Install ripgrep for the warning-free publish gate")]
 
